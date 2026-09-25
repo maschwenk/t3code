@@ -39,8 +39,13 @@ export const legacyManagedEndpointCleanupModeConfig = cleanupModeConfig(
  */
 export const RELAY_LEGACY_TUNNEL_GRACE_MINUTES = "RELAY_LEGACY_TUNNEL_GRACE_MINUTES";
 
+// A zero or negative override would be ignored at runtime, silently leaving
+// the canary on the 30-day grace period, so reject it when the deploy reads it.
 export const legacyTunnelGraceMinutesConfig = Config.option(
-  Config.Int(RELAY_LEGACY_TUNNEL_GRACE_MINUTES),
+  Config.schema(
+    Schema.NumberFromString.pipe(Schema.check(Schema.isInt(), Schema.isGreaterThan(0))),
+    RELAY_LEGACY_TUNNEL_GRACE_MINUTES,
+  ),
 );
 
 export interface ApnsCredentials {

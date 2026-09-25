@@ -1,9 +1,11 @@
 import { expect, it } from "@effect/vitest";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 
 import {
   legacyManagedEndpointCleanupModeConfig,
+  legacyTunnelGraceMinutesConfig,
   managedEndpointCleanupModeConfig,
 } from "./Config.ts";
 
@@ -47,5 +49,30 @@ it.effect("reads the legacy cleanup mode independently of the main one", () =>
     expect(
       yield* legacyManagedEndpointCleanupModeConfig.parse(ConfigProvider.fromEnv({ env: {} })),
     ).toBe("off");
+  }),
+);
+
+it.effect.each([
+  { name: "missing", env: {}, expected: Option.none() },
+  {
+    name: "positive",
+    env: { RELAY_LEGACY_TUNNEL_GRACE_MINUTES: "10" },
+    expected: Option.some(10),
+  },
+] as const)("loads a $name legacy grace override", ({ env, expected }) =>
+  Effect.gen(function* () {
+    const minutes = yield* legacyTunnelGraceMinutesConfig.parse(ConfigProvider.fromEnv({ env }));
+    expect(minutes).toEqual(expected);
+  }),
+);
+
+it.effect.each(["0", "-10"])("rejects a grace override of %s minutes", (value) =>
+  Effect.gen(function* () {
+    const error = yield* Effect.flip(
+      legacyTunnelGraceMinutesConfig.parse(
+        ConfigProvider.fromEnv({ env: { RELAY_LEGACY_TUNNEL_GRACE_MINUTES: value } }),
+      ),
+    );
+    expect(error._tag).toBe("ConfigError");
   }),
 );
