@@ -969,7 +969,34 @@ describe("ManagedEndpointProvider", () => {
         "updateRecord",
       ]);
       expect(allocationCalls.map((call) => call.operation)).not.toContain("remove");
-      // Only the claim taken right before the delete records the release.
+      // An ordinary release, such as a host shutting down, must not tell the
+      // user to update: that host gets a new tunnel when it starts again.
+      const claims = allocationCalls.filter((call) => call.operation === "claimRelease");
+      expect(claims.map((call) => (call.input as { markReleased?: boolean }).markReleased)).toEqual(
+        [undefined, undefined],
+      );
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("marks the release on the claim that deletes the tunnel when asked", () => {
+    const allocationCalls: AllocationCall[] = [];
+    const layer = layerProvider(
+      makePersistentTunnelClient(),
+      makeDnsClient(),
+      makeAllocations(allocationCalls),
+    );
+
+    return Effect.gen(function* () {
+      const provider = yield* ManagedEndpointProvider.ManagedEndpointProvider;
+      const key = { userId: "user_ABC", environmentId: "env_ABC" } as const;
+      yield* provider.provision({
+        ...key,
+        origin: { localHttpHost: "127.0.0.1", localHttpPort: 3773 },
+      });
+      expect(yield* provider.release({ ...key, markReleased: true })).toBe(true);
+
+      // The first claim only reserves the release; the second, taken with the
+      // row locked right before the delete, is the one that records it.
       const claims = allocationCalls.filter((call) => call.operation === "claimRelease");
       expect(claims.map((call) => (call.input as { markReleased?: boolean }).markReleased)).toEqual(
         [undefined, true],

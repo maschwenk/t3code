@@ -193,6 +193,11 @@ export class ManagedEndpointProvider extends Context.Service<
       readonly expectedTunnelId?: string;
       readonly expectedInactiveBefore?: string;
       readonly expectedStatus?: "inactive" | "down";
+      /**
+       * Record that cleanup removed a legacy host's tunnel, so status tells the
+       * user to update. Other releases leave hosts that recover on their own.
+       */
+      readonly markReleased?: boolean;
     }) => Effect.Effect<boolean, ManagedEndpointDeprovisioningFailed>;
   }
 >()("t3code-relay/environments/ManagedEndpointProvider") {}
@@ -877,7 +882,7 @@ export const make = Effect.gen(function* () {
                 environmentId: input.environmentId,
                 tunnelId,
                 generation: claimedGeneration,
-                markReleased: true,
+                ...(input.markReleased === true ? { markReleased: true } : {}),
               })
               .pipe(
                 Effect.mapError(
