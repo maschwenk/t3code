@@ -84,7 +84,7 @@ function isExpiredManagedTunnel(input: {
   return Option.isSome(timestamp) && timestamp.value.epochMilliseconds <= cutoff.epochMilliseconds;
 }
 
-/** Whole days since the tunnel went down, or was created if it never connected. */
+/** Days (fractional) since the tunnel went down, or was created if it never connected. */
 function inactiveDaysAt(
   tunnel: ManagedEndpointProvider.ManagedEndpointTunnel,
   status: "down" | "inactive",
@@ -94,7 +94,7 @@ function inactiveDaysAt(
   if (typeof since !== "string") return null;
   const timestamp = DateTime.make(since);
   if (Option.isNone(timestamp)) return null;
-  return Math.floor((now.epochMilliseconds - timestamp.value.epochMilliseconds) / 86_400_000);
+  return (now.epochMilliseconds - timestamp.value.epochMilliseconds) / 86_400_000;
 }
 
 function isRateLimited(cause: unknown): boolean {

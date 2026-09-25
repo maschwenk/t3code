@@ -440,8 +440,10 @@ describe("ManagedEndpointReaper", () => {
     const down = (id: string, suffix: string, timestamp: string) =>
       tunnel({ id, suffix, status: "down", timestamp });
     const tunnels = [
-      // Legacy owners, down for 1, 10, 40, and 100 days.
+      // Legacy owners, down for 1, 10, 40, and 100 days, plus one just past
+      // seven days, which must already count as over seven.
       down("legacy-1d", "1111111111111111", "2026-08-24T11:00:00.000Z"),
+      down("legacy-7d1h", "7777777777777777", "2026-08-18T11:00:00.000Z"),
       down("legacy-10d", "2222222222222222", "2026-08-15T11:00:00.000Z"),
       down("legacy-40d", "3333333333333333", "2026-07-16T11:00:00.000Z"),
       down("legacy-100d", "4444444444444444", "2026-05-17T11:00:00.000Z"),
@@ -454,6 +456,7 @@ describe("ManagedEndpointReaper", () => {
       tunnels,
       allocations: [
         allocation({ tunnelId: "legacy-1d", recoveryEnabled: false }),
+        allocation({ tunnelId: "legacy-7d1h", recoveryEnabled: false }),
         allocation({ tunnelId: "legacy-10d", recoveryEnabled: false }),
         allocation({ tunnelId: "legacy-40d", recoveryEnabled: false }),
         allocation({ tunnelId: "legacy-100d", recoveryEnabled: false }),
@@ -473,14 +476,14 @@ describe("ManagedEndpointReaper", () => {
       yield* TestClock.setTime(NOW_MILLIS);
       const reaper = yield* ManagedEndpointReaper.ManagedEndpointReaper;
       expect(yield* reaper.sweep).toMatchObject({
-        scanned: 6,
-        skippedLegacy: 4,
-        legacyOver7Days: 3,
+        scanned: 7,
+        skippedLegacy: 5,
+        legacyOver7Days: 4,
         legacyOver30Days: 2,
         legacyOver90Days: 1,
         skippedReplaced: 1,
         skippedUnrecorded: 1,
-        totalDown: 6,
+        totalDown: 7,
         totalInactive: 0,
         wouldDelete: 0,
       });
