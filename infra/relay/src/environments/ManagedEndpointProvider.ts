@@ -813,6 +813,19 @@ export const make = Effect.gen(function* () {
       if (claimedGeneration === null) {
         return false;
       }
+      // After a failed delete: succeed if the tunnel is gone, since the delete
+      // then took effect and only its response was lost; otherwise keep the
+      // delete's error.
+      const confirmTunnelGone = (
+        failure: ManagedEndpointDeprovisioningFailed,
+      ): Effect.Effect<void, ManagedEndpointDeprovisioningFailed> =>
+        tunnels.get(tunnelId).pipe(
+          Effect.andThen(Effect.fail(failure)),
+          Effect.catchTags({
+            ManagedEndpointTunnelClientError: (lookupFailure) =>
+              isManagedEndpointNotFound(lookupFailure.cause) ? Effect.void : Effect.fail(failure),
+          }),
+        );
       const deleteTunnel = ignoreNotFound(tunnels.delete(tunnelId)).pipe(
         Effect.mapError(
           (cause) =>
@@ -912,16 +925,10 @@ export const make = Effect.gen(function* () {
                 (error) => isManagedEndpointTunnelInUse(error.cause),
                 () => Effect.succeed(false),
               ),
-              Effect.catchTag("ManagedEndpointDeprovisioningFailed", (failure) =>
-                tunnels.get(tunnelId).pipe(
-                  Effect.flatMap(() => Effect.fail(failure)),
-                  Effect.catchTag("ManagedEndpointTunnelClientError", (lookupFailure) =>
-                    isManagedEndpointNotFound(lookupFailure.cause)
-                      ? Effect.succeed(true)
-                      : Effect.fail(failure),
-                  ),
-                ),
-              ),
+              Effect.catchTags({
+                ManagedEndpointDeprovisioningFailed: (failure) =>
+                  confirmTunnelGone(failure).pipe(Effect.as(true)),
+              }),
             );
           }),
         )
