@@ -877,6 +877,7 @@ export const make = Effect.gen(function* () {
                 environmentId: input.environmentId,
                 tunnelId,
                 generation: claimedGeneration,
+                markReleased: true,
               })
               .pipe(
                 Effect.mapError(
