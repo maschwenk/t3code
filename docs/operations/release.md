@@ -212,8 +212,10 @@ A deleted legacy tunnel keeps its allocation, so its hostname is kept. When the 
    message are live. Without them, a user whose older host lost its tunnel only sees it as offline.
 5. Set the legacy mode to `enabled`. One sweep deletes at most 100 tunnels, four at a time, and
    stops starting new deletions after 90 seconds. A backlog of 20,000 takes about 17 hours if each
-   sweep finishes its 100. Watch `deletedLegacy`, `attempted`, `failed`, and `truncated`; an
-   `attempted` well under 100 means sweeps are running out of time.
+   sweep finishes its 100. Watch `deletedLegacy`, `attempted`, `failed`, and `truncated`. An
+   `attempted` well under 100 with `truncated` set means the sweep stopped early: either the time
+   budget ran out or Cloudflare rate-limited a deletion. The counters don't say which; the relay
+   logs a warning with the Cloudflare error for each failed deletion.
 
 ### Disposable-host canary
 
