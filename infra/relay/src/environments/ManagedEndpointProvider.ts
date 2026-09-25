@@ -901,11 +901,26 @@ export const make = Effect.gen(function* () {
             // A connector still attached means the tunnel is not released. That
             // is the same answer as losing the claim: the caller keeps its config,
             // and the reaper deletes the tunnel once it has been down long enough.
+            // A delete whose response is lost (a timeout) may still have
+            // removed the tunnel. Ask Cloudflare before rolling back: if the
+            // tunnel is gone, the delete happened and the claim, including any
+            // released marker, must commit, since no later sweep can find
+            // this tunnel again to retry.
             return yield* deleteTunnel.pipe(
               Effect.as(true),
               Effect.catchIf(
                 (error) => isManagedEndpointTunnelInUse(error.cause),
                 () => Effect.succeed(false),
+              ),
+              Effect.catchTag("ManagedEndpointDeprovisioningFailed", (failure) =>
+                tunnels.get(tunnelId).pipe(
+                  Effect.flatMap(() => Effect.fail(failure)),
+                  Effect.catchTag("ManagedEndpointTunnelClientError", (lookupFailure) =>
+                    isManagedEndpointNotFound(lookupFailure.cause)
+                      ? Effect.succeed(true)
+                      : Effect.fail(failure),
+                  ),
+                ),
               ),
             );
           }),

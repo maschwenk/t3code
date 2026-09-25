@@ -1535,6 +1535,53 @@ describe("ManagedEndpointProvider", () => {
     }).pipe(Effect.provide(layer));
   });
 
+  it.effect.each([
+    { name: "the tunnel is gone", tunnelRemoved: true, released: true },
+    { name: "the tunnel still exists", tunnelRemoved: false, released: false },
+  ] as const)(
+    "resolves a delete whose response was lost by checking whether $name",
+    ({ tunnelRemoved, released }) => {
+      const persistent = makePersistentTunnelClient();
+      const lostResponse = new ManagedEndpointProvider.ManagedEndpointTunnelClientError({
+        operation: "delete",
+        tunnelId: "tunnel-id",
+        cause: { _tag: "TimeoutError" },
+      });
+      // Cloudflare may or may not have applied the delete before the
+      // response was lost; the client only sees the timeout.
+      const tunnelClient = ManagedEndpointProvider.ManagedEndpointTunnelClient.of({
+        ...persistent,
+        delete: (tunnelId) =>
+          (tunnelRemoved ? persistent.delete(tunnelId) : Effect.void).pipe(
+            Effect.andThen(Effect.fail(lostResponse)),
+          ),
+      });
+      const allocationCalls: AllocationCall[] = [];
+      const layer = layerProvider(tunnelClient, makeDnsClient(), makeAllocations(allocationCalls));
+
+      return Effect.gen(function* () {
+        const provider = yield* ManagedEndpointProvider.ManagedEndpointProvider;
+        const key = { userId: "user_ABC", environmentId: "env_ABC" } as const;
+        yield* provider.provision({
+          ...key,
+          origin: { localHttpHost: "127.0.0.1", localHttpPort: 3773 },
+        });
+        const result = yield* Effect.result(provider.release({ ...key, markReleased: true }));
+
+        if (released) {
+          // Succeeding commits the marked claim, so status can explain it.
+          expect(result).toMatchObject({ _tag: "Success", success: true });
+        } else {
+          // Failing rolls the claim back; the tunnel is still there to retry.
+          expect(result).toMatchObject({
+            _tag: "Failure",
+            failure: { stage: "delete-tunnel", cause: lostResponse },
+          });
+        }
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
   it.effect("surfaces non-not-found tunnel deletion failures when releasing", () => {
     const failure = new ManagedEndpointProvider.ManagedEndpointTunnelClientError({
       operation: "delete",
