@@ -212,8 +212,8 @@ column in its first deploy with this change; the legacy switch stays `off` until
 2. Set the legacy mode to `dry-run`, deploy, and read `wouldDeleteLegacy`, `legacyOver30Days`,
    `totalDown`, and `totalInactive` on the sweep spans for a day. `wouldDeleteLegacy` counts only the
    tunnels a sweep inspected, at most 500 per status. `totalDown` and `totalInactive` are Cloudflare's
-   counts of all idle tunnels in this stage, including ones the reaper skips, so they are an upper
-   bound on the backlog. The share of `wouldDeleteLegacy` in each sweep's `scanned` estimates how
+   counts of this stage's tunnels down for over five minutes and never connected for over an hour.
+   They include ones the reaper skips, so they are an upper bound on the backlog. The share of `wouldDeleteLegacy` in each sweep's `scanned` estimates how
    much of that total is eligible.
 3. Run the legacy steps of the disposable-host canary below.
 4. Before enabling, confirm the web and mobile builds that show the "update T3 Code on that computer"
