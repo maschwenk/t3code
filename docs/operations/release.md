@@ -210,8 +210,10 @@ A deleted legacy tunnel keeps its allocation, so its hostname is kept. When the 
 3. Run the legacy steps of the disposable-host canary below.
 4. Before enabling, confirm the web and mobile builds that show the "update T3 Code on that computer"
    message are live. Without them, a user whose older host lost its tunnel only sees it as offline.
-5. Set the legacy mode to `enabled`. One sweep deletes at most 100 tunnels, so a backlog of
-   20,000 takes about 17 hours. Watch `deletedLegacy`, `failed`, and `truncated`.
+5. Set the legacy mode to `enabled`. One sweep deletes at most 100 tunnels, four at a time, and
+   stops starting new deletions after 90 seconds. A backlog of 20,000 takes about 17 hours if each
+   sweep finishes its 100. Watch `deletedLegacy`, `attempted`, `failed`, and `truncated`; an
+   `attempted` well under 100 means sweeps are running out of time.
 
 ### Disposable-host canary
 
