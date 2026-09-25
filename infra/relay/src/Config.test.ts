@@ -2,7 +2,10 @@ import { expect, it } from "@effect/vitest";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 
-import { managedEndpointCleanupModeConfig } from "./Config.ts";
+import {
+  legacyManagedEndpointCleanupModeConfig,
+  managedEndpointCleanupModeConfig,
+} from "./Config.ts";
 
 it.effect.each([
   { name: "missing", env: {}, expected: "off" },
@@ -31,5 +34,18 @@ it.effect("rejects an invalid cleanup mode", () =>
 
     expect(error._tag).toBe("ConfigError");
     expect(error.message).toContain('Expected "off" | "dry-run" | "enabled"');
+  }),
+);
+
+it.effect("reads the legacy cleanup mode independently of the main one", () =>
+  Effect.gen(function* () {
+    const provider = ConfigProvider.fromEnv({
+      env: { RELAY_TUNNEL_CLEANUP_MODE: "enabled", RELAY_LEGACY_TUNNEL_CLEANUP_MODE: "dry-run" },
+    });
+    expect(yield* managedEndpointCleanupModeConfig.parse(provider)).toBe("enabled");
+    expect(yield* legacyManagedEndpointCleanupModeConfig.parse(provider)).toBe("dry-run");
+    expect(
+      yield* legacyManagedEndpointCleanupModeConfig.parse(ConfigProvider.fromEnv({ env: {} })),
+    ).toBe("off");
   }),
 );

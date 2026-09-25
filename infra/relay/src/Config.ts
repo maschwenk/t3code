@@ -2,6 +2,7 @@ import * as Config from "effect/Config";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 
@@ -12,14 +13,34 @@ export const ManagedEndpointCleanupMode = Schema.Literals(["off", "dry-run", "en
 export type ManagedEndpointCleanupMode = typeof ManagedEndpointCleanupMode.Type;
 const decodeManagedEndpointCleanupMode = Schema.decodeUnknownEffect(ManagedEndpointCleanupMode);
 
-export const managedEndpointCleanupModeConfig = Config.String("RELAY_TUNNEL_CLEANUP_MODE").pipe(
-  Config.withDefault("off"),
-  Config.map((value) => value.trim() || "off"),
-  Config.mapEffect((value) =>
-    decodeManagedEndpointCleanupMode(value).pipe(
-      Effect.mapError((error) => new Config.ConfigError(error)),
+export const RELAY_TUNNEL_CLEANUP_MODE = "RELAY_TUNNEL_CLEANUP_MODE";
+/** Separate switch for tunnels whose host never registered recovery. */
+export const RELAY_LEGACY_TUNNEL_CLEANUP_MODE = "RELAY_LEGACY_TUNNEL_CLEANUP_MODE";
+
+const cleanupModeConfig = (name: string) =>
+  Config.String(name).pipe(
+    Config.withDefault("off"),
+    Config.map((value) => value.trim() || "off"),
+    Config.mapEffect((value) =>
+      decodeManagedEndpointCleanupMode(value).pipe(
+        Effect.mapError((error) => new Config.ConfigError(error)),
+      ),
     ),
-  ),
+  );
+
+export const managedEndpointCleanupModeConfig = cleanupModeConfig(RELAY_TUNNEL_CLEANUP_MODE);
+export const legacyManagedEndpointCleanupModeConfig = cleanupModeConfig(
+  RELAY_LEGACY_TUNNEL_CLEANUP_MODE,
+);
+
+/**
+ * Overrides the 30-day legacy grace period, in minutes, so the disposable
+ * canary stage can exercise legacy cleanup. Ignored on the prod stage.
+ */
+export const RELAY_LEGACY_TUNNEL_GRACE_MINUTES = "RELAY_LEGACY_TUNNEL_GRACE_MINUTES";
+
+export const legacyTunnelGraceMinutesConfig = Config.option(
+  Config.Int(RELAY_LEGACY_TUNNEL_GRACE_MINUTES),
 );
 
 export interface ApnsCredentials {
@@ -45,6 +66,9 @@ export class RelayConfiguration extends Context.Service<
     readonly managedEndpointBaseDomain: string | undefined;
     readonly managedEndpointNamespace: string | undefined;
     readonly managedEndpointCleanupMode?: ManagedEndpointCleanupMode;
+    readonly legacyManagedEndpointCleanupMode?: ManagedEndpointCleanupMode;
+    /** Canary-only override of the legacy grace period; ignored on prod. */
+    readonly legacyTunnelGraceMinutes?: number;
   }
 >()("t3code-relay/Config/RelayConfiguration") {}
 
