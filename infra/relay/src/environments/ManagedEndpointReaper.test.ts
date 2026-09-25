@@ -77,6 +77,8 @@ function harness(input?: {
   readonly legacyTunnelGraceMinutes?: number;
   /** Simulated time each release takes, advanced on the test clock. */
   readonly releaseDelayMs?: number;
+  /** Simulated time each Cloudflare list request takes. */
+  readonly listDelayMs?: number;
 }) {
   const listRequests: ManagedEndpointProvider.ManagedEndpointTunnelListRequest[] = [];
   const deleted: string[] = [];
@@ -121,7 +123,10 @@ function harness(input?: {
         return Effect.succeed(found);
       }),
     list: (request) =>
-      Effect.sync(() => {
+      Effect.gen(function* () {
+        if (input?.listDelayMs !== undefined) {
+          yield* TestClock.adjust(input.listDelayMs);
+        }
         listRequests.push(request);
         const matching = remaining.filter((entry) => entry.status === request.status);
         const start = ((request.page ?? 1) - 1) * (request.perPage ?? 100);
@@ -749,6 +754,39 @@ describe("ManagedEndpointReaper", () => {
       expect(result.attempted).toBeLessThan(entries.length);
       expect(result.deleted).toBe(result.attempted);
     }).pipe(Effect.provide(state.layer));
+  });
+
+  it.effect("counts listing time against the deletion budget", () => {
+    const entries = Array.from({ length: 40 }, (_, index) =>
+      tunnel({
+        id: `slow-${index}`,
+        suffix: index.toString(16).padStart(16, "0"),
+        status: "down",
+        timestamp: "2026-08-25T11:00:00.000Z",
+      }),
+    );
+    const sweepWith = (listDelayMs: number) =>
+      Effect.gen(function* () {
+        yield* TestClock.setTime(NOW_MILLIS);
+        const reaper = yield* ManagedEndpointReaper.ManagedEndpointReaper;
+        return (yield* reaper.sweep).attempted;
+      }).pipe(
+        Effect.provide(
+          harness({
+            tunnels: entries,
+            allocations: recoverableOwners(entries),
+            releaseDelayMs: 10_000,
+            listDelayMs,
+          }).layer,
+        ),
+      );
+
+    return Effect.gen(function* () {
+      const fastListing = yield* sweepWith(0);
+      // Two list requests of 20 seconds each use 40 of the 90-second budget.
+      const slowListing = yield* sweepWith(20_000);
+      expect(slowListing).toBeLessThan(fastListing);
+    });
   });
 
   it.effect("continues past a page of older hosts to find recoverable tunnels", () => {

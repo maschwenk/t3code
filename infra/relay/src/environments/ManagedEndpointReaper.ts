@@ -34,8 +34,9 @@ const MANAGED_ENDPOINT_LEGACY_GRACE_PERIOD_DAYS = 7;
 // connection while it runs; keep this well under the 20-connection origin
 // limit that request handlers share.
 export const MANAGED_ENDPOINT_SWEEP_DELETE_CONCURRENCY = 4;
-// Stop starting deletions after this long, leaving room under the cron's
-// two-minute timeout to finish in-flight ones and record the counters.
+// Stop starting deletions this long after the sweep starts, leaving room under
+// the cron's two-minute timeout to finish in-flight ones and record the
+// counters. Counted from sweep start so slow listing eats into it.
 export const MANAGED_ENDPOINT_SWEEP_DELETE_BUDGET_MS = 90_000;
 
 export interface ManagedEndpointSweepResult {
@@ -190,6 +191,7 @@ export const make = Effect.gen(function* () {
     if ((mode === "off" && legacyMode === "off") || !namespace) {
       return emptyResult(mode, legacyMode);
     }
+    const sweepStartedAtMillis = yield* Clock.currentTimeMillis;
     // The override exists for the disposable canary stage; prod always
     // waits the full grace period.
     const legacyGraceMinutes =
@@ -365,8 +367,7 @@ export const make = Effect.gen(function* () {
       });
     }
 
-    const deleteDeadline =
-      (yield* Clock.currentTimeMillis) + MANAGED_ENDPOINT_SWEEP_DELETE_BUDGET_MS;
+    const deleteDeadline = sweepStartedAtMillis + MANAGED_ENDPOINT_SWEEP_DELETE_BUDGET_MS;
     let stopDeleting = false;
     yield* Effect.forEach(
       candidates,
