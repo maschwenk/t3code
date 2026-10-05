@@ -37,8 +37,12 @@ const TunnelPage = Schema.Struct({ result: Schema.Array(Tunnel) });
 const stageOf = (name: string | null | undefined) =>
   name ? name.slice(PREFIX.length).replace(/-[a-f0-9]{16}$/u, "") : "unknown";
 
+// Like the reaper: a down tunnel is aged from when it lost its connector, and a
+// never-connected (inactive) one from when it was created.
 const ageBucket = (tunnel: Tunnel, now: number) => {
-  const since = Date.parse(tunnel.conns_inactive_at ?? tunnel.created_at ?? "");
+  const since = Date.parse(
+    (tunnel.status === "down" ? tunnel.conns_inactive_at : tunnel.created_at) ?? "",
+  );
   if (Number.isNaN(since)) return "unknown";
   const days = (now - since) / DAY_MS;
   if (days > 90) return ">90d";
