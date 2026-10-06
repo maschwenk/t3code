@@ -828,8 +828,8 @@ export type RelayEnvironmentStatusValue = typeof RelayEnvironmentStatusValue.Typ
  * did not answer". `tunnel_released`: the relay deleted the environment's
  * idle tunnel, and the host needs a current T3 Code build to get a new one.
  */
-export const RelayEnvironmentOfflineReason = Schema.Literals(["tunnel_released"]);
-export type RelayEnvironmentOfflineReason = typeof RelayEnvironmentOfflineReason.Type;
+const RelayEnvironmentOfflineReason = Schema.Literals(["tunnel_released"]);
+type RelayEnvironmentOfflineReason = typeof RelayEnvironmentOfflineReason.Type;
 
 export const RelayEnvironmentStatusResponse = Schema.Struct({
   environmentId: EnvironmentId,
