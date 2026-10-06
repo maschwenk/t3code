@@ -23,6 +23,7 @@ import * as ServerConfig from "../config.ts";
 import * as DeviceService from "../device/DeviceService.ts";
 import * as HtmlRender from "../htmlRender/HtmlRender.ts";
 import * as PreviewBrowser from "../htmlRender/PreviewBrowser.ts";
+import * as McpDevHarness from "./McpDevHarness.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as OrchestratorMcpService from "./OrchestratorMcpService.ts";
 import { PreviewControlsToolkit } from "./toolkits/previewControls/tools.ts";
@@ -100,16 +101,18 @@ export const normalizeMcpHttpResponse = (
     : response;
 };
 
-const makeMcpAuthMiddleware = McpSessionRegistry.McpSessionRegistry.pipe(
-  Effect.map((registry): McpAuthMiddleware =>
-    Effect.fn("McpHttpServer.authenticateRequest")(function* (httpEffect) {
+const makeMcpAuthMiddleware = Effect.gen(function* () {
+  const registry = yield* McpSessionRegistry.McpSessionRegistry;
+  const resolveDevHarness = yield* McpDevHarness.makeResolve;
+  const authenticate: McpAuthMiddleware = Effect.fn("McpHttpServer.authenticateRequest")(
+    function* (httpEffect) {
       const request = yield* HttpServerRequest.HttpServerRequest;
       const authorization = request.headers.authorization;
       const token =
         authorization?.startsWith("Bearer ") === true
           ? authorization.slice("Bearer ".length).trim()
           : "";
-      const invocation = yield* registry.resolve(token);
+      const invocation = (yield* registry.resolve(token)) ?? (yield* resolveDevHarness(request));
       if (!invocation) {
         // Without this the only symptom of a dead credential is the agent
         // quietly losing the whole `t3-code` toolkit for the rest of its
@@ -123,12 +126,12 @@ const makeMcpAuthMiddleware = McpSessionRegistry.McpSessionRegistry.pipe(
         Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
         Effect.map(normalizeMcpHttpResponse),
       );
-    }),
-  ),
-  Effect.withSpan("McpHttpServer.makeAuthMiddleware"),
-);
+    },
+  );
+  return authenticate;
+}).pipe(Effect.withSpan("McpHttpServer.makeAuthMiddleware"));
 
-const layerMcpAuthMiddleware = HttpRouter.middleware<{
+export const layerMcpAuthMiddleware = HttpRouter.middleware<{
   provides: McpInvocationContext.McpInvocationContext;
 }>()(makeMcpAuthMiddleware).layer;
 

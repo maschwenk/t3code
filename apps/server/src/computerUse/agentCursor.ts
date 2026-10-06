@@ -83,6 +83,8 @@ const KNOWN_PROVIDERS: ReadonlyArray<readonly [string, string]> = [
   ["opencode", "OpenCode"],
   ["grok", "Grok"],
   ["antigravity", "Antigravity"],
+  // scripts/computer-use-dev.ts, through McpDevHarness.
+  ["dev-harness", "Dev harness"],
 ];
 /** A readable agent name from a provider instance or driver id, for when no display name is known. */
 export const fallbackAgentName = (id: string) =>

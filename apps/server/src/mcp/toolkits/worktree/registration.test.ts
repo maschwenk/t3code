@@ -26,6 +26,7 @@ import * as McpHttpServer from "../../McpHttpServer.ts";
 import * as McpSessionRegistry from "../../McpSessionRegistry.ts";
 import * as PreviewAutomationBroker from "../../PreviewAutomationBroker.ts";
 import * as DesktopTelemetryReceiver from "../../../resourceTelemetry/DesktopTelemetryReceiver.ts";
+import * as EnvironmentAuth from "../../../auth/EnvironmentAuth.ts";
 
 const layerStubServices = Layer.mergeAll(
   Layer.mock(Orchestrator.OrchestratorV2)({}),
@@ -42,6 +43,7 @@ const layerStubServices = Layer.mergeAll(
   Layer.mock(ProjectSetupScriptRunner.ProjectSetupScriptRunner)({}),
   Layer.mock(VcsStatusBroadcaster.VcsStatusBroadcaster)({}),
   DesktopTelemetryReceiver.layerTest(),
+  Layer.mock(EnvironmentAuth.EnvironmentAuth)({}),
 );
 
 const ToolsListPayload = Schema.fromJsonString(

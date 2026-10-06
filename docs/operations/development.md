@@ -137,6 +137,26 @@ export check's workspace selectors as more workspaces become clean. Review calle
 deleting code; production mode can also report development scripts and test fixtures.
 Runtime-discovered entrypoints and dependency exceptions belong in [knip.jsonc](../../knip.jsonc).
 
+### Computer use
+
+macOS grants Accessibility and Screen Recording to the app that launched a process, so a
+coding agent's own shell cannot exercise computer use. On macOS, the running dev desktop app's
+backend holds the grants. [computer-use-dev.ts](../../scripts/computer-use-dev.ts) calls that
+backend's computer tools as the "Dev harness" agent:
+
+```sh
+node scripts/computer-use-dev.ts smoke                      # Calculator computes 7 + 8 = 15
+node scripts/computer-use-dev.ts snapshot Calculator
+node scripts/computer-use-dev.ts action '{"steps":[{"ref":12,"action":{"kind":"press"}}]}'
+node scripts/computer-use-dev.ts snapshot TextEdit --image /tmp/textedit.png
+```
+
+It reads the server origin from the main checkout's `.t3` (override with `--home`), issues a
+day-long admin session for itself, and keeps the token in the system temp directory.
+`action` defaults to the latest snapshot the harness took. Only development servers accept
+the harness, and only over direct loopback requests. Computer access must be enabled in the
+app's settings, with the target app allowed.
+
 ## Desktop artifacts
 
 Local artifact builds are unsigned by default and write to `release/`:
