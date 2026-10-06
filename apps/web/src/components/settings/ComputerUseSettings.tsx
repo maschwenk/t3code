@@ -13,7 +13,7 @@ export function ComputerUseSettings() {
         {...searchableSetting("agent-computer-access")}
         serverScoped
         settingKeys={["enableAgentComputerAccess"]}
-        description="Let agents inspect and operate allowed macOS apps on this environment's machine, including when you connect remotely. Agents work in the background with their own cursor, so your mouse and focus stay with you. Requires macOS Accessibility permission. Turning this off blocks the next tool call."
+        description="Let agents inspect and operate allowed macOS apps on this environment's machine, including when you connect remotely. Accessibility controls work in the background with an agent cursor. Other gestures follow the pointer setting below. Requires macOS Accessibility permission. Turning this off stops further actions."
         control={
           <ScopedSwitch
             settingKeys={["enableAgentComputerAccess"]}
@@ -54,7 +54,7 @@ export function ComputerUseSettings() {
         {...searchableSetting("computer-screen-capture")}
         serverScoped
         settingKeys={["enableComputerScreenCapture"]}
-        description="Let agents capture the foreground app window. Images can include overlapping windows and sensitive content. Requires macOS Screen Recording permission. Keep this off for text-only control."
+        description="Let agents capture a window of an allowed app, even behind other windows. Both this switch and macOS Screen Recording permission must be enabled. Keep this off for text-only control."
         control={
           <ScopedSwitch
             settingKeys={["enableComputerScreenCapture"]}
