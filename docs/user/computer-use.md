@@ -8,6 +8,8 @@ In **Settings → Integrations → Computer use**, select the environment, add e
 **Allowed computer apps**, and enable **Agent computer access**. Start with Calculator or a disposable test
 app. Open the app on the host first. macOS must grant Accessibility permission to the host runtime;
 T3 does not grant or bypass operating-system permissions for you.
+The native accessibility library may also require macOS Screen & System Audio Recording permission
+for text-only snapshots. This OS permission does not enable T3's separate screen-capture setting.
 
 Ask Claude to inspect the app and perform a small task. Agents can inspect controls, press buttons,
 enter text, and invoke the accessibility actions exposed by a control. Actions use a fresh observation

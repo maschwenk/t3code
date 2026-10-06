@@ -21,6 +21,7 @@ export class Driver extends Context.Service<
 
 const decodeResponse = Schema.decodeUnknownSync(Schema.fromJsonString(WorkerResponse));
 const encodeRequest = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+const isComputerUseError = Schema.is(ComputerUseError);
 
 const make = Effect.gen(function* () {
   const argv = yield* HostProcessArguments;
@@ -35,7 +36,12 @@ const make = Effect.gen(function* () {
             // Works in source, npm bundles, and the single executable. No prompt or
             // user text is passed in argv, and no inherited --watch/--inspect flags.
             if (!isExecutable && !argv[1]) {
-              reject(new Error("Missing server entrypoint"));
+              reject(
+                new ComputerUseError({
+                  code: "failed",
+                  detail: { stage: "worker_start", reason: "unknown" },
+                }),
+              );
               return;
             }
             const args = isExecutable ? ["__computer-use"] : [argv[1]!, "__computer-use"];
@@ -61,18 +67,35 @@ const make = Effect.gen(function* () {
             child.on("error", reject);
             child.on("close", (code) => {
               if (code !== 0) {
-                reject(new Error("Computer-use worker failed"));
+                reject(
+                  new ComputerUseError({
+                    code: "failed",
+                    detail: { stage: "worker_exit", reason: "unknown" },
+                  }),
+                );
                 return;
               }
               try {
                 resolve(decodeResponse(output));
               } catch {
-                reject(new Error("Invalid computer-use worker response"));
+                reject(
+                  new ComputerUseError({
+                    code: "failed",
+                    detail: { stage: "worker_response", reason: "unknown" },
+                  }),
+                );
               }
             });
             child.stdin.end(encodeRequest(request));
           }),
-        catch: (cause) => new ComputerUseError({ code: "failed", cause }),
+        catch: (cause) =>
+          isComputerUseError(cause)
+            ? cause
+            : new ComputerUseError({
+                code: "failed",
+                cause,
+                detail: { stage: "worker_start", reason: "unknown" },
+              }),
       }),
   });
 });

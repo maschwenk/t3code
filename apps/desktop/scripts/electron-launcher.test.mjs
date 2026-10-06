@@ -1,11 +1,13 @@
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import * as NodeChildProcess from "node:child_process";
 
 import { assert, describe, it } from "vite-plus/test";
 
 import {
   makeDevelopmentEnvironmentScript,
+  makeDevelopmentBootstrap,
   makeDevelopmentLauncherScript,
   resolveElectronBinaryPath,
   resolveMacBundleInfoPlistStrings,
@@ -16,6 +18,39 @@ import {
 } from "./electron-launcher.mjs";
 
 describe("electron development launcher", () => {
+  it("boots without shell arguments and preserves the live runner environment", () => {
+    const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-bootstrap-"));
+    try {
+      const environmentFilePath = NodePath.join(directory, "env.json");
+      const mainEntryPath = NodePath.join(directory, "main.cjs");
+      const bootstrapPath = NodePath.join(directory, "index.cjs");
+      NodeFS.writeFileSync(
+        environmentFilePath,
+        JSON.stringify({ T3_TEST_LIVE: "fallback", T3_TEST_FALLBACK: "from file" }),
+      );
+      NodeFS.writeFileSync(
+        mainEntryPath,
+        "process.stdout.write(JSON.stringify({ live: process.env.T3_TEST_LIVE, fallback: process.env.T3_TEST_FALLBACK, args: process.argv.slice(2) }));",
+      );
+      NodeFS.writeFileSync(
+        bootstrapPath,
+        makeDevelopmentBootstrap({ mainEntryPath, desktopRoot: directory, environmentFilePath }),
+      );
+      const result = NodeChildProcess.spawnSync(
+        process.execPath,
+        [bootstrapPath, "t3code-dev://test"],
+        { env: { ...process.env, T3_TEST_LIVE: "runner", T3_TEST_FALLBACK: "" }, encoding: "utf8" },
+      );
+      assert.equal(result.status, 0, result.stderr);
+      assert.deepEqual(JSON.parse(result.stdout), {
+        live: "runner",
+        fallback: "from file",
+        args: ["t3code-dev://test", `--t3code-dev-root=${directory}`],
+      });
+    } finally {
+      NodeFS.rmSync(directory, { recursive: true, force: true });
+    }
+  });
   it("uses captured values only as fallbacks for a live runner environment", () => {
     const environmentScript = makeDevelopmentEnvironmentScript({
       VITE_DEV_SERVER_URL: "http://127.0.0.1:8526",

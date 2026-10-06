@@ -40,13 +40,18 @@ const make = Effect.gen(function* () {
   const receipts = new Map<string, Receipt>();
   const fail = (code: ComputerUseError["code"]) => new ComputerUseError({ code });
   const execute = (request: WorkerRequest) =>
-    driver
-      .execute(request)
-      .pipe(
-        Effect.flatMap((result) =>
-          result.ok ? Effect.succeed(result) : Effect.fail(fail(result.code)),
-        ),
-      );
+    driver.execute(request).pipe(
+      Effect.flatMap((result) =>
+        result.ok
+          ? Effect.succeed(result)
+          : Effect.fail(
+              new ComputerUseError({
+                code: result.code,
+                ...("detail" in result ? { detail: result.detail } : {}),
+              }),
+            ),
+      ),
+    );
   const status = settings.getSettings.pipe(
     Effect.map((current) => ({
       enabled: current.enableAgentComputerAccess,

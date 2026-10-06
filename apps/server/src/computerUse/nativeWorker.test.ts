@@ -2,7 +2,56 @@
 import * as NodeChildProcess from "node:child_process";
 import * as NodeURL from "node:url";
 import { expect, it } from "@effect/vitest";
-import { nativeFailure } from "./nativeWorker.ts";
+import { launchServicesPids, nativeFailure } from "./nativeWorker.ts";
+import { ComputerUseError } from "./protocol.ts";
+
+// Trimmed `lsappinfo list` output from macOS 26.
+const lsappinfoList = `
+ 2) "universalaccessd" ASN:0x0-0x8008: 
+    bundleID=[ NULL ] 
+    pid = 617 !signalled type="BackgroundOnly" flavor=3 Version=[ NULL ]  fileType="????" creator="????" Arch=ARM64 
+ 5) "Google Chrome" ASN:0x0-0x18018: 
+    bundleID="com.google.Chrome"
+    pid = 687 type="Foreground" flavor=3 Version="7977.77" fileType="APPL" creator="rimZ" Arch=ARM64 
+29) "Google Chrome" ASN:0x0-0xb52b52: 
+    bundleID="com.google.Chrome"
+    pid = 44889 type="BackgroundOnly" flavor=2 Version="8010.36" fileType="APPL" creator="rimZ" Arch=ARM64 
+62) "Rectangle" ASN:0x0-0x4809805: 
+    pid = 30619 type="UIElement" flavor=3 Version="100" fileType="APPL" creator="????" Arch=ARM64 
+179) "Calculator Helper" ASN:0x0-0x64043ff: 
+    pid = 33090 type="UIElement" flavor=3 Version="225" fileType="APPL" Arch=ARM64 sandboxed 
+180) "Calculator" ASN:0x0-0x64043fe: 
+    bundleID="com.apple.calculator"
+    pid = 33082 type="Foreground" flavor=3 Version="225" fileType="APPL" Arch=ARM64 sandboxed 
+`;
+
+it.each([
+  ["Calculator", [33082]],
+  ["Google Chrome", [687]],
+  ["Rectangle", [30619]],
+  ["universalaccessd", []],
+  ["Calc", []],
+])("resolves %s to GUI app pids without contacting other apps", (name, pids) => {
+  expect(launchServicesPids(lsappinfoList, name)).toEqual(pids);
+});
+
+it.each([
+  ["Accessibility", "accessibility_permission"],
+  ["Screen Recording", "screen_recording_permission"],
+])("unwraps the upstream provider initialization failure for %s", (permission, reason) => {
+  const cause = new Error(
+    `Platform error (-1): Permission denied: Enable ${permission} in System Settings; private app text`,
+  );
+  cause.name = "PlatformError";
+  const response = nativeFailure(cause, "app_lookup");
+  expect(response).toEqual({
+    ok: false,
+    code: "permissions",
+    detail: { stage: "app_lookup", reason },
+  });
+  if (response.ok) throw new Error("Expected permission failure");
+  expect(new ComputerUseError(response).message).not.toContain("private app text");
+});
 
 it.each(["PermissionDeniedError", "AccessibilityNotEnabledError"])(
   "reports %s as a permission blocker without exposing native app text",
@@ -47,6 +96,10 @@ it.each([
   );
   expect(result.error).toBeUndefined();
   expect(result.status).toBe(0);
-  expect(result.stdout).toBe('{"ok":false,"code":"failed"}');
+  expect(JSON.parse(result.stdout)).toEqual({
+    ok: false,
+    code: "failed",
+    detail: { stage: "request", reason: "unknown" },
+  });
   expect(result.stderr).not.toContain("private-invalid-input");
 });

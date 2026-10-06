@@ -78,6 +78,31 @@ export const NativeSnapshot = Schema.Struct({
 });
 export type NativeSnapshot = typeof NativeSnapshot.Type;
 
+export const FailureStage = Schema.Literals([
+  "request",
+  "load",
+  "app_lookup",
+  "element_tree",
+  "action",
+  "capture",
+  "worker_start",
+  "worker_exit",
+  "worker_response",
+]);
+export type FailureStage = typeof FailureStage.Type;
+export const FailureDetail = Schema.Struct({
+  stage: FailureStage,
+  reason: Schema.Literals([
+    "type_error",
+    "invalid_argument",
+    "timeout",
+    "native_error",
+    "unknown",
+    "accessibility_permission",
+    "screen_recording_permission",
+  ]),
+});
+
 export const WorkerResponse = Schema.Union([
   Schema.Struct({ ok: Schema.Literal(true), snapshot: Schema.optionalKey(NativeSnapshot) }),
   Schema.Struct({
@@ -85,12 +110,14 @@ export const WorkerResponse = Schema.Union([
     code: Schema.Literals([
       "unavailable",
       "permissions",
+      "app_not_running",
       "target_changed",
       "unsupported_action",
       "capture_requires_foreground",
       "input_requires_foreground",
       "failed",
     ]),
+    detail: Schema.optionalKey(FailureDetail),
   }),
 ]);
 export type WorkerResponse = typeof WorkerResponse.Type;
@@ -105,6 +132,7 @@ export class ComputerUseError extends Schema.TaggedError<ComputerUseError>()("Co
     "invalid_input",
     "unavailable",
     "permissions",
+    "app_not_running",
     "target_changed",
     "unsupported_action",
     "capture_requires_foreground",
@@ -112,6 +140,7 @@ export class ComputerUseError extends Schema.TaggedError<ComputerUseError>()("Co
     "failed",
   ]),
   cause: Schema.optional(Schema.Defect()),
+  detail: Schema.optionalKey(FailureDetail),
 }) {
   override get message(): string {
     switch (this.code) {
@@ -128,9 +157,15 @@ export class ComputerUseError extends Schema.TaggedError<ComputerUseError>()("Co
       case "invalid_input":
         return "Invalid computer snapshot request. Supply an app name and an optional includeImage boolean.";
       case "permissions":
+        if (this.detail?.reason === "screen_recording_permission")
+          return "The native accessibility library requires macOS Screen & System Audio Recording permission even for text-only snapshots. Ask the user to grant it to the T3 host on that machine. T3's separate screenshot setting remains off unless enabled.";
+        if (this.detail?.reason === "accessibility_permission")
+          return "macOS has not granted Accessibility permission to the process running the T3 native helper. Ask the user to grant it to the T3 host on that machine.";
         return "The environment needs operating-system Accessibility or Screen Recording permission. Ask the user to grant it on that machine.";
       case "target_changed":
         return "The app or element changed. Take a fresh computer_snapshot before acting.";
+      case "app_not_running":
+        return "That app is not running on the environment machine. Ask the user to open it, then take a fresh computer_snapshot.";
       case "unsupported_action":
         return "This element does not support that accessibility action. Use an action listed in a fresh snapshot.";
       case "capture_requires_foreground":
@@ -140,7 +175,7 @@ export class ComputerUseError extends Schema.TaggedError<ComputerUseError>()("Co
       case "unavailable":
         return "Native computer use is currently supported on macOS environments only.";
       default:
-        return "Computer use did not complete. An action may already have happened; inspect a fresh snapshot before trying again.";
+        return `Computer use did not complete${this.detail ? ` (${this.detail.stage}: ${this.detail.reason})` : ""}. An action may already have happened; inspect a fresh snapshot before trying again.`;
     }
   }
 }
