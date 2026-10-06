@@ -7,17 +7,17 @@
  * lavender, white and blue stripes, about 1.7x the size of the system pointer.
  */
 // SVG units: the outline's outer tip sits at (20,20); 1 unit = SCALE px.
-const SCALE = 0.06;
+const SCALE = 0.07;
 const ARROW = "M39 59 L408 370 L186 371 L39 552 Z";
 
 export const OVERLAY_HTML = `<!doctype html><meta charset="utf-8"><style>
 html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent;pointer-events:none;user-select:none;-webkit-user-select:none}
 #c{position:absolute;left:0;top:0;will-change:transform}
 #k{position:absolute;left:0;top:0;opacity:0;transform-origin:0 0}
-#arrow{position:absolute;left:${-20 * SCALE}px;top:${-20 * SCALE}px;width:${480 * SCALE}px;height:${620 * SCALE}px;transform-origin:${20 * SCALE}px ${20 * SCALE}px;filter:drop-shadow(0 1.5px 2.5px rgba(0,0,0,.38))}
+#arrow{position:absolute;overflow:visible;left:${-20 * SCALE}px;top:${-20 * SCALE}px;width:${480 * SCALE}px;height:${620 * SCALE}px;transform-origin:${20 * SCALE}px ${20 * SCALE}px;filter:drop-shadow(0 2px 3px rgba(0,0,0,.4))}
 .ring{position:absolute;left:-18px;top:-18px;width:36px;height:36px;box-sizing:border-box;border-radius:50%;border:2.5px solid #c79ff7;box-shadow:0 0 0 1px rgba(34,34,34,.35);opacity:0}
-#pill{position:absolute;left:22px;top:30px;padding:3px 8px;border-radius:999px;background:#222;color:#fff;font:600 11px/14px -apple-system,BlinkMacSystemFont,sans-serif;white-space:nowrap;box-shadow:0 1px 3px rgba(0,0,0,.3);opacity:0}
-#scroll{position:absolute;left:-12px;top:-12px;width:24px;height:24px;opacity:0}
+#pill{position:absolute;left:26px;top:36px;padding:3px 8px;border-radius:999px;background:#222;border:1px solid rgba(255,255,255,.35);color:#fff;font:600 11px/14px -apple-system,BlinkMacSystemFont,sans-serif;white-space:nowrap;box-shadow:0 1px 3px rgba(0,0,0,.3);opacity:0}
+#scroll{position:absolute;left:-34px;top:2px;width:24px;height:24px;opacity:0}
 #hl{position:absolute;left:0;top:0;box-sizing:border-box;border-radius:7px;border:2px solid #c79ff7;box-shadow:0 0 0 3px rgba(142,205,240,.45);opacity:0;will-change:opacity}
 </style>
 <div id="hl"></div>
@@ -29,6 +29,7 @@ html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent
 <defs><linearGradient id="stripes" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="360" y2="480">
 <stop offset=".353" stop-color="#c79ff7"/><stop offset=".353" stop-color="#fff"/><stop offset=".387" stop-color="#fff"/><stop offset=".387" stop-color="#8ecdf0"/><stop offset=".578" stop-color="#8ecdf0"/><stop offset=".578" stop-color="#fff"/><stop offset=".615" stop-color="#fff"/><stop offset=".615" stop-color="#c79ff7"/>
 </linearGradient></defs>
+<path d="${ARROW}" fill="none" stroke="rgba(255,255,255,.92)" stroke-width="66" stroke-linejoin="miter" stroke-miterlimit="8"/>
 <path d="${ARROW}" fill="url(#stripes)" stroke="#222" stroke-width="38" stroke-linejoin="miter" stroke-miterlimit="8"/>
 </svg>
 <div id="pill"></div>
