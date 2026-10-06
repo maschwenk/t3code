@@ -171,9 +171,6 @@ export function PreviewView({
   // as "every profile".
   const activeProfileId = snapshot?.profileId ?? DEFAULT_BROWSER_PROFILE_ID;
   const activeProfileName = previewProfileName(browserDefaults.profiles, activeProfileId);
-  const panelRect = useBrowserSurfaceStore((state) =>
-    runtimeTabId ? (state.byTabId[runtimeTabId]?.rect ?? null) : null,
-  );
 
   const navUrl = navStatus._tag === "Success" ? navStatus.url : null;
   const navTitle = navStatus._tag === "Success" ? navStatus.title : null;
@@ -290,7 +287,9 @@ export function PreviewView({
       runtimeTabId,
       browserResponsiveViewportForToggle({
         defaults: browserDefaults,
-        panelRect,
+        // Read on click: subscribing would re-render this view on every frame
+        // the panel is resized, since the surface rect changes with it.
+        panelRect: useBrowserSurfaceStore.getState().byTabId[runtimeTabId]?.rect ?? null,
         zoomFactor: desktopOverlay?.zoomFactor,
       }),
     ).catch(() => undefined);

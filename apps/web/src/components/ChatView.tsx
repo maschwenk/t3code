@@ -233,7 +233,6 @@ import { subscribeSnapShotComposerFocus } from "../lib/desktopSnapShot";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { useTurnDiffSummaries } from "../hooks/useTurnDiffSummaries";
 import { useElementWidth } from "../hooks/useElementWidth";
-import { usePreviewPanelInlineSize } from "../hooks/usePreviewPanelInlineSize";
 import {
   RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY,
   type ThreadPanelPresentation,
@@ -2195,10 +2194,9 @@ export default function ChatView(props: ChatViewProps) {
     [activeThread],
   );
   const activeThreadKey = activeThreadRef ? scopedThreadKey(activeThreadRef) : null;
-  const previewPanelInlineSize = usePreviewPanelInlineSize(undefined, {
-    containerWidth: workspaceLayoutWidth ?? undefined,
-    widthStorageKey: `t3code:preview-panel-width:${activeThreadKey}`,
-  });
+  // The panel owns its width state (see PreviewPanelShell): held here, every
+  // frame of a resize drag would re-render this whole view.
+  const previewPanelWidthStorageKey = `t3code:preview-panel-width:${activeThreadKey}`;
   const activeThreadShell = useThreadShell(isServerThread ? activeThreadRef : null);
   const timelineThreadError =
     serverRuntime?.status === "failed" &&
@@ -11535,7 +11533,8 @@ export default function ChatView(props: ChatViewProps) {
           mode="inline"
           open={rightPanelOpen}
           maximized={rightPanelMaximized}
-          inlineSize={previewPanelInlineSize}
+          widthStorageKey={previewPanelWidthStorageKey}
+          containerWidth={workspaceLayoutWidth ?? undefined}
           surfaces={renderedRightPanelSurfaces}
           environmentId={activeThreadRef.environmentId}
           activeSurfaceId={renderedRightPanelSurface?.id ?? null}
@@ -11581,7 +11580,8 @@ export default function ChatView(props: ChatViewProps) {
         >
           <RightPanelTabs
             mode="sheet"
-            inlineSize={previewPanelInlineSize}
+            widthStorageKey={previewPanelWidthStorageKey}
+            containerWidth={workspaceLayoutWidth ?? undefined}
             // Same effective inset as the closed-state titlebar controls
             // (pr-3 in the tab bar plus this pixel equals the absolute
             // right inset plus mr-px), so the cluster does not creep when
