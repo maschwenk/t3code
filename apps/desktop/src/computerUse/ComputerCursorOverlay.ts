@@ -6,6 +6,7 @@ import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as Electron from "electron";
 
+import { markOverlayWindow } from "../electron/overlayWindows.ts";
 import * as DesktopTelemetryPublisher from "../telemetry/DesktopTelemetryPublisher.ts";
 import { glideKeyframes, planGlide, sampleGlide, type Glide, type Point } from "./cursorMotion.ts";
 import { OVERLAY_HTML } from "./overlayPage.ts";
@@ -54,6 +55,7 @@ function createOverlay(bounds: Electron.Rectangle): Overlay {
       spellcheck: false,
     },
   });
+  markOverlayWindow(window);
   window.setAlwaysOnTop(true, "screen-saver");
   window.setVisibleOnAllWorkspaces(true, {
     visibleOnFullScreen: true,

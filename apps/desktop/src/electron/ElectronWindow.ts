@@ -20,6 +20,7 @@ import {
   loadWindowsForegroundApi,
 } from "./WindowsForeground.ts";
 import { startWindowsForegroundFocusThread } from "./WindowsForegroundFocusThread.ts";
+import { isOverlayWindow } from "./overlayWindows.ts";
 
 function windowsForegroundFocusTarget(window: Electron.BrowserWindow) {
   return {
@@ -144,7 +145,7 @@ export const make = Effect.gen(function* () {
   yield* Effect.addFinalizer(() => Effect.sync(() => windowsForegroundFocus?.close()));
   const mainWindowRef = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none());
 
-  const listWindows = Effect.try({
+  const listAllWindows = Effect.try({
     try: () => Electron.BrowserWindow.getAllWindows(),
     catch: (cause) =>
       new ElectronWindowOperationError({
@@ -155,6 +156,9 @@ export const make = Effect.gen(function* () {
         cause,
       }),
   }).pipe(Effect.orDie);
+  const listWindows = listAllWindows.pipe(
+    Effect.map((windows) => windows.filter((window) => !isOverlayWindow(window))),
+  );
 
   const isWindowDestroyed = (window: Electron.BrowserWindow) =>
     Effect.try({
@@ -348,7 +352,7 @@ export const make = Effect.gen(function* () {
       }),
     destroyAll: Effect.gen(function* () {
       let firstFailure: Cause.Cause<never> | undefined;
-      for (const window of yield* listWindows) {
+      for (const window of yield* listAllWindows) {
         const exit = yield* Effect.exit(
           Effect.try({
             try: () => window.destroy(),

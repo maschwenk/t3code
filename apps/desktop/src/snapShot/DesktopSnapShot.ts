@@ -76,6 +76,7 @@ import {
   type AccessibilityProcessPool,
   makeSnapShotAccessibilityProcessPool,
 } from "./SnapShotAccessibilityProcess.ts";
+import { isOverlayWindow } from "../electron/overlayWindows.ts";
 import * as MacPermissions from "../permissions/MacPermissions.ts";
 import { MAC_PERMISSION_SETTINGS_URLS } from "../permissions/MacPermission.ts";
 import { showWindowsCaptureOverlay } from "./WindowsCaptureFeedback.ts";
@@ -426,7 +427,9 @@ async function captureSource({
   let linuxActivationFailure: { readonly cause: unknown } | undefined;
   const destinationWindow =
     Electron.BrowserWindow.getFocusedWindow() ??
-    Electron.BrowserWindow.getAllWindows().find((window) => !window.isDestroyed());
+    Electron.BrowserWindow.getAllWindows().find(
+      (window) => !window.isDestroyed() && !isOverlayWindow(window),
+    );
   const destinationWindowBounds = destinationWindow?.getBounds();
   {
     const revealPreparation =
