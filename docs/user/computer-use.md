@@ -26,7 +26,8 @@ stays where you left it.
 - **Act.** Agents press buttons, enter text, choose menu commands, invoke the actions a control
   offers (expand, increment, scroll into view, and so on), scroll by pages, and press keys such as
   Return, Tab, Escape, arrows, and shortcuts like ⌘N. Keys go only to the target app, not to the
-  app you are typing in.
+  app you are typing in. The Apple menu and the app's Services menu stay out of reach, shortcuts
+  included, because they act outside the allowed app.
 - **Several steps at once.** An agent can send up to 20 steps in one call, such as entering a
   calculation or filling a field and pressing Return. Each step checks that its control is still
   the one the agent saw, and the batch stops at the first change it cannot account for. The agent
@@ -43,8 +44,9 @@ app forward only when you are not using the machine. In a background Mac app, a 
 matching menu command; shortcuts that act on a text selection, such as Select All, may do nothing
 until the app is in front.
 
-Turn off Agent computer access to block further calls, or remove an app from the allowlist to
-revoke access to it. These grants apply to agents across the selected environment.
+Turn off Agent computer access to block further calls and stop the remaining steps of one in
+progress, or remove an app from the allowlist to revoke access to it. These grants apply to agents
+across the selected environment.
 
 **Allow screen captures** is a separate opt-in that requires Screen Recording permission. A capture
 shows only the target app's window, even when other windows cover it. Keep it off for text-only
