@@ -240,6 +240,8 @@ function scheduledTaskSummary(task: ScheduledTask): OrchestratorMcpScheduledTask
     status: scheduledTaskLifecycle(task),
     nextRunAt: task.nextRunAt,
     endsAt: task.endsAt ?? null,
+    nextRunLocal: localTimeLabel(task.nextRunAt),
+    endsAtLocal: localTimeLabel(task.endsAt ?? null),
     maxRuns: task.maxRuns ?? null,
     runCount: task.runCount,
     lastRunStatus: task.lastRunStatus,
@@ -249,6 +251,22 @@ function scheduledTaskSummary(task: ScheduledTask): OrchestratorMcpScheduledTask
       ? {}
       : { webhookSignature: task.webhook.hasSecret ? "set" : "none" }),
   };
+}
+
+const LOCAL_TIME_FORMAT = new Intl.DateTimeFormat("en-US", {
+  weekday: "short",
+  month: "short",
+  day: "numeric",
+  hour: "numeric",
+  minute: "2-digit",
+  timeZoneName: "short",
+});
+
+/** An instant in the server's zone, which is the user's own for a local environment. */
+function localTimeLabel(iso: string | null): string | null {
+  if (iso === null) return null;
+  const ms = Date.parse(iso);
+  return Number.isFinite(ms) ? LOCAL_TIME_FORMAT.format(ms) : null;
 }
 
 /**

@@ -571,6 +571,12 @@ export const OrchestratorMcpScheduledTask = Schema.Struct({
   }),
   nextRunAt: Schema.NullOr(IsoDateTime),
   endsAt: Schema.NullOr(IsoDateTime),
+  nextRunLocal: Schema.NullOr(Schema.String).annotate({
+    description: "nextRunAt in the environment's local time zone; quote this to the user.",
+  }),
+  endsAtLocal: Schema.NullOr(Schema.String).annotate({
+    description: "endsAt in the environment's local time zone; quote this to the user.",
+  }),
   maxRuns: Schema.NullOr(Schema.Int),
   runCount: Schema.Int,
   lastRunStatus: ScheduledTaskRunStatus,

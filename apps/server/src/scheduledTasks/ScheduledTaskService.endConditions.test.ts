@@ -2,6 +2,7 @@ import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { assert, it } from "@effect/vitest";
 import { ScheduledTaskUpsertInput, scheduledTaskLifecycle } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
@@ -52,7 +53,7 @@ it.effect("posts a thread-bound schedule into its thread until the end time, the
           prompt: "Tell me the current time.",
           enabled: true,
           schedule: { type: "interval", everyMs: 60_000 },
-          endsAt: new Date(START + 3 * 60_000).toISOString(),
+          endsAt: DateTime.formatIso(DateTime.makeUnsafe(START + 3 * 60_000)),
           projectId: "project-end-time",
           threadId: "thread-end-time",
           workspaceStrategy: { type: "root" },
@@ -62,7 +63,7 @@ it.effect("posts a thread-bound schedule into its thread until the end time, the
           creationSource: "mcp",
         }),
       );
-      assert.equal(created.task.nextRunAt, new Date(START + 60_000).toISOString());
+      assert.equal(created.task.nextRunAt, DateTime.formatIso(DateTime.makeUnsafe(START + 60_000)));
 
       // "Every minute for the next 3 minutes" is three runs, the last exactly
       // at the end, even though each run starts a little after its slot.
@@ -87,7 +88,7 @@ it.effect("posts a thread-bound schedule into its thread until the end time, the
           prompt: "Tell me the current time.",
           enabled: true,
           schedule: { type: "interval", everyMs: 60_000 },
-          endsAt: new Date(START + 20 * 60_000).toISOString(),
+          endsAt: DateTime.formatIso(DateTime.makeUnsafe(START + 20 * 60_000)),
           projectId: "project-end-time",
           threadId: "thread-end-time",
           workspaceStrategy: { type: "root" },
@@ -138,7 +139,7 @@ it.effect("stops after its run budget", () =>
 it.effect("ends a schedule whose end passed while the server was down without running it", () =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
-    const stored = new Date(START).toISOString();
+    const stored = DateTime.formatIso(DateTime.makeUnsafe(START));
     yield* sql`INSERT INTO scheduled_tasks ${sql.insert({
       task_id: "scheduled-task:missed-end",
       title: "Watch deploys",
@@ -155,12 +156,12 @@ it.effect("ends a schedule whose end passed while the server was down without ru
       creation_source: "mcp",
       created_at: stored,
       updated_at: stored,
-      next_run_at: new Date(START + 15 * 60_000).toISOString(),
+      next_run_at: DateTime.formatIso(DateTime.makeUnsafe(START + 15 * 60_000)),
       last_run_at: null,
       last_run_status: "never",
       last_run_error: null,
       run_count: 0,
-      ends_at: new Date(START + 20 * 60_000).toISOString(),
+      ends_at: DateTime.formatIso(DateTime.makeUnsafe(START + 20 * 60_000)),
     })}`;
     // The server comes back an hour later, long after the end.
     yield* TestClock.setTime(START + 60 * 60_000);
