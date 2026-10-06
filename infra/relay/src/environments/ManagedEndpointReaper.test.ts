@@ -498,12 +498,12 @@ describe("ManagedEndpointReaper", () => {
 
   describe("legacy cleanup", () => {
     const legacyTunnels = [
-      // Down for 10 days: inside the legacy grace period.
+      // Down for 5 days: inside the legacy grace period.
       tunnel({
         id: "legacy-recent",
         suffix: "1111111111111111",
         status: "down",
-        timestamp: "2026-08-15T12:00:00.000Z",
+        timestamp: "2026-08-20T12:00:00.000Z",
       }),
       // Down for 40 days: past it.
       tunnel({
@@ -572,10 +572,10 @@ describe("ManagedEndpointReaper", () => {
           deleted: 2,
         });
         expect([...state.deleted].sort()).toEqual(["legacy-never", "legacy-old"]);
-        // The release re-checks each tunnel against the 30-day cutoff, not
+        // The release re-checks each tunnel against the 7-day cutoff, not
         // the 5-minute cutoff used for recoverable tunnels.
         for (const release of state.releases) {
-          expect(release.expectedInactiveBefore).toBe("2026-07-26T12:00:00.000Z");
+          expect(release.expectedInactiveBefore).toBe("2026-08-18T12:00:00.000Z");
         }
       }).pipe(Effect.provide(state.layer));
     });

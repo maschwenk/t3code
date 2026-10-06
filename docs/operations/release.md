@@ -191,7 +191,7 @@ recovery endpoints deployed while current server builds are in use. The nullable
 
 A legacy tunnel belongs to a host that never registered recovery, usually one that went offline
 before the recovery build shipped. `RELAY_LEGACY_TUNNEL_CLEANUP_MODE` deletes these once Cloudflare
-reports them down, or never connected, for more than 30 days. It is independent of
+reports them down, or never connected, for more than 7 days. It is independent of
 `RELAY_TUNNEL_CLEANUP_MODE`, and every other check still applies.
 
 A deleted legacy tunnel keeps its allocation, so its hostname is kept. When the host comes back:
@@ -241,7 +241,7 @@ stage, test Cloudflare account, disposable host, and disposable T3 home. Keep pr
 Legacy cleanup, on the same disposable stage:
 
 10. Set `RELAY_LEGACY_TUNNEL_GRACE_MINUTES=10` and the legacy mode to `dry-run`, then deploy. The
-    override shortens the 30-day grace period and is ignored on `prod`. Pause the legacy child again
+    override shortens the 7-day grace period and is ignored on `prod`. Pause the legacy child again
     and wait until Cloudflare reports it down for over ten minutes.
 11. Confirm the sweep counts it in `wouldDeleteLegacy`, then set the legacy mode to `enabled` and
     deploy. Confirm the legacy tunnel is deleted and its allocation row remains.

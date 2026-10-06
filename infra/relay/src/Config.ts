@@ -34,13 +34,13 @@ export const legacyManagedEndpointCleanupModeConfig = cleanupModeConfig(
 );
 
 /**
- * Overrides the 30-day legacy grace period, in minutes, so the disposable
+ * Overrides the 7-day legacy grace period, in minutes, so the disposable
  * canary stage can exercise legacy cleanup. Ignored on the prod stage.
  */
 export const RELAY_LEGACY_TUNNEL_GRACE_MINUTES = "RELAY_LEGACY_TUNNEL_GRACE_MINUTES";
 
 // A zero or negative override would be ignored at runtime, silently leaving
-// the canary on the 30-day grace period, so reject it when the deploy reads it.
+// the canary on the 7-day grace period, so reject it when the deploy reads it.
 export const legacyTunnelGraceMinutesConfig = Config.option(
   Config.schema(
     Schema.NumberFromString.pipe(Schema.check(Schema.isInt(), Schema.isGreaterThan(0))),
