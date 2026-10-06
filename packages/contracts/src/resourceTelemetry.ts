@@ -358,6 +358,7 @@ export type DesktopTelemetryCancelDesktopUpdate = typeof DesktopTelemetryCancelD
 /** Feedback the agent cursor plays when it reaches its target. */
 export const ComputerCursorCue = Schema.Literals([
   "point",
+  "look",
   "click",
   "doubleClick",
   "rightClick",
@@ -385,7 +386,9 @@ export const computerCursorGlideMs = (distance: number): number =>
  *
  * The cursor glides to the point over `durationMs` (chosen by the server, which
  * waits that long before acting) and then plays the feedback for `cue`.
- * `bounds` is the target element's frame, used to highlight fields and menus.
+ * `bounds` is the target element's frame (the window for `look`), used to
+ * highlight fields, menus and windows. Each `cursorId` is its own cursor,
+ * tagged with `label`, so agents acting at once stay distinguishable.
  */
 export const DesktopTelemetryShowComputerCursor = Schema.Struct({
   version: Schema.Literal(1),
@@ -394,6 +397,8 @@ export const DesktopTelemetryShowComputerCursor = Schema.Struct({
   y: Schema.Finite,
   durationMs: Schema.optional(Schema.Finite),
   cue: Schema.optional(ComputerCursorCue),
+  cursorId: Schema.optional(Schema.String),
+  label: Schema.optional(Schema.String),
   bounds: Schema.optional(
     Schema.Struct({
       x: Schema.Finite,
