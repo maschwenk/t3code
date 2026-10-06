@@ -110,7 +110,7 @@ export const EMPTY_END_FIELDS = {
 >;
 
 /** The local wall-clock value a datetime-local input shows for an instant. */
-export function toDateTimeLocalInput(iso: string): string {
+function toDateTimeLocalInput(iso: string): string {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return "";
   const pad = (value: number) => String(value).padStart(2, "0");

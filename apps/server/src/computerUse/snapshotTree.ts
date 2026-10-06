@@ -35,7 +35,7 @@ const hasArea = (rect: Rect | null | undefined): rect is Rect =>
   rect.height > 0;
 
 /** The visible part of `rect` within `clip`, or null when they do not overlap. */
-export function intersect(rect: Rect, clip: Rect): Rect | null {
+function intersect(rect: Rect, clip: Rect): Rect | null {
   const x = Math.max(rect.x, clip.x);
   const y = Math.max(rect.y, clip.y);
   const right = Math.min(rect.x + rect.width, clip.x + clip.width);

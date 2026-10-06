@@ -3,9 +3,9 @@ type Point = { readonly x: number; readonly y: number };
 /** Seconds without any user input (keys, pointer, scrolling) before an agent may take over the pointer. */
 export const USER_IDLE_SECONDS = 3;
 /** How long the target app gets to come forward. */
-export const ACTIVATION_TIMEOUT_MS = 1_000;
+const ACTIVATION_TIMEOUT_MS = 1_000;
 /** Lets a person see where the pointer lands before it acts. */
-export const POINTER_LEAD_MS = 160;
+const POINTER_LEAD_MS = 160;
 // The idle clock and ours are read at slightly different moments.
 const CLOCK_SLACK_SECONDS = 0.05;
 

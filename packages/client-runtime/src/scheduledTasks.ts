@@ -59,7 +59,7 @@ export function sortScheduledTasksByUpcoming(
     const lifecycle = scheduledTaskLifecycle(task, nowMs);
     return lifecycle === "active" ? 0 : lifecycle === "paused" ? 1 : 2;
   };
-  return tasks.toSorted((a, b) => {
+  return [...tasks].sort((a, b) => {
     const byRank = rank(a) - rank(b);
     if (byRank !== 0) return byRank;
     if (rank(a) === 0) {
@@ -148,7 +148,7 @@ export function placeScheduledTaskCards(input: {
   }));
   const byMessageId = new Map<string, ScheduledTask[]>();
   const trailing: ScheduledTask[] = [];
-  for (const task of input.tasks.toSorted((a, b) => a.createdAt.localeCompare(b.createdAt))) {
+  for (const task of [...input.tasks].sort((a, b) => a.createdAt.localeCompare(b.createdAt))) {
     const createdMs = Date.parse(task.createdAt);
     if (!(createdMs >= oldestMs)) continue;
     const anchor = anchors.find((candidate) => candidate.ms >= createdMs);

@@ -2,8 +2,8 @@
 import type { Element } from "@crowecawcaw/xa11y";
 import * as Schema from "effect/Schema";
 import * as NodeChildProcess from "node:child_process";
-import * as NodeFs from "node:fs/promises";
-import * as NodeOs from "node:os";
+import * as NodeFSP from "node:fs/promises";
+import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeTimersPromises from "node:timers/promises";
 import * as NodeUtil from "node:util";
@@ -107,7 +107,7 @@ export function backgroundAction(
 }
 
 /** Positive dy scrolls down, positive dx scrolls right. */
-export const scrollPageAction = (dx: number, dy: number) =>
+const scrollPageAction = (dx: number, dy: number) =>
   Math.abs(dy) >= Math.abs(dx)
     ? dy > 0
       ? "scroll_down_by_page"
@@ -385,17 +385,17 @@ async function captureWindow(
       )) ||
     windows.find((item) => item.bounds.width >= 100 && item.bounds.height >= 100);
   if (!match) return { ok: false, code: "capture_requires_foreground" };
-  const file = NodePath.join(NodeOs.tmpdir(), `t3-computer-${process.pid}-${match.id}.png`);
+  const file = NodePath.join(NodeOS.tmpdir(), `t3-computer-${process.pid}-${match.id}.png`);
   try {
     await execFile("/usr/sbin/screencapture", ["-x", "-o", "-t", "png", `-l${match.id}`, file], {
       timeout: 5_000,
     });
-    let png = await NodeFs.readFile(file);
+    let png = await NodeFSP.readFile(file);
     let size = pngSize(png);
     if (Math.max(size.width, size.height) > MAX_IMAGE_SIDE) {
       // Retina captures are twice the window's point size; models need far less.
       await execFile("/usr/bin/sips", ["-Z", String(MAX_IMAGE_SIDE), file], { timeout: 5_000 });
-      png = await NodeFs.readFile(file);
+      png = await NodeFSP.readFile(file);
       size = pngSize(png);
     }
     if (png.length > 8 * 1024 * 1024) return { ok: false, code: "failed" };
@@ -406,7 +406,7 @@ async function captureWindow(
       window: { id: match.id, bounds: match.bounds },
     };
   } finally {
-    await NodeFs.rm(file, { force: true });
+    await NodeFSP.rm(file, { force: true });
   }
 }
 

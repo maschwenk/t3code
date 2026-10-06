@@ -268,7 +268,7 @@ function formatEvery(everyMs: number): string {
 export function scheduledTaskCadenceLabel(schedule: ScheduledTaskSchedule): string {
   if (schedule.type === "webhook") return "On webhook";
   if (schedule.type === "interval") return formatEvery(schedule.everyMs);
-  const days = [...new Set(schedule.weekdays ?? [])].toSorted((a, b) => a - b);
+  const days = [...new Set(schedule.weekdays ?? [])].sort((a, b) => a - b);
   const time = schedule.timeOfDay;
   if (days.length === 0 || days.length === 7) return `Daily at ${time}`;
   if (days.length === 5 && days.every((day) => day >= 1 && day <= 5)) {

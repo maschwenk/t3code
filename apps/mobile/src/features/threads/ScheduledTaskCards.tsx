@@ -63,7 +63,7 @@ export function ThreadScheduledTaskCardsProvider(props: {
     }
     return placeScheduledTaskCards({
       tasks: boundTasks,
-      anchors: [...lastByRun.values()].toSorted((a, b) => a.updatedAt.localeCompare(b.updatedAt)),
+      anchors: [...lastByRun.values()].sort((a, b) => a.updatedAt.localeCompare(b.updatedAt)),
       oldestLoadedAt: props.feed[0]?.createdAt ?? null,
     });
   }, [boundTasks, props.feed]);

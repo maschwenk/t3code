@@ -33,7 +33,7 @@ const observationContent = (observation: ComputerUse.Observation): Content[] => 
 ];
 
 /** One line per completed step, then why the batch stopped, then the app as it is now. */
-export function actionContent(result: ComputerUse.ActResult): Content[] {
+function actionContent(result: ComputerUse.ActResult): Content[] {
   const lines = [
     `Completed ${result.completed.length} of ${result.total} steps${
       result.completed.length ? ` (${result.completed.join(", ")})` : ""
