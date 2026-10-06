@@ -8,6 +8,7 @@ import { McpSchema, McpServer } from "effect/ai";
 import * as ComputerUse from "../../../computerUse/ComputerUse.ts";
 import * as Driver from "../../../computerUse/Driver.ts";
 import type { WorkerRequest } from "../../../computerUse/protocol.ts";
+import * as DesktopTelemetryReceiver from "../../../resourceTelemetry/DesktopTelemetryReceiver.ts";
 import * as ServerSettings from "../../../serverSettings.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as Registration from "./registration.ts";
@@ -95,6 +96,7 @@ const layerTest = (calls: WorkerRequest[]) =>
         computerUseAllowedApps: ["Calculator"],
       }),
     ),
+    Layer.provide(DesktopTelemetryReceiver.layerTest()),
     Layer.provide(NodeServices.layer),
   );
 

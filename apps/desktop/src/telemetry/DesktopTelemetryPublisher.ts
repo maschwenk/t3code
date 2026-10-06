@@ -5,6 +5,7 @@ import {
   type DesktopTelemetryCancelDesktopUpdate,
   type DesktopTelemetryCommitDesktopUpdate,
   type DesktopTelemetryRequestDesktopUpdate,
+  type DesktopTelemetryShowComputerCursor,
   type DesktopUpdateStatusReport,
   type HostPowerSnapshot,
 } from "@t3tools/contracts";
@@ -77,6 +78,8 @@ export class DesktopTelemetryPublisher extends Context.Service<
     readonly updateRequests: Stream.Stream<DesktopTelemetryRequestDesktopUpdate>;
     readonly updateCommits: Stream.Stream<DesktopTelemetryCommitDesktopUpdate>;
     readonly updateCancellations: Stream.Stream<DesktopTelemetryCancelDesktopUpdate>;
+    /** Agent cursor positions from computer-use actions. Single consumer. */
+    readonly computerCursorRequests: Stream.Stream<DesktopTelemetryShowComputerCursor>;
   }
 >()("@t3tools/desktop/telemetry/DesktopTelemetryPublisher") {}
 
@@ -179,6 +182,7 @@ export const make = Effect.fn("desktop.telemetryPublisher.make")(function* () {
   const updateRequestQueue = yield* Queue.unbounded<DesktopTelemetryRequestDesktopUpdate>();
   const updateCommitQueue = yield* Queue.unbounded<DesktopTelemetryCommitDesktopUpdate>();
   const updateCancellationQueue = yield* Queue.unbounded<DesktopTelemetryCancelDesktopUpdate>();
+  const computerCursorQueue = yield* Queue.sliding<DesktopTelemetryShowComputerCursor>(8);
 
   const offer = (event: PowerEvent): void => {
     Queue.offerUnsafe(powerEvents, event);
@@ -353,6 +357,8 @@ export const make = Effect.fn("desktop.telemetryPublisher.make")(function* () {
         return Queue.offer(updateCommitQueue, message).pipe(Effect.asVoid);
       case "cancelDesktopUpdate":
         return Queue.offer(updateCancellationQueue, message).pipe(Effect.asVoid);
+      case "showComputerCursor":
+        return Queue.offer(computerCursorQueue, message).pipe(Effect.asVoid);
     }
   };
   const removeControlSource: DesktopTelemetryPublisher["Service"]["removeControlSource"] = (
@@ -424,6 +430,7 @@ export const make = Effect.fn("desktop.telemetryPublisher.make")(function* () {
     updateRequests: Stream.fromQueue(updateRequestQueue),
     updateCommits: Stream.fromQueue(updateCommitQueue),
     updateCancellations: Stream.fromQueue(updateCancellationQueue),
+    computerCursorRequests: Stream.fromQueue(computerCursorQueue),
   });
 });
 

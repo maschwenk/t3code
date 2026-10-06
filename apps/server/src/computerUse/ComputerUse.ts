@@ -4,6 +4,7 @@ import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Semaphore from "effect/Semaphore";
+import * as DesktopTelemetryReceiver from "../resourceTelemetry/DesktopTelemetryReceiver.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as Driver from "./Driver.ts";
 import {
@@ -35,6 +36,7 @@ export class ComputerUse extends Context.Service<
 const make = Effect.gen(function* () {
   const settings = yield* ServerSettings.ServerSettingsService;
   const driver = yield* Driver.Driver;
+  const desktop = yield* DesktopTelemetryReceiver.DesktopTelemetryReceiver;
   const crypto = yield* Crypto.Crypto;
   const mutex = yield* Semaphore.make(1);
   const receipts = new Map<string, Receipt>();
@@ -128,6 +130,15 @@ const make = Effect.gen(function* () {
             // A failed/uncertain write is never replayed. An action also invalidates
             // other threads' observations of the same desktop.
             receipts.clear();
+            const bounds = target.bounds;
+            if (bounds && bounds.width > 0 && bounds.height > 0) {
+              const shown = yield* desktop.showComputerCursor({
+                x: bounds.x + bounds.width / 2,
+                y: bounds.y + bounds.height / 2,
+              });
+              // Let the user see where the agent is about to act.
+              if (shown) yield* Effect.sleep("300 millis");
+            }
             yield* execute({
               kind: "action",
               app: receipt.snapshot.app,

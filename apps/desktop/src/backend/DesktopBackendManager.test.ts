@@ -171,6 +171,7 @@ function makeTestInstance(input: MakeInstanceInput) {
       updateRequests: Stream.empty,
       updateCommits: Stream.empty,
       updateCancellations: Stream.empty,
+      computerCursorRequests: Stream.empty,
       ...input.desktopTelemetryPublisher,
     }),
     DesktopWslEnvironment.layerTest(

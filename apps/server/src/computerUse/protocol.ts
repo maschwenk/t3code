@@ -171,7 +171,7 @@ export class ComputerUseError extends Schema.TaggedError<ComputerUseError>()("Co
       case "capture_requires_foreground":
         return "Bring the target app to the foreground on the environment machine before capturing it, or use includeImage=false.";
       case "input_requires_foreground":
-        return "Bring the target app window to the foreground before acting. Pointer input requires a visible element inside that window; take a fresh snapshot.";
+        return "This action needs real pointer input, which only works while the target app is in front. Use press, type, or an action listed for the element instead; those run in the background. Otherwise ask the user to bring the app forward, then take a fresh snapshot.";
       case "unavailable":
         return "Native computer use is currently supported on macOS environments only.";
       default:

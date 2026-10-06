@@ -74,6 +74,7 @@ function layerPool(labelRef: Ref.Ref<string>): Layer.Layer<DesktopBackendPool.De
           updateRequests: Stream.empty,
           updateCommits: Stream.empty,
           updateCancellations: Stream.empty,
+          computerCursorRequests: Stream.empty,
         }),
         Layer.succeed(DesktopBackendConfiguration.DesktopBackendConfiguration, {
           resolvePrimary: Effect.die("unexpected primary config resolve"),

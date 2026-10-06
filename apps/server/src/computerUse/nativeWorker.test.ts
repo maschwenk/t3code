@@ -2,8 +2,24 @@
 import * as NodeChildProcess from "node:child_process";
 import * as NodeURL from "node:url";
 import { expect, it } from "@effect/vitest";
-import { launchServicesPids, nativeFailure } from "./nativeWorker.ts";
+import { backgroundAction, launchServicesPids, nativeFailure } from "./nativeWorker.ts";
 import { ComputerUseError } from "./protocol.ts";
+
+it.each([
+  ["left click", { kind: "click", button: "left", count: 1 }, ["press", "focus"], "press"],
+  ["right click", { kind: "click", button: "right", count: 1 }, ["show_menu"], "show_menu"],
+  ["double click", { kind: "click", button: "left", count: 2 }, ["press"], undefined],
+  ["click without press", { kind: "click", button: "left", count: 1 }, ["focus"], undefined],
+  ["listed action", { kind: "perform", action: "raise" }, ["raise", "focus"], "raise"],
+  ["unlisted action", { kind: "perform", action: "raise" }, ["focus"], undefined],
+  ["wheel scroll", { kind: "scroll", dx: 0, dy: 120 }, ["scroll_down_by_page"], undefined],
+  ["hover", { kind: "move" }, ["press"], undefined],
+] as const)(
+  "runs %s in the background only through an advertised action",
+  (_, action, available, expected) => {
+    expect(backgroundAction(action, available)).toBe(expected);
+  },
+);
 
 // Trimmed `lsappinfo list` output from macOS 26.
 const lsappinfoList = `

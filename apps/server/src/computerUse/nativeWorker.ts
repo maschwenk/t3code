@@ -6,6 +6,7 @@ import * as NodeTimersPromises from "node:timers/promises";
 import * as NodeUtil from "node:util";
 import { pointerTarget } from "./pointerTarget.ts";
 import {
+  type ComputerAction,
   type NativeSnapshot,
   WorkerRequest,
   type ElementTarget,
@@ -30,6 +31,28 @@ const identityMatches = (element: Element, target: ElementTarget) =>
   element.bounds?.width === target.bounds?.width &&
   element.bounds?.height === target.bounds?.height &&
   (target.stableId === null || element.stableId === target.stableId);
+
+/**
+ * The accessibility action that performs `action` without synthesized pointer
+ * input. Accessibility actions reach background apps without focusing them or
+ * moving the user's mouse. Undefined means only real pointer input can do it.
+ */
+export function backgroundAction(
+  action: Exclude<ComputerAction, { kind: "type" }>,
+  available: readonly string[],
+): string | undefined {
+  const name =
+    action.kind === "press"
+      ? "press"
+      : action.kind === "perform"
+        ? action.action
+        : action.kind === "click" && action.count === 1
+          ? action.button === "left"
+            ? "press"
+            : "show_menu"
+          : undefined;
+  return name !== undefined && available.includes(name) ? name : undefined;
+}
 
 /**
  * Returns pids of running GUI apps whose LaunchServices name is `name`, taken
@@ -107,10 +130,24 @@ async function execute(
       (element.pid !== null && element.pid !== app.pid)
     )
       return { ok: false, code: "target_changed" };
+    if (request.action.kind === "type") {
+      if (!element.editable) return { ok: false, code: "unsupported_action" };
+      if (request.action.replace) await element.setValue(request.action.text);
+      else await element.typeText(request.action.text);
+      return { ok: true };
+    }
+    const background = backgroundAction(request.action, element.actions);
+    if (background) {
+      await element.performAction(background);
+      return { ok: true };
+    }
+    if (request.action.kind === "press" || request.action.kind === "perform")
+      return { ok: false, code: "unsupported_action" };
+    // Only synthesized pointer input remains. It moves the user's real cursor and
+    // lands on whatever window is on top, so it runs only while the app is in front.
     const point = pointerTarget(element.bounds, activeWindow?.bounds ?? null);
     if (!point || (await App.foreground({ timeout: 0 })).pid !== app.pid)
       return { ok: false, code: "input_requires_foreground" };
-    // Visible OS cursor feedback, even for semantic accessibility actions.
     // The small lead lets a human see the target before the operation happens.
     const input = inputSim();
     await input.moveTo(point);
@@ -125,20 +162,6 @@ async function execute(
         break;
       case "scroll":
         await input.scroll(point, request.action.dx, request.action.dy);
-        break;
-      case "press":
-        if (!element.actions.includes("press")) return { ok: false, code: "unsupported_action" };
-        await element.press();
-        break;
-      case "type":
-        if (!element.editable) return { ok: false, code: "unsupported_action" };
-        if (request.action.replace) await element.setValue(request.action.text);
-        else await element.typeText(request.action.text);
-        break;
-      case "perform":
-        if (!element.actions.includes(request.action.action))
-          return { ok: false, code: "unsupported_action" };
-        await element.performAction(request.action.action);
         break;
     }
     return { ok: true };

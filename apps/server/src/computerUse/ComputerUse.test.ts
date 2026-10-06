@@ -5,6 +5,7 @@ import * as Layer from "effect/Layer";
 import * as TestClock from "effect/testing/TestClock";
 import * as ComputerUse from "./ComputerUse.ts";
 import * as Driver from "./Driver.ts";
+import * as DesktopTelemetryReceiver from "../resourceTelemetry/DesktopTelemetryReceiver.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { type WorkerRequest, ComputerUseError, type NativeSnapshot } from "./protocol.ts";
 
@@ -44,6 +45,7 @@ const setup = (calls: WorkerRequest[], enabled = true, failAction = false) =>
           }),
       }),
     ),
+    Layer.provide(DesktopTelemetryReceiver.layerTest()),
     Layer.provideMerge(
       ServerSettings.layerTest({
         enableAgentComputerAccess: enabled,

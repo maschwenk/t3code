@@ -184,6 +184,12 @@ export class DesktopTelemetryReceiver extends Context.Service<
     readonly cancelDesktopUpdate: (
       requestId: string,
     ) => Effect.Effect<void, DesktopTelemetryControlError>;
+    /** Shows the agent cursor at a global screen point on the supervising
+        desktop app. Succeeds with false when no desktop app can draw it. */
+    readonly showComputerCursor: (point: {
+      readonly x: number;
+      readonly y: number;
+    }) => Effect.Effect<boolean>;
     /** Latest desktop update state report plus subsequent reports. The
         desktop replays its latest report when the backend attaches, so this
         is populated shortly after startup on desktop-managed servers. */
@@ -656,6 +662,12 @@ export const make = Effect.fn("resourceTelemetry.desktopTelemetryReceiver.make")
       sendControlMessage({ version: 1, type: "commitDesktopUpdate", requestId }),
     cancelDesktopUpdate: (requestId) =>
       sendControlMessage({ version: 1, type: "cancelDesktopUpdate", requestId }),
+    showComputerCursor: (point) =>
+      config.mode !== "desktop" || config.desktopTelemetryControlFd === undefined
+        ? Effect.succeed(false)
+        : sendControlMessage({ version: 1, type: "showComputerCursor", ...point }).pipe(
+            Effect.match({ onFailure: () => false, onSuccess: () => true }),
+          ),
     desktopUpdates: Effect.gen(function* () {
       const subscription = yield* PubSub.subscribe(updateReportChanges);
       const initial = yield* Ref.get(latestUpdateReport);
@@ -707,6 +719,7 @@ export const layerTest = (
       requestDesktopUpdate: () => Effect.void,
       commitDesktopUpdate: () => Effect.void,
       cancelDesktopUpdate: () => Effect.void,
+      showComputerCursor: () => Effect.succeed(false),
       desktopUpdates:
         overrides.desktopUpdates ??
         Effect.succeed({

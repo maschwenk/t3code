@@ -355,12 +355,26 @@ export const DesktopTelemetryCancelDesktopUpdate = Schema.Struct({
 });
 export type DesktopTelemetryCancelDesktopUpdate = typeof DesktopTelemetryCancelDesktopUpdate.Type;
 
+/**
+ * Server -> desktop main: draw the agent's computer-use cursor at a global
+ * screen point (logical pixels, primary display origin). The desktop animates a
+ * click-through overlay so the user's own mouse is never moved.
+ */
+export const DesktopTelemetryShowComputerCursor = Schema.Struct({
+  version: Schema.Literal(1),
+  type: Schema.Literal("showComputerCursor"),
+  x: Schema.Finite,
+  y: Schema.Finite,
+});
+export type DesktopTelemetryShowComputerCursor = typeof DesktopTelemetryShowComputerCursor.Type;
+
 export const DesktopTelemetryControlMessage = Schema.Union([
   DesktopTelemetrySetDiagnosticsDemand,
   DesktopTelemetrySetHostPowerIntervals,
   DesktopTelemetryRequestDesktopUpdate,
   DesktopTelemetryCommitDesktopUpdate,
   DesktopTelemetryCancelDesktopUpdate,
+  DesktopTelemetryShowComputerCursor,
 ]);
 export type DesktopTelemetryControlMessage = typeof DesktopTelemetryControlMessage.Type;
 
