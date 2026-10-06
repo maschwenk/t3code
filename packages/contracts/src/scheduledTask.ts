@@ -160,6 +160,18 @@ export type ScheduledTaskUpsertSchedule = typeof ScheduledTaskUpsertSchedule.Typ
 export const ScheduledTaskRunStatus = Schema.Literals(["never", "running", "succeeded", "failed"]);
 export type ScheduledTaskRunStatus = typeof ScheduledTaskRunStatus.Type;
 
+/** Run budget for a schedule, such as "check 10 times". */
+export const ScheduledTaskMaxRuns = Schema.Int.check(
+  Schema.isBetween({ minimum: 1, maximum: 100_000 }),
+).annotate({
+  description: "Stop after this many runs. Null runs until paused, ended, or deleted.",
+});
+
+const ScheduledTaskEndsAt = IsoDateTime.annotate({
+  description:
+    "No timer run starts after this instant; the schedule then ends on its own. Null has no end time.",
+});
+
 /** Where a webhook task receives requests. Present only on webhook tasks. */
 export const ScheduledTaskWebhookEndpoint = Schema.Struct({
   /** Environment-relative path including the secret token; works on any origin that reaches the environment. */
@@ -191,9 +203,61 @@ export const ScheduledTask = Schema.Struct({
   lastRunStatus: ScheduledTaskRunStatus,
   lastRunError: Schema.NullOr(Schema.String),
   runCount: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  // Optional so a client can read a server that predates end conditions.
+  endsAt: Schema.optional(Schema.NullOr(ScheduledTaskEndsAt)),
+  maxRuns: Schema.optional(Schema.NullOr(ScheduledTaskMaxRuns)),
   webhook: Schema.optional(ScheduledTaskWebhookEndpoint),
 });
 export type ScheduledTask = typeof ScheduledTask.Type;
+
+/**
+ * Where a schedule is in its life. A timer that reached its end time or run
+ * budget has no next run while still enabled; that is "ended", which only an
+ * edit to the end condition reopens.
+ */
+export type ScheduledTaskLifecycle = "active" | "paused" | "ended";
+
+export function scheduledTaskLifecycle(
+  task: Pick<ScheduledTask, "enabled" | "schedule" | "nextRunAt" | "endsAt" | "maxRuns">,
+): ScheduledTaskLifecycle {
+  if (!task.enabled) return "paused";
+  if (task.schedule.type === "webhook") return "active";
+  return task.nextRunAt === null && (task.endsAt != null || task.maxRuns != null)
+    ? "ended"
+    : "active";
+}
+
+const WEEKDAY_NAMES = [
+  "Sundays",
+  "Mondays",
+  "Tuesdays",
+  "Wednesdays",
+  "Thursdays",
+  "Fridays",
+  "Saturdays",
+] as const;
+
+function formatEvery(everyMs: number): string {
+  const minutes = everyMs / 60_000;
+  if (!Number.isInteger(minutes)) return `Every ${Math.round(everyMs / 1000)} seconds`;
+  if (minutes === 1) return "Every minute";
+  if (minutes % 1440 === 0) return minutes === 1440 ? "Every day" : `Every ${minutes / 1440} days`;
+  if (minutes % 60 === 0) return minutes === 60 ? "Every hour" : `Every ${minutes / 60} hours`;
+  return `Every ${minutes} minutes`;
+}
+
+/** Human cadence such as "Every 15 minutes" or "Weekdays at 09:00", shared by clients and agents. */
+export function scheduledTaskCadenceLabel(schedule: ScheduledTaskSchedule): string {
+  if (schedule.type === "webhook") return "On webhook";
+  if (schedule.type === "interval") return formatEvery(schedule.everyMs);
+  const days = [...new Set(schedule.weekdays ?? [])].toSorted((a, b) => a - b);
+  const time = schedule.timeOfDay;
+  if (days.length === 0 || days.length === 7) return `Daily at ${time}`;
+  if (days.length === 5 && days.every((day) => day >= 1 && day <= 5)) {
+    return `Weekdays at ${time}`;
+  }
+  return `${days.map((day) => WEEKDAY_NAMES[day]).join(", ")} at ${time}`;
+}
 
 export const ScheduledTaskListInput = Schema.Struct({});
 export type ScheduledTaskListInput = typeof ScheduledTaskListInput.Type;
@@ -223,6 +287,9 @@ export const ScheduledTaskUpsertInput = Schema.Struct({
   interactionMode: ProviderInteractionMode,
   createdBy: Schema.optional(OrchestrationV2Actor),
   creationSource: Schema.optional(OrchestrationV2CreationSource),
+  /** Omit or null for no end time. Saves replace the whole definition, so edits resend it. */
+  endsAt: Schema.optional(Schema.NullOr(ScheduledTaskEndsAt)),
+  maxRuns: Schema.optional(Schema.NullOr(ScheduledTaskMaxRuns)),
 });
 export type ScheduledTaskUpsertInput = typeof ScheduledTaskUpsertInput.Type;
 

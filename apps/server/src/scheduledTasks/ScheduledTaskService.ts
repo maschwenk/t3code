@@ -45,7 +45,12 @@ import * as Metrics from "../observability/Metrics.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
-import { isMissedFixedTimeRun, isSameSchedule, nextScheduledRunAt } from "./Schedule.ts";
+import {
+  isMissedFixedTimeRun,
+  isPastScheduleEnd,
+  isSameSchedule,
+  nextScheduledRunWithinEnd,
+} from "./Schedule.ts";
 import {
   redactHeaders,
   redactQuery,
@@ -195,6 +200,8 @@ interface ScheduledTaskRow {
   readonly last_run_status: string;
   readonly last_run_error: string | null;
   readonly run_count: number;
+  readonly ends_at: string | null;
+  readonly max_runs: number | null;
   readonly webhook_token: string | null;
   readonly webhook_secret: string | null;
 }
@@ -271,14 +278,15 @@ function iso(value: DateTime.DateTime): string {
 const localNow = DateTime.withCurrentZoneLocal(DateTime.nowInCurrentZone);
 
 function nextRunAt(
-  task: Pick<ScheduledTask, "enabled" | "schedule">,
+  task: Pick<ScheduledTask, "enabled" | "schedule" | "endsAt" | "maxRuns" | "runCount">,
   from: DateTime.DateTime,
+  dueAt?: DateTime.DateTime,
 ): string | null {
   if (!task.enabled) return null;
   // A stored interval can decode yet overflow the representable DateTime
   // range; an unrepresentable occurrence means the task has no next run.
   try {
-    const next = nextScheduledRunAt(task.schedule, from);
+    const next = nextScheduledRunWithinEnd(task.schedule, from, task, dueAt);
     return next !== null && Number.isFinite(DateTime.toEpochMillis(next)) ? iso(next) : null;
   } catch {
     return null;
@@ -337,6 +345,8 @@ const decodeRow = (row: ScheduledTaskRow, origin: WebhookOrigin | null = null) =
       lastRunStatus: row.last_run_status,
       lastRunError: row.last_run_error,
       runCount: row.run_count,
+      endsAt: row.ends_at,
+      maxRuns: row.max_runs,
       ...(webhook === undefined ? {} : { webhook }),
     });
   }).pipe(
@@ -435,6 +445,8 @@ export const layer = Layer.effect(
         last_run_status,
         last_run_error,
         run_count,
+        ends_at,
+        max_runs,
         webhook_token,
         webhook_secret
       FROM scheduled_tasks
@@ -470,6 +482,8 @@ export const layer = Layer.effect(
         last_run_status,
         last_run_error,
         run_count,
+        ends_at,
+        max_runs,
         webhook_token,
         webhook_secret
       FROM scheduled_tasks
@@ -550,6 +564,8 @@ export const layer = Layer.effect(
           last_run_status,
           last_run_error,
           run_count,
+          ends_at,
+          max_runs,
           webhook_token,
           webhook_secret
         )
@@ -574,6 +590,8 @@ export const layer = Layer.effect(
           ${task.lastRunStatus},
           ${task.lastRunError},
           ${task.runCount},
+          ${task.endsAt ?? null},
+          ${task.maxRuns ?? null},
           ${webhook.token},
           ${webhook.secret}
         WHERE ${requireExisting ? 0 : 1} = 1
@@ -593,6 +611,8 @@ export const layer = Layer.effect(
           creation_source = excluded.creation_source,
           updated_at = excluded.updated_at,
           next_run_at = excluded.next_run_at,
+          ends_at = excluded.ends_at,
+          max_runs = excluded.max_runs,
           -- Only rotate changes a live token, so a save racing a rotation
           -- cannot bring the old URL back.
           webhook_token = CASE
@@ -692,7 +712,7 @@ export const layer = Layer.effect(
           UPDATE scheduled_tasks
           SET last_run_status = 'failed',
               last_run_error = ${message},
-              next_run_at = ${nextRunAt(source, now)},
+              next_run_at = ${nextRunAt({ ...source, runCount: source.runCount + 1 }, now)},
               updated_at = ${iso(now)},
               run_count = run_count + 1
           WHERE task_id = ${task.id} AND last_run_status = 'running'
@@ -842,7 +862,12 @@ export const layer = Layer.effect(
           ...scheduleSource,
           updatedAt: iso(completedAt),
           lastRunAt: startedAtIso,
-          nextRunAt: nextRunAt(scheduleSource, completedAt),
+          // A timed run keeps its cadence slot; a manual run restarts the clock.
+          nextRunAt: nextRunAt(
+            { ...scheduleSource, runCount: scheduleSource.runCount + 1 },
+            completedAt,
+            trigger === "scheduled" ? Option.getOrUndefined(parsedNextRunAt) : undefined,
+          ),
           lastRunStatus,
           lastRunError,
           runCount: scheduleSource.runCount + 1,
@@ -899,6 +924,30 @@ export const layer = Layer.effect(
       yield* notifyChanged;
     });
 
+    // A run that comes due after its schedule ended (the server was off or
+    // asleep across the end time) is dropped, and the schedule ends there.
+    const endExpiredSchedule = Effect.fn("ScheduledTaskService.endExpiredSchedule")(function* (
+      task: ScheduledTask,
+      now: DateTime.DateTime,
+    ) {
+      yield* Effect.logInfo("Ending schedule task past its end time", {
+        taskId: task.id,
+        missedRunAt: task.nextRunAt,
+        endsAt: task.endsAt,
+      });
+      yield* sql`
+        UPDATE scheduled_tasks
+        SET next_run_at = NULL,
+            updated_at = ${iso(now)}
+        WHERE task_id = ${task.id}
+      `.pipe(
+        Effect.mapError((cause) =>
+          taskError("Could not end expired schedule task.", { taskId: task.id, cause }),
+        ),
+      );
+      yield* notifyChanged;
+    });
+
     const runDueTasks = Effect.fn("ScheduledTaskService.runDueTasks")(function* () {
       const now = yield* localNow;
       const tasks = yield* listDueTasks(now).pipe(
@@ -911,9 +960,11 @@ export const layer = Layer.effect(
         due,
         ({ task, dueAt }) =>
           Effect.suspend(() =>
-            isMissedFixedTimeRun(task.schedule, dueAt, now)
-              ? rescheduleMissedRun(task, now)
-              : runTask(task, "scheduled"),
+            isPastScheduleEnd(task.endsAt, now)
+              ? endExpiredSchedule(task, now)
+              : isMissedFixedTimeRun(task.schedule, dueAt, now)
+                ? rescheduleMissedRun(task, now)
+                : runTask(task, "scheduled"),
           ).pipe(
             Effect.catch((cause) =>
               Effect.logWarning("Scheduled task run failed", { taskId: task.id, cause }),
@@ -945,7 +996,10 @@ export const layer = Layer.effect(
                 UPDATE scheduled_tasks
                 SET last_run_status = 'failed',
                     last_run_error = 'Run was interrupted by a server restart.',
-                    next_run_at = ${nextRunAt(decoded.success, now)},
+                    next_run_at = ${nextRunAt(
+                      { ...decoded.success, runCount: decoded.success.runCount + 1 },
+                      now,
+                    )},
                     updated_at = ${iso(now)},
                     run_count = run_count + 1
                 WHERE task_id IS ${row.task_id} AND last_run_status = 'running'
@@ -1077,7 +1131,9 @@ export const layer = Layer.effect(
         const scheduleUnchanged =
           existingTask !== null &&
           existingTask.enabled === input.enabled &&
-          isSameSchedule(existingTask.schedule, schedule);
+          isSameSchedule(existingTask.schedule, schedule) &&
+          (existingTask.endsAt ?? null) === (input.endsAt ?? null) &&
+          (existingTask.maxRuns ?? null) === (input.maxRuns ?? null);
         const task: ScheduledTask = {
           id,
           title: input.title,
@@ -1096,11 +1152,22 @@ export const layer = Layer.effect(
           updatedAt: iso(now),
           nextRunAt: scheduleUnchanged
             ? existingTask.nextRunAt
-            : nextRunAt({ enabled: input.enabled, schedule }, now),
+            : nextRunAt(
+                {
+                  enabled: input.enabled,
+                  schedule,
+                  endsAt: input.endsAt ?? null,
+                  maxRuns: input.maxRuns ?? null,
+                  runCount: existingTask?.runCount ?? 0,
+                },
+                now,
+              ),
           lastRunAt: existingTask?.lastRunAt ?? null,
           lastRunStatus: existingTask?.lastRunStatus ?? "never",
           lastRunError: existingTask?.lastRunError ?? null,
           runCount: existingTask?.runCount ?? 0,
+          endsAt: input.endsAt ?? null,
+          maxRuns: input.maxRuns ?? null,
         };
         yield* saveTask(task, input.requireExisting === true, webhook);
         yield* notifyChanged;
@@ -1112,7 +1179,7 @@ export const layer = Layer.effect(
         const existing = yield* loadTask(input.id);
         if (existing.enabled === input.enabled) return { task: existing };
         const now = yield* localNow;
-        const next = nextRunAt({ enabled: input.enabled, schedule: existing.schedule }, now);
+        const next = nextRunAt({ ...existing, enabled: input.enabled }, now);
         // RETURNING so a task deleted between the load and this UPDATE is a
         // visible not-found error, not a false success.
         const updated = yield* sql<{ task_id: string }>`

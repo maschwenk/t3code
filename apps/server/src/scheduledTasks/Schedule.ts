@@ -41,6 +41,58 @@ export function nextScheduledRunAt(
 }
 
 /**
+ * How late past its end time a due run may still start. The scheduler polls
+ * every few seconds, so a run due exactly at the end starts slightly after it.
+ */
+const SCHEDULE_END_GRACE_MS = MINUTE_MS;
+
+export interface ScheduleEndCondition {
+  readonly endsAt?: string | null | undefined;
+  readonly maxRuns?: number | null | undefined;
+  /** Runs already counted, including one that just finished. */
+  readonly runCount: number;
+}
+
+/**
+ * The next run of a timer within its end condition, or null once the end time
+ * or run budget is reached. With `dueAt`, an interval run follows the slot it
+ * was due at rather than when it finished, so poll latency cannot push the
+ * last run of "every 15 minutes for 12 hours" past the end.
+ */
+export function nextScheduledRunWithinEnd(
+  schedule: ScheduledTaskSchedule,
+  from: DateTime.DateTime,
+  end: ScheduleEndCondition,
+  dueAt?: DateTime.DateTime,
+): DateTime.DateTime | null {
+  if (end.maxRuns != null && end.runCount >= end.maxRuns) return null;
+  let next: DateTime.DateTime | null;
+  if (schedule.type === "interval" && dueAt !== undefined) {
+    const everyMs = Math.max(schedule.everyMs, MIN_SCHEDULED_TASK_INTERVAL_MS);
+    const slot = DateTime.add(dueAt, { milliseconds: everyMs });
+    next =
+      DateTime.toEpochMillis(slot) > DateTime.toEpochMillis(from)
+        ? slot
+        : DateTime.add(from, { milliseconds: everyMs });
+  } else {
+    next = nextScheduledRunAt(schedule, from);
+  }
+  if (next === null || end.endsAt == null) return next;
+  const endMs = Date.parse(end.endsAt);
+  return Number.isFinite(endMs) && DateTime.toEpochMillis(next) <= endMs ? next : null;
+}
+
+/** True when a due run is too late to start because its schedule already ended. */
+export function isPastScheduleEnd(
+  endsAt: string | null | undefined,
+  now: DateTime.DateTime,
+): boolean {
+  if (endsAt == null) return false;
+  const endMs = Date.parse(endsAt);
+  return !Number.isFinite(endMs) || DateTime.toEpochMillis(now) > endMs + SCHEDULE_END_GRACE_MS;
+}
+
+/**
  * Canonical form of a weekday mask, mirroring how `nextScheduledRunAt` reads
  * it: order and duplicates are irrelevant, and an empty/omitted mask means the
  * same as explicitly listing all seven days — daily.

@@ -54,6 +54,8 @@ import {
   type RuntimeMode,
   type ScheduledTask,
   type ScheduledTaskUpsertInput,
+  scheduledTaskCadenceLabel,
+  scheduledTaskLifecycle,
   type ServerProvider,
   ThreadId,
 } from "@t3tools/contracts";
@@ -234,7 +236,12 @@ function scheduledTaskSummary(task: ScheduledTask): OrchestratorMcpScheduledTask
     projectId: task.projectId,
     boundThreadId: task.threadId,
     schedule: task.schedule,
+    cadence: scheduledTaskCadenceLabel(task.schedule),
+    status: scheduledTaskLifecycle(task),
     nextRunAt: task.nextRunAt,
+    endsAt: task.endsAt ?? null,
+    maxRuns: task.maxRuns ?? null,
+    runCount: task.runCount,
     lastRunStatus: task.lastRunStatus,
     // A bare path is not a URL anyone can call, so agents never get one to share.
     ...(task.webhook?.url == null ? {} : { webhookUrl: task.webhook.url }),
@@ -243,6 +250,34 @@ function scheduledTaskSummary(task: ScheduledTask): OrchestratorMcpScheduledTask
       : { webhookSignature: task.webhook.hasSecret ? "set" : "none" }),
   };
 }
+
+/**
+ * Resolves the end time an agent asked for. A relative duration is the
+ * common phrasing ("for the next 12 hours") and spares the agent reading a
+ * clock; an absolute end must still be in the future.
+ */
+const resolveScheduleEnd = (input: {
+  readonly endsAfterMs?: number | undefined;
+  readonly endsAt?: string | null | undefined;
+}): Effect.Effect<string | null | undefined, OrchestratorMcpFailure> =>
+  Effect.gen(function* () {
+    if (input.endsAfterMs !== undefined && input.endsAt !== undefined) {
+      return yield* failure("invalid_request", "Pass endsAfterMs or endsAt, not both.");
+    }
+    const now = yield* DateTime.now;
+    if (input.endsAfterMs !== undefined) {
+      return DateTime.formatIso(DateTime.add(now, { milliseconds: input.endsAfterMs }));
+    }
+    if (input.endsAt == null) return input.endsAt;
+    const end = DateTime.make(input.endsAt);
+    if (Option.isNone(end) || DateTime.toEpochMillis(end.value) <= DateTime.toEpochMillis(now)) {
+      return yield* failure(
+        "invalid_request",
+        `endsAt ${input.endsAt} is not in the future. Use endsAfterMs for a duration from now.`,
+      );
+    }
+    return DateTime.formatIso(end.value);
+  });
 
 function providerConstraints(
   provider: ServerProvider | undefined,
@@ -1419,11 +1454,14 @@ const make = Effect.gen(function* () {
         const derivedTitle = input.prompt.split("\n")[0]?.trim() ?? "";
         const title =
           input.title ?? (derivedTitle.length > 0 ? derivedTitle.slice(0, 80) : "Scheduled task");
+        const endsAt = yield* resolveScheduleEnd(input);
         const upsertInput: ScheduledTaskUpsertInput = {
           title,
           prompt: input.prompt,
           enabled: input.enabled ?? true,
           schedule: input.schedule,
+          endsAt: endsAt ?? null,
+          maxRuns: input.maxRuns ?? null,
           projectId,
           threadId: bindToCurrentThread && parent !== undefined ? parent.thread.id : null,
           workspaceStrategy: scheduledTaskWorkspaceStrategy(bindToCurrentThread),
@@ -1499,12 +1537,15 @@ const make = Effect.gen(function* () {
           input.bindToCurrentThread === undefined
             ? existing.workspaceStrategy
             : scheduledTaskWorkspaceStrategy(input.bindToCurrentThread);
+        const endsAt = yield* resolveScheduleEnd(input);
         const upsertInput: ScheduledTaskUpsertInput = {
           id: existing.id,
           title: input.title ?? existing.title,
           prompt: input.prompt ?? existing.prompt,
           enabled: input.enabled ?? existing.enabled,
           schedule: input.schedule ?? existing.schedule,
+          endsAt: endsAt === undefined ? (existing.endsAt ?? null) : endsAt,
+          maxRuns: input.maxRuns === undefined ? (existing.maxRuns ?? null) : input.maxRuns,
           projectId: existing.projectId,
           threadId,
           workspaceStrategy,

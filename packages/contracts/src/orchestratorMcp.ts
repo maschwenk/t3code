@@ -18,6 +18,7 @@ import {
   TurnItemId,
 } from "./baseSchemas.ts";
 import {
+  ScheduledTaskMaxRuns,
   ScheduledTaskRunStatus,
   ScheduledTaskSchedule,
   ScheduledTaskUpsertSchedule,
@@ -506,13 +507,35 @@ export const OrchestratorMcpCapabilitiesResult = Schema.Struct({
 });
 export type OrchestratorMcpCapabilitiesResult = typeof OrchestratorMcpCapabilitiesResult.Type;
 
+const OrchestratorMcpEndsAfterMs = Schema.Int.check(Schema.isGreaterThanOrEqualTo(60_000)).annotate(
+  {
+    description:
+      "End the schedule this many milliseconds from now; use it for 'for the next 12 hours' (43200000). No run starts after the end.",
+  },
+);
+const OrchestratorMcpEndsAt = IsoDateTime.annotate({
+  description:
+    "Absolute ISO end time, for 'until 5pm' or 'until Friday'. Use endsAfterMs for relative durations.",
+});
+const OrchestratorMcpMaxRuns = ScheduledTaskMaxRuns.annotate({
+  description: "Stop after this many runs, for 'check 5 times'.",
+});
+
 export const OrchestratorMcpScheduleTaskInput = Schema.Struct({
   projectId: OrchestratorMcpProjectTarget,
   prompt: OrchestratorMcpPrompt.annotate({
-    description: "Prompt executed on every scheduled run.",
+    description:
+      "Self-contained instruction posted on every run, written for a future you: what to check, where, what counts as noteworthy, and how to report. Do not mention the cadence or end; the scheduler owns them.",
   }),
   schedule: OrchestratorMcpSchedule,
-  title: Schema.optional(OrchestratorMcpTitle),
+  title: Schema.optional(
+    OrchestratorMcpTitle.annotate({
+      description: "Short card title such as 'Watch #deploys for regressions'.",
+    }),
+  ),
+  endsAfterMs: Schema.optional(OrchestratorMcpEndsAfterMs),
+  endsAt: Schema.optional(OrchestratorMcpEndsAt),
+  maxRuns: Schema.optional(OrchestratorMcpMaxRuns),
   enabled: Schema.optional(
     Schema.Boolean.annotate({ description: "Whether the schedule starts enabled; defaults true." }),
   ),
@@ -540,7 +563,16 @@ export const OrchestratorMcpScheduledTask = Schema.Struct({
   projectId: ProjectId,
   boundThreadId: Schema.NullOr(ThreadId),
   schedule: ScheduledTaskSchedule,
+  cadence: Schema.String.annotate({
+    description: "Human cadence such as 'Every 15 minutes'; repeat it to the user.",
+  }),
+  status: Schema.Literals(["active", "paused", "ended"]).annotate({
+    description: "ended means the end time or run budget was reached.",
+  }),
   nextRunAt: Schema.NullOr(IsoDateTime),
+  endsAt: Schema.NullOr(IsoDateTime),
+  maxRuns: Schema.NullOr(Schema.Int),
+  runCount: Schema.Int,
   lastRunStatus: ScheduledTaskRunStatus,
   /** For webhook tasks: the public T3 Connect URL. Absent when this environment has no managed tunnel. */
   webhookUrl: Schema.optional(Schema.String).annotate({
@@ -579,6 +611,13 @@ export const OrchestratorMcpUpdateScheduledTaskInput = Schema.Struct({
   title: Schema.optional(OrchestratorMcpTitle),
   schedule: Schema.optional(OrchestratorMcpSchedule),
   enabled: Schema.optional(Schema.Boolean),
+  endsAfterMs: Schema.optional(OrchestratorMcpEndsAfterMs),
+  endsAt: Schema.optional(
+    Schema.NullOr(OrchestratorMcpEndsAt).annotate({ description: "Null removes the end time." }),
+  ),
+  maxRuns: Schema.optional(
+    Schema.NullOr(OrchestratorMcpMaxRuns).annotate({ description: "Null removes the run limit." }),
+  ),
   bindToCurrentThread: Schema.optional(Schema.Boolean),
 });
 export type OrchestratorMcpUpdateScheduledTaskInput =
