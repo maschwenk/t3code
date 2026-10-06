@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeFS from "node:fs";
+import * as NodeNet from "node:net";
 
 import * as NodeStream from "@effect/platform-node/NodeStream";
 import {
@@ -274,6 +275,20 @@ function messageVersion(value: unknown): number | undefined {
   return typeof version === "number" ? version : undefined;
 }
 
+/**
+ * The desktop passes telemetry over an inherited pipe that stays open, often
+ * silent for seconds. An fs read stream reads a pipe with a blocking
+ * thread-pool read and cannot close until that read returns, which held every
+ * backend shutdown until the desktop force-killed it. A socket reads the pipe
+ * without blocking and closes at once. Regular files still need fs.
+ */
+export const openDesktopTelemetryReadable = (fd: number): NodeNet.Socket | NodeFS.ReadStream => {
+  const stats = NodeFS.fstatSync(fd);
+  return stats.isFIFO() || stats.isSocket()
+    ? new NodeNet.Socket({ fd, readable: true, writable: false })
+    : NodeFS.createReadStream("", { fd, autoClose: true });
+};
+
 export const writeAllToFileDescriptor = Effect.fn(
   "resourceTelemetry.desktopTelemetryReceiver.writeAllToFileDescriptor",
 )(function* (fd: number, payload: Buffer) {
@@ -471,11 +486,7 @@ export const make = Effect.fn("resourceTelemetry.desktopTelemetryReceiver.make")
     const fd = config.desktopTelemetryFd;
     const readable = yield* Effect.acquireRelease(
       Effect.try({
-        try: () =>
-          NodeFS.createReadStream("", {
-            fd,
-            autoClose: true,
-          }),
+        try: () => openDesktopTelemetryReadable(fd),
         catch: (cause) => new DesktopTelemetryStreamFailed({ fd, cause }),
       }),
       (stream) =>

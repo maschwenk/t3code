@@ -1,9 +1,11 @@
 // @effect-diagnostics nodeBuiltinImport:off
+import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
 import { it } from "@effect/vitest";
+import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -15,6 +17,7 @@ import {
   type DesktopTelemetryReceiverHealth,
   initialDesktopTelemetryContactAt,
   isDesktopTelemetryContactStale,
+  openDesktopTelemetryReadable,
   recordDesktopTelemetrySampleHealth,
   requireDesktopTelemetryWriteProgress,
   resolveDesktopTelemetrySnapshotStaleAfterMs,
@@ -22,6 +25,34 @@ import {
 } from "./DesktopTelemetryReceiver.ts";
 
 describe("DesktopTelemetryReceiver", () => {
+  it.skipIf(HostProcessPlatform.defaultValue() === "win32")(
+    "reads a telemetry pipe and still closes while the pipe stays open and silent",
+    async () => {
+      const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-desktop-telemetry-"));
+      const pipePath = NodePath.join(directory, "telemetry");
+      try {
+        NodeChildProcess.execFileSync("mkfifo", [pipePath]);
+        // Read-write keeps a writer attached, so the pipe never reaches EOF,
+        // like the desktop's end of the inherited descriptor.
+        const fd = NodeFS.openSync(pipePath, NodeFS.constants.O_RDWR);
+        const readable = openDesktopTelemetryReadable(fd);
+        const received = new Promise<string>((resolve) => {
+          readable.once("data", (chunk: Buffer) => resolve(chunk.toString("utf8")));
+        });
+        NodeFS.writeSync(fd, '{"version":1}\n');
+        expect(await received).toBe('{"version":1}\n');
+
+        const closed = new Promise<void>((resolve) => {
+          readable.once("close", () => resolve());
+        });
+        readable.destroy();
+        await closed;
+      } finally {
+        NodeFS.rmSync(directory, { recursive: true, force: true });
+      }
+    },
+  );
+
   it("degrades a hello-only stream after the first-sample deadline", () => {
     expect(isDesktopTelemetryContactStale(Option.some(1_000), 90_999)).toBe(false);
     expect(isDesktopTelemetryContactStale(Option.some(1_000), 91_000)).toBe(true);
