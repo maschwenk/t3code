@@ -10,6 +10,7 @@ import type {
 
 import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts";
 import { parseMaxDeliveryAge } from "@t3tools/client-runtime/scheduled-task-webhook";
+import { resolveScheduleEnd, type ScheduleEndMode } from "@t3tools/client-runtime/scheduled-tasks";
 import {
   resolveProjectSettings,
   type LegacyProjectSettingsFields,
@@ -127,6 +128,53 @@ export function scheduleFromDraft(draft: ScheduleDraft): ScheduledTaskUpsertSche
 }
 
 type Workspace = "worktree" | "root" | "existing_worktree";
+
+/** When a schedule stops; resolved to an end time and run limit on save. */
+export type ScheduleEndDraft = {
+  readonly mode: ScheduleEndMode;
+  readonly afterHours: string;
+  /** The chosen end instant for mode "at". */
+  readonly endAt: string | null;
+  /** The end the task was saved with, so an untouched end saves back exactly. */
+  readonly savedEndsAt: string | null;
+  /** Runs as typed; empty means no limit. */
+  readonly maxRuns: string;
+};
+
+export const DEFAULT_SCHEDULE_END: ScheduleEndDraft = {
+  mode: "never",
+  afterHours: "12",
+  endAt: null,
+  savedEndsAt: null,
+  maxRuns: "",
+};
+
+export function scheduleEndDraftForTask(
+  task: Pick<ScheduledTask, "endsAt" | "maxRuns">,
+): ScheduleEndDraft {
+  return {
+    ...DEFAULT_SCHEDULE_END,
+    ...(task.endsAt == null
+      ? {}
+      : { mode: "at" as const, endAt: task.endsAt, savedEndsAt: task.endsAt }),
+    maxRuns: task.maxRuns == null ? "" : String(task.maxRuns),
+  };
+}
+
+/** The end time and run limit an edit saves, or why it cannot. */
+export function scheduleEndFromDraft(end: ScheduleEndDraft, nowMs: number) {
+  return resolveScheduleEnd(
+    {
+      mode: end.mode,
+      afterHours: end.afterHours,
+      endAt: end.endAt,
+      endAtUnchanged: end.endAt !== null && end.endAt === end.savedEndsAt,
+      maxRuns: end.maxRuns,
+    },
+    nowMs,
+  );
+}
+
 export type ScheduledTaskDraft = {
   readonly task: ScheduledTask | null;
   readonly title: string;
@@ -135,6 +183,7 @@ export type ScheduledTaskDraft = {
   readonly modelSelection: ModelSelection | null;
   readonly modelSelectionIsExplicit: boolean;
   readonly schedule: ScheduleDraft;
+  readonly end: ScheduleEndDraft;
   readonly workspace: Workspace;
   readonly baseRef: string;
   readonly checkoutPath: string;
@@ -158,6 +207,10 @@ function draftSignature(draft: ScheduledTaskDraft): string {
     [...draft.schedule.weekdays].sort((a, b) => a - b),
     draft.schedule.intervalMinutes,
     draft.schedule.maxDeliveryAgeMinutes,
+    draft.end.mode,
+    draft.end.afterHours,
+    draft.end.endAt,
+    draft.end.maxRuns,
     draft.workspace,
     draft.baseRef,
     draft.checkoutPath,
@@ -186,6 +239,7 @@ export function createDraft(
     modelSelection,
     modelSelectionIsExplicit: false,
     schedule: DEFAULT_SCHEDULE,
+    end: DEFAULT_SCHEDULE_END,
     workspace: "worktree",
     baseRef: "main",
     checkoutPath: "",
@@ -204,6 +258,7 @@ export function editDraft(task: ScheduledTask): ScheduledTaskDraft {
     modelSelection: task.modelSelection,
     modelSelectionIsExplicit: true,
     schedule: scheduleDraftForTask(task),
+    end: scheduleEndDraftForTask(task),
     workspace: task.workspaceStrategy.type,
     baseRef: task.workspaceStrategy.type === "worktree" ? task.workspaceStrategy.baseRef : "main",
     checkoutPath:

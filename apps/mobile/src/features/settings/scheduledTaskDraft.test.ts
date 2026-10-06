@@ -14,6 +14,7 @@ import {
   DEFAULT_SCHEDULE,
   hasScheduledTaskDraftChanges,
   scheduleDraftForTask,
+  scheduleEndFromDraft,
   scheduleFromDraft,
 } from "./scheduledTaskDraft";
 
@@ -344,5 +345,30 @@ describe("scheduled task model defaults", () => {
         null,
       ),
     ).toBeNull();
+  });
+});
+
+describe("schedule end drafts", () => {
+  const now = Date.parse("2026-10-06T12:00:00.000Z");
+  const ending = { ...legacyTask, endsAt: "2026-10-06T23:59:59.250Z", maxRuns: 40 };
+
+  it("saves an untouched end exactly so an edit does not restart the schedule", () => {
+    expect(scheduleEndFromDraft(editDraft(ending).end, now)).toEqual({
+      endsAt: "2026-10-06T23:59:59.250Z",
+      maxRuns: 40,
+    });
+  });
+
+  it("treats a changed end as an unsaved edit and resolves a duration from now", () => {
+    const initial = editDraft(ending);
+    const changed = {
+      ...initial,
+      end: { ...initial.end, mode: "duration" as const, afterHours: "2" },
+    };
+    expect(hasScheduledTaskDraftChanges(initial, changed)).toBe(true);
+    expect(scheduleEndFromDraft(changed.end, now)).toEqual({
+      endsAt: "2026-10-06T14:00:00.000Z",
+      maxRuns: 40,
+    });
   });
 });

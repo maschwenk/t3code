@@ -68,9 +68,15 @@ import { useSettingsEnvironmentFilter, type SettingsTarget } from "./settings-en
 import {
   editDraft,
   scheduledTaskDefaultModel,
+  scheduleEndFromDraft,
   scheduleFromDraft,
   type ScheduledTaskDraft as Draft,
 } from "./scheduledTaskDraft";
+import {
+  scheduledTaskTiming,
+  sortScheduledTasksByUpcoming,
+  type ScheduleEndMode,
+} from "@t3tools/client-runtime/scheduled-tasks";
 import { settingsTargetsForProject } from "./settings-environment-filter.logic";
 import { useScheduledTaskEditor } from "./scheduled-task-editor";
 import { scheduledTaskEditorSessionAtom } from "./scheduled-task-editor-state";
@@ -97,11 +103,39 @@ const DAYS = [
   { index: 0, label: "Sun" },
 ] as const;
 
+const END_MODE_LABELS: Record<ScheduleEndMode, string> = {
+  never: "Never",
+  duration: "After a duration",
+  at: "At a time",
+};
+
 function describeSchedule(task: ScheduledTask): string {
   if (task.schedule.type === "webhook") return "On webhook";
   if (task.schedule.type === "interval") return formatScheduledTaskInterval(task.schedule.everyMs);
   const days = task.schedule.weekdays?.length ? repeatLabel(task.schedule.weekdays) : "Every day";
   return `${days} at ${formatTime(task.schedule.timeOfDay)}`;
+}
+
+/** "Every 15 minutes · in 5 min · until Tue 1:00 AM", or "… · Ended after 3 runs". */
+function describeScheduleStatus(task: ScheduledTask, now: number): string {
+  const timing = scheduledTaskTiming(task, now);
+  const parts = [describeSchedule(task)];
+  if (timing.lifecycle === "ended") {
+    parts.push(`Ended after ${task.runCount} ${task.runCount === 1 ? "run" : "runs"}`);
+  } else if (timing.lifecycle === "paused") {
+    parts.push("Paused");
+  } else {
+    if (timing.nextRunAt) parts.push(formatNextScheduledTaskRun(timing.nextRunAt, now));
+    if (timing.endsAt) {
+      parts.push(
+        `until ${new Date(timing.endsAt).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" })}`,
+      );
+    }
+    if (timing.runsLeft !== null) {
+      parts.push(`${timing.runsLeft} ${timing.runsLeft === 1 ? "run" : "runs"} left`);
+    }
+  }
+  return parts.join(" · ");
 }
 
 function formatTime(value: string): string {
@@ -587,6 +621,7 @@ function TaskForm({
   });
   const submissionPending = useRef(false);
   const [timePickerOpen, setTimePickerOpen] = useState(false);
+  const [endPicker, setEndPicker] = useState<"date" | "time" | null>(null);
   const taskMissing =
     draft.task !== null &&
     tasks.data !== null &&
@@ -646,6 +681,11 @@ function TaskForm({
       Alert.alert("Project unavailable", "Choose a project in this environment.");
       return;
     }
+    const end = scheduleEndFromDraft(draft.end, Date.now());
+    if ("error" in end) {
+      Alert.alert("Invalid end", end.error);
+      return;
+    }
     const input: ScheduledTaskUpsertInput = {
       ...(draft.task ? { id: draft.task.id, requireExisting: true } : {}),
       title: draft.title.trim(),
@@ -668,9 +708,8 @@ function TaskForm({
       runtimeMode: draft.runtimeMode,
       interactionMode: draft.task?.interactionMode ?? "default",
       creationSource: draft.task?.creationSource ?? "mobile",
-      // Ends are set from chat or desktop; a mobile edit keeps the current one.
-      endsAt: liveTask?.endsAt ?? draft.task?.endsAt ?? null,
-      maxRuns: liveTask?.maxRuns ?? draft.task?.maxRuns ?? null,
+      endsAt: end.endsAt,
+      maxRuns: end.maxRuns,
     };
     // Lock before React renders, and keep successful creates locked until the form closes.
     submissionPending.current = true;
@@ -988,6 +1027,96 @@ function TaskForm({
           />
         </View>
       </SettingsSection>
+
+      <SettingsSection title="Ends">
+        <SelectRow
+          label="Ends"
+          value={END_MODE_LABELS[draft.end.mode]}
+          actions={(Object.keys(END_MODE_LABELS) as Array<ScheduleEndMode>).map((mode) => ({
+            id: mode,
+            title: END_MODE_LABELS[mode],
+            state: draft.end.mode === mode ? ("on" as const) : undefined,
+          }))}
+          onSelect={(id) => {
+            const mode = id === "duration" || id === "at" ? id : "never";
+            setEndPicker(null);
+            setDraft({
+              ...draft,
+              end: {
+                ...draft.end,
+                mode,
+                endAt:
+                  mode === "at" && draft.end.endAt === null
+                    ? new Date(Date.now() + 60 * 60_000).toISOString()
+                    : draft.end.endAt,
+              },
+            });
+          }}
+        />
+        {draft.end.mode === "duration" ? (
+          <FormField
+            label="Hours after saving"
+            value={draft.end.afterHours}
+            keyboardType="decimal-pad"
+            disabled={saving}
+            borderTop
+            onChange={(afterHours) => setDraft({ ...draft, end: { ...draft.end, afterHours } })}
+          />
+        ) : null}
+        {draft.end.mode === "at" && draft.end.endAt !== null ? (
+          <>
+            <PickerRow
+              label="Date"
+              value={new Date(draft.end.endAt).toLocaleDateString([], {
+                weekday: "short",
+                month: "short",
+                day: "numeric",
+              })}
+              borderTop
+              onPress={() => setEndPicker((open) => (open === "date" ? null : "date"))}
+            />
+            <PickerRow
+              label="Time"
+              value={new Date(draft.end.endAt).toLocaleTimeString([], {
+                hour: "numeric",
+                minute: "2-digit",
+              })}
+              borderTop
+              onPress={() => setEndPicker((open) => (open === "time" ? null : "time"))}
+            />
+            {endPicker !== null ? (
+              <DateTimePicker
+                value={new Date(draft.end.endAt)}
+                mode={endPicker}
+                display={Platform.OS === "ios" ? "spinner" : "default"}
+                onDismiss={() => setEndPicker(null)}
+                onValueChange={(_, selected) => {
+                  const next = new Date(draft.end.endAt ?? Date.now());
+                  if (endPicker === "date") {
+                    next.setFullYear(
+                      selected.getFullYear(),
+                      selected.getMonth(),
+                      selected.getDate(),
+                    );
+                  } else {
+                    next.setHours(selected.getHours(), selected.getMinutes(), 0, 0);
+                  }
+                  setDraft({ ...draft, end: { ...draft.end, endAt: next.toISOString() } });
+                }}
+              />
+            ) : null}
+          </>
+        ) : null}
+        <FormField
+          label="Stop after (runs)"
+          value={draft.end.maxRuns}
+          placeholder="No limit"
+          keyboardType="number-pad"
+          disabled={saving}
+          borderTop
+          onChange={(maxRuns) => setDraft({ ...draft, end: { ...draft.end, maxRuns } })}
+        />
+      </SettingsSection>
       {draft.schedule.mode === "fixed_time" ? (
         <Text className="px-2 text-sm text-foreground-muted">
           Time uses the environment's time zone, which may differ from your phone's.
@@ -1119,8 +1248,18 @@ function EnvironmentTasks({
   const tasks = useEnvironmentQuery(
     serverEnvironment.scheduledTasksLive({ environmentId, input: {} }),
   );
-  const visibleTasks = tasks.data?.tasks.filter(
-    (task) => projectIds === null || projectIds.includes(task.projectId),
+  // Soonest first, then paused, then ended: the upcoming view on mobile.
+  const visibleTasks = useMemo(
+    () =>
+      tasks.data
+        ? sortScheduledTasksByUpcoming(
+            tasks.data.tasks.filter(
+              (task) => projectIds === null || projectIds.includes(task.projectId),
+            ),
+            now,
+          )
+        : undefined,
+    [now, projectIds, tasks.data],
   );
   const setEnabled = useAtomCommand(serverEnvironment.setScheduledTaskEnabled, {
     label: "scheduled task enabled",
@@ -1193,17 +1332,7 @@ function EnvironmentTasks({
                 {task.title}
               </Text>
               <Text className="text-sm text-foreground-muted" numberOfLines={2}>
-                {describeSchedule(task)}
-                {scheduledTaskLifecycle(task, Date.now()) === "ended"
-                  ? " · Ended"
-                  : !task.enabled
-                    ? " · Paused"
-                    : task.nextRunAt
-                      ? ` · ${formatNextScheduledTaskRun(task.nextRunAt, now)}`
-                      : ""}
-                {task.endsAt && scheduledTaskLifecycle(task, Date.now()) === "active"
-                  ? ` · until ${new Date(task.endsAt).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" })}`
-                  : ""}
+                {describeScheduleStatus(task, now)}
               </Text>
               {task.lastRunError ? (
                 <Text className="text-sm text-danger-foreground" numberOfLines={2}>
@@ -1214,7 +1343,10 @@ function EnvironmentTasks({
             <ControlPillMenu
               actions={[
                 { id: "edit", title: "Edit" },
-                { id: "toggle", title: task.enabled ? "Pause" : "Resume" },
+                // An ended schedule reopens only by moving its end, in the editor.
+                ...(scheduledTaskLifecycle(task, now) === "ended"
+                  ? []
+                  : [{ id: "toggle", title: task.enabled ? "Pause" : "Resume" }]),
                 // A webhook task has no request to run without.
                 ...(task.schedule.type === "webhook" ? [] : [{ id: "run", title: "Run now" }]),
                 { id: "delete", title: "Delete", attributes: { destructive: true } },
