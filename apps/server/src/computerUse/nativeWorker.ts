@@ -153,6 +153,20 @@ async function execute(request: WorkerRequest): Promise<WorkerResponse> {
   };
 }
 
+export function nativeFailure(cause: unknown): WorkerResponse {
+  return {
+    ok: false,
+    code:
+      cause instanceof Error &&
+      (cause.name === "PermissionDeniedError" ||
+        cause.name === "AccessibilityNotEnabledError" ||
+        // xa11y wraps methods, but native property getters can still throw tags.
+        /^XA11Y_(PERMISSION_DENIED|ACCESSIBILITY_NOT_ENABLED):/.test(cause.message))
+        ? "permissions"
+        : "failed",
+  };
+}
+
 export async function runComputerUseWorker(): Promise<void> {
   let response: WorkerResponse;
   try {
@@ -163,11 +177,7 @@ export async function runComputerUseWorker(): Promise<void> {
     }
     response = await execute(decodeRequest(raw));
   } catch (cause) {
-    response = {
-      ok: false,
-      code:
-        cause instanceof Error && /PermissionDenied/.test(cause.name) ? "permissions" : "failed",
-    };
+    response = nativeFailure(cause);
   }
   process.stdout.write(JSON.stringify(response));
 }
