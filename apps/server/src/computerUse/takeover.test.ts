@@ -16,6 +16,7 @@ function fakeDesktop(options: {
   idleSeconds?: number;
   userInputAt?: number;
   covered?: boolean;
+  windowReadyAt?: number;
   activates?: boolean;
 }) {
   let clock = 0;
@@ -43,7 +44,7 @@ function fakeDesktop(options: {
       return true;
     },
     raise: async () => undefined,
-    owner: () => (options.covered ? USER_APP : state.front),
+    owner: () => (options.covered || clock < (options.windowReadyAt ?? 0) ? USER_APP : state.front),
     // Synthetic events count as input, as they may on macOS.
     idleSeconds: () => (clock - Math.max(lastUserInput, lastSynthetic)) / 1000,
     pointer: () => state.pointer,
@@ -110,6 +111,19 @@ describe("pointer delivery", () => {
       expect(state.activations).toEqual([]);
       expect(state.gestureFront).toBeUndefined();
     }
+  });
+
+  it("waits for the raised window to receive input after its app becomes frontmost", async () => {
+    const { desktop, state, gesture } = fakeDesktop({ front: USER_APP, windowReadyAt: 150 });
+    const outcome = await deliverPointer(
+      desktop,
+      { pid: TARGET, points: [AT], takeover: true },
+      gesture,
+    );
+    expect(outcome).toMatchObject({ ok: true, via: "takeover" });
+    expect(state.gestureFront).toBe(TARGET);
+    expect(state.front).toBe(USER_APP);
+    expect(state.pointer).toEqual({ x: 10, y: 20 });
   });
 
   it("counts the agent's own recent gesture as idle time, but not the user's input after it", async () => {

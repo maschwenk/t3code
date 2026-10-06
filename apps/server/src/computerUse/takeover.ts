@@ -88,7 +88,10 @@ export async function deliverPointer(
     if (!desktop.activate(pid)) return { ok: false, code: "input_requires_foreground" };
     await desktop.raise();
     const deadline = desktop.now() + ACTIVATION_TIMEOUT_MS;
-    while ((await desktop.frontmost()) !== pid) {
+    // macOS reports AXFrontmost before the window server has finished raising
+    // the window. Wait for hit-testing to agree before delivering input.
+    while ((await desktop.frontmost()) !== pid || !owned()) {
+      if ((userMoved = userMovedSince(quietSince))) return { ok: false, code: "user_active" };
       if (desktop.now() >= deadline) return { ok: false, code: "input_requires_foreground" };
       await desktop.sleep(50);
     }
