@@ -24,6 +24,7 @@ import type {
   ThreadId,
 } from "@t3tools/contracts";
 import { DEFAULT_WEBHOOK_PROMPT } from "@t3tools/client-runtime/scheduled-task-webhook";
+import { scheduledTaskStatusText } from "@t3tools/client-runtime/scheduled-tasks";
 import {
   MAX_WEBHOOK_DELIVERY_AGE_MINUTES,
   MIN_SCHEDULED_TASK_INTERVAL_MS,
@@ -67,7 +68,6 @@ import {
   matchesScheduledTaskScope,
   scheduleFromDraft,
   scheduledTaskDefaultModel,
-  scheduledTaskTiming,
   taskToDraft,
   type DraftState,
   type EndMode,
@@ -170,25 +170,6 @@ function draftForThread(thread: ScheduledTaskThreadContext): DraftState {
   };
 }
 
-/** "Every 15 minutes · until 1:00 AM" style status for a task. */
-export function scheduledTaskStatusText(
-  task: ScheduledTask,
-  formatTime: (iso: string) => string,
-): string {
-  const timing = scheduledTaskTiming(task);
-  if (timing.lifecycle === "paused") return `${timing.cadence} · Paused`;
-  if (timing.lifecycle === "ended") {
-    return `${timing.cadence} · Ended after ${task.runCount} ${task.runCount === 1 ? "run" : "runs"}`;
-  }
-  const parts = [timing.cadence];
-  if (task.schedule.type === "webhook") parts.push("Listening");
-  if (timing.endsAt !== null) parts.push(`until ${formatTime(timing.endsAt)}`);
-  if (timing.runsLeft !== null) {
-    parts.push(`${timing.runsLeft} ${timing.runsLeft === 1 ? "run" : "runs"} left`);
-  }
-  return parts.join(" · ");
-}
-
 /** Labelled field: a caption sitting above its control. */
 function Field({
   label,
@@ -269,11 +250,17 @@ const DELIVERY_OUTCOME_LABELS: Record<ScheduledTaskWebhookDeliveryOutcome, strin
   disabled: "Task paused",
   rate_limited: "Rate limited",
   expired: "Too old",
+  ended: "Schedule ended",
 };
 
 function deliveryOutcomeVariant(outcome: ScheduledTaskWebhookDeliveryOutcome) {
   if (outcome === "accepted") return "success";
-  if (outcome === "disabled" || outcome === "rate_limited" || outcome === "expired") {
+  if (
+    outcome === "disabled" ||
+    outcome === "ended" ||
+    outcome === "rate_limited" ||
+    outcome === "expired"
+  ) {
     return "warning";
   }
   return "error";
@@ -496,7 +483,7 @@ function ScheduledTaskRow({
       status={
         <div className="flex flex-wrap items-center gap-2">
           <span>
-            {scheduledTaskStatusText(task, (iso) => new Date(iso).toLocaleString())}
+            {scheduledTaskStatusText(task, (iso) => new Date(iso).toLocaleString(), Date.now())}
             {task.enabled && !isWebhook && task.nextRunAt
               ? ` · Next run ${relativeLabel(task.nextRunAt)}`
               : ""}
@@ -1444,7 +1431,7 @@ export function ScheduledTaskEditorDialog({
               )}
             </div>
 
-            {draft.scheduleMode === "webhook" ? null : (
+            {
               <div className="flex flex-wrap items-center gap-3">
                 <Label htmlFor="scheduled-task-end-mode">Ends</Label>
                 <Select
@@ -1511,7 +1498,7 @@ export function ScheduledTaskEditorDialog({
                   <span className="text-xs text-muted-foreground">runs</span>
                 </div>
               </div>
-            )}
+            }
 
             <div className="flex items-center justify-between gap-4">
               <div className="min-w-0 space-y-1">

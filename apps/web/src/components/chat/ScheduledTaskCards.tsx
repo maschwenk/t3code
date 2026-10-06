@@ -18,16 +18,17 @@ import { formatUpcomingTimestamp } from "~/timestampFormat";
 
 import {
   ScheduledTaskEditorDialog,
-  scheduledTaskStatusText,
   type ScheduledTaskThreadContext,
 } from "../settings/ScheduledTasksSettings";
 import { SettingsScopeProvider } from "../settings/SettingsScopeContext";
-import { scheduledTaskTiming } from "../settings/scheduledTasksSettings.logic";
 import type { MessagesTimelineRow } from "./MessagesTimeline.logic";
 import {
+  NO_SCHEDULED_TASK_CARDS,
   placeScheduledTaskCards,
+  scheduledTaskStatusText,
+  scheduledTaskTiming,
   type ScheduledTaskCardPlacement,
-} from "./scheduledTaskCards.logic";
+} from "@t3tools/client-runtime/scheduled-tasks";
 import { Button, InlineButton } from "../ui/button";
 
 interface ScheduledTaskEditorRequest {
@@ -102,7 +103,6 @@ interface ScheduledRunTasksValue {
 
 const ThreadScheduledTaskCardsContext = createContext<ThreadScheduledTaskCardsValue | null>(null);
 const ScheduledRunTasksContext = createContext<ScheduledRunTasksValue | null>(null);
-const NO_CARDS: ScheduledTaskCardPlacement = { byMessageId: new Map(), trailing: [] };
 
 /**
  * Owns the schedule subscription for an open thread so a change to any
@@ -137,7 +137,7 @@ export function ThreadScheduledTaskCardsProvider({
   );
   const placement = useMemo(() => {
     // Most threads have no schedules; skip walking rows on every streamed update.
-    if (boundTasks.length === 0) return NO_CARDS;
+    if (boundTasks.length === 0) return NO_SCHEDULED_TASK_CARDS;
     const anchors = rows.flatMap((row) =>
       row.kind === "assistant-meta" ||
       (row.kind === "message" && row.message.role === "assistant" && row.showAssistantMeta)
@@ -182,9 +182,10 @@ function ScheduledTaskInlineCard({
   readonly environmentId: EnvironmentId;
   readonly timestampFormat: TimestampFormat;
 }) {
-  const timing = scheduledTaskTiming(task);
+  const nowMs = Date.now();
+  const timing = scheduledTaskTiming(task, nowMs);
   const formatTime = (iso: string) => formatUpcomingTimestamp(iso, timestampFormat);
-  const status = scheduledTaskStatusText(task, formatTime);
+  const status = scheduledTaskStatusText(task, formatTime, nowMs);
   return (
     <div
       className="mt-2 flex w-full max-w-md items-center gap-3 rounded-xl border border-border/70 bg-card px-3 py-2.5"

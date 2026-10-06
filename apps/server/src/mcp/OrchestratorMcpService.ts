@@ -227,7 +227,7 @@ function scheduledTaskWorkspaceStrategy(
     : { type: "worktree", baseRef: "main", startFromOrigin: true };
 }
 
-function scheduledTaskSummary(task: ScheduledTask): OrchestratorMcpScheduledTask {
+function scheduledTaskSummary(task: ScheduledTask, nowMs: number): OrchestratorMcpScheduledTask {
   return {
     scheduledTaskId: task.id,
     title: task.title,
@@ -237,7 +237,7 @@ function scheduledTaskSummary(task: ScheduledTask): OrchestratorMcpScheduledTask
     boundThreadId: task.threadId,
     schedule: task.schedule,
     cadence: scheduledTaskCadenceLabel(task.schedule),
-    status: scheduledTaskLifecycle(task),
+    status: scheduledTaskLifecycle(task, nowMs),
     nextRunAt: task.nextRunAt,
     endsAt: task.endsAt ?? null,
     nextRunLocal: localTimeLabel(task.nextRunAt),
@@ -1507,7 +1507,7 @@ const make = Effect.gen(function* () {
               failure("orchestration_error", `Could not schedule task: ${error.message}`),
             ),
           );
-        return scheduledTaskSummary(task);
+        return scheduledTaskSummary(task, DateTime.toEpochMillis(yield* DateTime.now));
       }),
     listScheduledTasks: (scope, input) =>
       Effect.gen(function* () {
@@ -1520,10 +1520,11 @@ const make = Effect.gen(function* () {
               failure("orchestration_error", `Could not list scheduled tasks: ${error.message}`),
             ),
           );
+        const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
         return {
           tasks: tasks
             .filter((task) => projectId === undefined || task.projectId === projectId)
-            .map(scheduledTaskSummary),
+            .map((task) => scheduledTaskSummary(task, nowMs)),
         };
       }),
     updateScheduledTask: (scope, input) =>
@@ -1580,7 +1581,7 @@ const make = Effect.gen(function* () {
               failure("orchestration_error", `Could not update scheduled task: ${error.message}`),
             ),
           );
-        return scheduledTaskSummary(task);
+        return scheduledTaskSummary(task, DateTime.toEpochMillis(yield* DateTime.now));
       }),
     deleteScheduledTask: (scope, input) =>
       Effect.gen(function* () {

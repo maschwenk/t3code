@@ -3,6 +3,7 @@ import {
   MessageId,
   PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
   ScheduledTask,
+  scheduledTaskEndReached,
   ScheduledTaskError,
   ScheduledTaskId,
   ThreadId,
@@ -139,6 +140,7 @@ export type WebhookDeliveryOutcome =
   | "queue_full"
   | "rate_limited"
   | "disabled"
+  | "ended"
   | "rejected_signature"
   | "expired"
   | "not_found"
@@ -154,6 +156,7 @@ export type WebhookTriggerResult =
   | { readonly _tag: "not_found" }
   | { readonly _tag: "rejected_signature" }
   | { readonly _tag: "disabled" }
+  | { readonly _tag: "ended" }
   | {
       readonly _tag: "rate_limited";
       /** Too many requests to this hook, or too many runs already waiting. */
@@ -789,7 +792,9 @@ export const layer = Layer.effect(
                 ? "The task's trigger changed before this delivery ran."
                 : !active.enabled
                   ? "The task was paused before this delivery ran."
-                  : null;
+                  : scheduledTaskEndReached(active, DateTime.toEpochMillis(startedAt))
+                    ? "The schedule ended before this delivery ran."
+                    : null;
           if (reason !== null) return yield* new WebhookDeliverySkipped({ reason });
         }
 
@@ -1606,6 +1611,12 @@ export const layer = Layer.effect(
               yield* log("disabled");
               yield* observe("disabled");
               return { _tag: "disabled" as const };
+            }
+            // "Review the next 5 PRs" or "listen until Friday" ends a webhook too.
+            if (scheduledTaskEndReached(task, DateTime.toEpochMillis(now))) {
+              yield* log("ended");
+              yield* observe("ended");
+              return { _tag: "ended" as const };
             }
             const signature = schedule.signature;
             if (signature !== null) {

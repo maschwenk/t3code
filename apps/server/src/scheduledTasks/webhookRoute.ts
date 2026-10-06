@@ -122,6 +122,8 @@ export const layer = HttpApiBuilder.group(
             return json(401, { error: "invalid_signature" }, "rejected_signature");
           case "disabled":
             return json(409, { error: "hook_disabled" }, "disabled");
+          case "ended":
+            return json(409, { error: "hook_ended" }, "ended");
           case "rate_limited":
             return json(429, { error: "rate_limited" }, result.outcome);
           case "expired":

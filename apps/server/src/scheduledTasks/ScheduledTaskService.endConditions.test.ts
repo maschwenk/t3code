@@ -76,7 +76,10 @@ it.effect("posts a thread-bound schedule into its thread until the end time, the
       const [task] = (yield* service.list()).tasks;
       assert.equal(task?.runCount, 3);
       assert.isNull(task?.nextRunAt);
-      assert.equal(task === undefined ? null : scheduledTaskLifecycle(task), "ended");
+      assert.equal(
+        task === undefined ? null : scheduledTaskLifecycle(task, START + 60 * 60_000),
+        "ended",
+      );
 
       // Resuming cannot reopen an ended schedule; moving its end later does.
       const resumed = yield* service.setEnabled({ id: created.task.id, enabled: true });
@@ -98,7 +101,7 @@ it.effect("posts a thread-bound schedule into its thread until the end time, the
         }),
       );
       assert.isNotNull(extended.task.nextRunAt);
-      assert.equal(scheduledTaskLifecycle(extended.task), "active");
+      assert.equal(scheduledTaskLifecycle(extended.task, START + 60 * 60_000), "active");
     }).pipe(
       Effect.provide(ScheduledTaskService.layer.pipe(Layer.provide(layerRecordingSends(sends)))),
     );
@@ -129,7 +132,10 @@ it.effect("stops after its run budget", () =>
       yield* advanceMinutes(5);
       assert.equal((yield* Ref.get(sends)).length, 2);
       const [task] = (yield* service.list()).tasks;
-      assert.equal(task === undefined ? null : scheduledTaskLifecycle(task), "ended");
+      assert.equal(
+        task === undefined ? null : scheduledTaskLifecycle(task, START + 60 * 60_000),
+        "ended",
+      );
     }).pipe(
       Effect.provide(ScheduledTaskService.layer.pipe(Layer.provide(layerRecordingSends(sends)))),
     );
@@ -173,7 +179,10 @@ it.effect("ends a schedule whose end passed while the server was down without ru
       const [task] = (yield* service.list()).tasks;
       assert.isNull(task?.nextRunAt);
       assert.equal(task?.runCount, 0);
-      assert.equal(task === undefined ? null : scheduledTaskLifecycle(task), "ended");
+      assert.equal(
+        task === undefined ? null : scheduledTaskLifecycle(task, START + 60 * 60_000),
+        "ended",
+      );
     }).pipe(
       Effect.provide(ScheduledTaskService.layer.pipe(Layer.provide(layerRecordingSends(sends)))),
     );

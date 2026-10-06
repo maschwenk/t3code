@@ -16,7 +16,8 @@ import {
 
 import { ThreadDetailsSection } from "./ThreadDetailsSection";
 import { cn } from "../../lib/utils";
-import { relativeLabel, scheduledTaskStatusText } from "../settings/ScheduledTasksSettings";
+import { relativeLabel } from "../settings/ScheduledTasksSettings";
+import { scheduledTaskStatusText } from "@t3tools/client-runtime/scheduled-tasks";
 import { openScheduledTaskEditor, useScheduleInThread } from "./ScheduledTaskCards";
 import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
@@ -184,8 +185,11 @@ export function ThreadAutomationsPanel(props: {
                 {task.title}
               </span>
               <p className="truncate text-2xs text-muted-foreground">
-                {scheduledTaskStatusText(task, (iso) =>
-                  new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
+                {scheduledTaskStatusText(
+                  task,
+                  (iso) =>
+                    new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
+                  Date.now(),
                 )}
                 {task.enabled && task.nextRunAt !== null
                   ? ` · next ${relativeLabel(task.nextRunAt)}`
@@ -231,7 +235,7 @@ export function ThreadAutomationsPanel(props: {
               </Tooltip>
             )}
             {/* An ended schedule only reopens by moving its end, which the editor does. */}
-            {scheduledTaskLifecycle(task) === "ended" ? null : (
+            {scheduledTaskLifecycle(task, Date.now()) === "ended" ? null : (
               <Switch
                 checked={task.enabled}
                 disabled={busyTaskId !== null}

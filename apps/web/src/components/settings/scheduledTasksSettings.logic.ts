@@ -8,11 +8,9 @@ import {
   type RuntimeMode,
   type ProviderInteractionMode,
   type ServerSettings,
-  scheduledTaskCadenceLabel,
-  scheduledTaskLifecycle,
-  type ScheduledTaskLifecycle,
 } from "@t3tools/contracts";
 import { parseMaxDeliveryAge } from "@t3tools/client-runtime/scheduled-task-webhook";
+import { resolveScheduleEnd, type ScheduleEndMode } from "@t3tools/client-runtime/scheduled-tasks";
 
 import {
   resolveProjectSettings,
@@ -51,7 +49,7 @@ export function validateScheduledTasksSearch(raw: Record<string, unknown>) {
 export type ScheduleMode = "fixed" | "interval" | "webhook";
 export type WorkspaceMode = "root" | "worktree" | "existing_worktree";
 /** How a timer stops: never, a duration from when it is saved, or at a clock time. */
-export type EndMode = "never" | "duration" | "at";
+export type EndMode = ScheduleEndMode;
 
 export interface DraftState {
   readonly editingId: string | null;
@@ -126,70 +124,23 @@ export function endFromDraft(
 ):
   | { readonly endsAt: string | null; readonly maxRuns: number | null }
   | { readonly error: string } {
-  const maxRunsText = draft.maxRuns.trim();
-  const maxRuns = maxRunsText === "" ? null : Number(maxRunsText);
-  if (maxRuns !== null && (!Number.isSafeInteger(maxRuns) || maxRuns < 1)) {
-    return { error: "Enter a whole number of runs, or leave it blank." };
-  }
-  if (draft.scheduleMode === "webhook" || draft.endMode === "never") {
-    return { endsAt: null, maxRuns };
-  }
-  if (draft.endMode === "duration") {
-    const hours = Number(draft.endAfterHours);
-    if (!Number.isFinite(hours) || hours <= 0) {
-      return { error: "Enter how many hours the schedule should run." };
-    }
-    return { endsAt: new Date(nowMs + Math.round(hours * 3_600_000)).toISOString(), maxRuns };
-  }
-  if (draft.savedEndsAt !== null && draft.endAt === toDateTimeLocalInput(draft.savedEndsAt)) {
-    return { endsAt: draft.savedEndsAt, maxRuns };
-  }
-  const endMs = new Date(draft.endAt).getTime();
-  if (Number.isNaN(endMs)) return { error: "Choose when the schedule should end." };
-  if (endMs <= nowMs) return { error: "Choose an end time in the future." };
-  return { endsAt: new Date(endMs).toISOString(), maxRuns };
-}
-
-export interface ScheduledTaskTiming {
-  readonly lifecycle: ScheduledTaskLifecycle;
-  /** "Every 15 minutes". */
-  readonly cadence: string;
-  /** When the next run starts, for active timers. */
-  readonly nextRunAt: string | null;
-  /** "until <time>" or "5 runs left" style end, null when the schedule has none. */
-  readonly endsAt: string | null;
-  readonly runsLeft: number | null;
-}
-
-/** What a schedule card or row needs to say about when a task runs and stops. */
-export function scheduledTaskTiming(task: ScheduledTask): ScheduledTaskTiming {
-  const lifecycle = scheduledTaskLifecycle(task);
-  return {
-    lifecycle,
-    cadence: scheduledTaskCadenceLabel(task.schedule),
-    nextRunAt: lifecycle === "active" ? task.nextRunAt : null,
-    endsAt: task.endsAt ?? null,
-    runsLeft: task.maxRuns == null ? null : Math.max(0, task.maxRuns - task.runCount),
-  };
-}
-
-/** Active timers by next run, then paused ones, then ended ones by most recent run. */
-export function sortScheduledTasksByUpcoming(
-  tasks: ReadonlyArray<ScheduledTask>,
-): ReadonlyArray<ScheduledTask> {
-  const rank = (task: ScheduledTask) => {
-    const lifecycle = scheduledTaskLifecycle(task);
-    return lifecycle === "active" ? 0 : lifecycle === "paused" ? 1 : 2;
-  };
-  return tasks.toSorted((a, b) => {
-    const byRank = rank(a) - rank(b);
-    if (byRank !== 0) return byRank;
-    if (rank(a) === 0) {
-      // Webhook tasks have no next run; they follow the timers.
-      return (a.nextRunAt ?? "\uffff").localeCompare(b.nextRunAt ?? "\uffff");
-    }
-    return (b.lastRunAt ?? b.updatedAt).localeCompare(a.lastRunAt ?? a.updatedAt);
-  });
+  const unchanged =
+    draft.savedEndsAt !== null && draft.endAt === toDateTimeLocalInput(draft.savedEndsAt);
+  const parsed = draft.endAt === "" ? Number.NaN : new Date(draft.endAt).getTime();
+  return resolveScheduleEnd(
+    {
+      mode: draft.endMode,
+      afterHours: draft.endAfterHours,
+      endAt: unchanged
+        ? draft.savedEndsAt
+        : Number.isNaN(parsed)
+          ? null
+          : new Date(parsed).toISOString(),
+      endAtUnchanged: unchanged,
+      maxRuns: draft.maxRuns,
+    },
+    nowMs,
+  );
 }
 
 /** GitHub's signature settings, the most common sender. */

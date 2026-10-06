@@ -218,13 +218,31 @@ export type ScheduledTask = typeof ScheduledTask.Type;
 export type ScheduledTaskLifecycle = "active" | "paused" | "ended";
 
 export function scheduledTaskLifecycle(
-  task: Pick<ScheduledTask, "enabled" | "schedule" | "nextRunAt" | "endsAt" | "maxRuns">,
+  task: Pick<
+    ScheduledTask,
+    "enabled" | "schedule" | "nextRunAt" | "endsAt" | "maxRuns" | "runCount"
+  >,
+  nowMs: number,
 ): ScheduledTaskLifecycle {
   if (!task.enabled) return "paused";
-  if (task.schedule.type === "webhook") return "active";
+  // A webhook has no next run to clear, so its end is read from the condition itself.
+  if (task.schedule.type === "webhook") {
+    return scheduledTaskEndReached(task, nowMs) ? "ended" : "active";
+  }
   return task.nextRunAt === null && (task.endsAt != null || task.maxRuns != null)
     ? "ended"
     : "active";
+}
+
+/** True once a schedule has used its run budget or passed its end time. */
+export function scheduledTaskEndReached(
+  task: Pick<ScheduledTask, "endsAt" | "maxRuns" | "runCount">,
+  nowMs: number,
+): boolean {
+  if (task.maxRuns != null && task.runCount >= task.maxRuns) return true;
+  if (task.endsAt == null) return false;
+  const endMs = Date.parse(task.endsAt);
+  return Number.isFinite(endMs) && nowMs > endMs;
 }
 
 const WEEKDAY_NAMES = [
@@ -327,6 +345,7 @@ export const ScheduledTaskWebhookDeliveryOutcome = Schema.Literals([
   "disabled",
   "rate_limited",
   "expired",
+  "ended",
 ]);
 export type ScheduledTaskWebhookDeliveryOutcome = typeof ScheduledTaskWebhookDeliveryOutcome.Type;
 

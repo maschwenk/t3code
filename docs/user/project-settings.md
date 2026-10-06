@@ -95,6 +95,9 @@ GitHub on a new pull request or a CI job that failed. A public URL needs a
 its URL from the editor. Without one, the editor shows only the URL's path.
 **Rotate** replaces the URL and the old one stops working.
 
+A webhook task can also end at a set time or after a number of runs; later
+requests are logged as ended and do not run.
+
 The prompt decides what the agent sees. Placeholders pull values out of the
 request: `{{body.path}}` for a JSON or form field, `{{headers.name}}`,
 `{{query.name}}`, `{{body}}` for the raw body, and `{{request}}` for everything.

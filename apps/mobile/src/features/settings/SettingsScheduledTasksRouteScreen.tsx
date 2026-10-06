@@ -1194,14 +1194,14 @@ function EnvironmentTasks({
               </Text>
               <Text className="text-sm text-foreground-muted" numberOfLines={2}>
                 {describeSchedule(task)}
-                {scheduledTaskLifecycle(task) === "ended"
+                {scheduledTaskLifecycle(task, Date.now()) === "ended"
                   ? " · Ended"
                   : !task.enabled
                     ? " · Paused"
                     : task.nextRunAt
                       ? ` · ${formatNextScheduledTaskRun(task.nextRunAt, now)}`
                       : ""}
-                {task.endsAt && scheduledTaskLifecycle(task) === "active"
+                {task.endsAt && scheduledTaskLifecycle(task, Date.now()) === "active"
                   ? ` · until ${new Date(task.endsAt).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" })}`
                   : ""}
               </Text>

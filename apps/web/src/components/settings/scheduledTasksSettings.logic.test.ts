@@ -21,7 +21,6 @@ import {
   matchesScheduledTaskScope,
   scheduleFromDraft,
   endFromDraft,
-  sortScheduledTasksByUpcoming,
   taskToDraft,
 } from "./scheduledTasksSettings.logic";
 
@@ -352,20 +351,5 @@ describe("scheduled task end conditions", () => {
     expect(endFromDraft({ ...draft, maxRuns: "2.5" }, now)).toEqual({
       error: "Enter a whole number of runs, or leave it blank.",
     });
-  });
-
-  it("lists active timers by next run ahead of paused and ended schedules", () => {
-    const task = (id: string, overrides: Partial<ScheduledTask>): ScheduledTask => ({
-      ...intervalTask,
-      id: ScheduledTaskId.make(id),
-      ...overrides,
-    });
-    const ordered = sortScheduledTasksByUpcoming([
-      task("ended", { nextRunAt: null }),
-      task("paused", { enabled: false, nextRunAt: null }),
-      task("later", { nextRunAt: "2026-10-06T13:00:00.000Z" }),
-      task("sooner", { nextRunAt: "2026-10-06T12:15:00.000Z" }),
-    ]);
-    expect(ordered.map((entry) => entry.id)).toEqual(["sooner", "later", "paused", "ended"]);
   });
 });

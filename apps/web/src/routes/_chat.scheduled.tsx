@@ -22,8 +22,10 @@ import {
 import { useMemo, useState } from "react";
 
 import { openScheduledTaskEditor } from "../components/chat/ScheduledTaskCards";
-import { scheduledTaskStatusText } from "../components/settings/ScheduledTasksSettings";
-import { sortScheduledTasksByUpcoming } from "../components/settings/scheduledTasksSettings.logic";
+import {
+  scheduledTaskStatusText,
+  sortScheduledTasksByUpcoming,
+} from "@t3tools/client-runtime/scheduled-tasks";
 import { Button } from "../components/ui/button";
 import {
   Empty,
@@ -140,11 +142,11 @@ function EnvironmentSchedules({
   );
   const timestampFormat = useEnvironmentSettings(environment.environmentId).timestampFormat;
   const tasks = useMemo(
-    () => sortScheduledTasksByUpcoming(tasksQuery.data?.tasks ?? []),
+    () => sortScheduledTasksByUpcoming(tasksQuery.data?.tasks ?? [], Date.now()),
     [tasksQuery.data],
   );
-  const upcoming = tasks.filter((task) => scheduledTaskLifecycle(task) === "active");
-  const inactive = tasks.filter((task) => scheduledTaskLifecycle(task) !== "active");
+  const upcoming = tasks.filter((task) => scheduledTaskLifecycle(task, Date.now()) === "active");
+  const inactive = tasks.filter((task) => scheduledTaskLifecycle(task, Date.now()) !== "active");
   return (
     <section className="flex flex-col gap-4">
       {showHeading ? (
@@ -233,7 +235,7 @@ function ScheduleRow({
   const project = useProjects().find(
     (candidate) => candidate.environmentId === environmentId && candidate.id === task.projectId,
   );
-  const lifecycle = scheduledTaskLifecycle(task);
+  const lifecycle = scheduledTaskLifecycle(task, Date.now());
   const formatTime = (iso: string) => formatUpcomingTimestamp(iso, timestampFormat);
   const [busy, setBusy] = useState(false);
   const setEnabled = useAtomCommand(serverEnvironment.setScheduledTaskEnabled, {
@@ -280,7 +282,7 @@ function ScheduleRow({
           {lifecycle === "active" && task.nextRunAt !== null
             ? `${formatTime(task.nextRunAt)} · `
             : ""}
-          {scheduledTaskStatusText(task, formatTime)} · {where}
+          {scheduledTaskStatusText(task, formatTime, Date.now())} · {where}
         </span>
       </button>
       {threadRef ? (
