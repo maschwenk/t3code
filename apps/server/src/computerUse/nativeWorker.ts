@@ -329,9 +329,7 @@ async function takeSnapshot(
   await visit(start, startPath, 0, 0, startClip, []);
   const menus = options.root
     ? undefined
-    : native
-        .menuBar(app.pid)
-        .flatMap((item) => (item.title && item.title !== "Apple" ? [item.title] : []));
+    : agentMenuBar(native.menuBar(app.pid)).flatMap((item) => (item.title ? [item.title] : []));
   let image: NativeSnapshot["image"];
   if (request.includeImage) {
     const captured = await captureWindow(native, app, window);
@@ -412,8 +410,53 @@ const menuTitle = (title: string | null) =>
     .trim()
     .toLowerCase();
 
+/**
+ * The menu bar an agent may use. The Apple menu runs system commands (System
+ * Settings, Force Quit, Log Out, Lock Screen) and the application menu's
+ * submenus (Services) run other apps, so neither is reachable from an
+ * allowlisted app. AppKit always puts those two menus first.
+ */
+export function agentMenuBar(bar: readonly MenuItem[]): MenuItem[] {
+  const [, application, ...rest] = bar;
+  if (!application) return [];
+  return [
+    {
+      ...application,
+      children: () => application.children().filter((item) => !item.hasSubmenu()),
+    },
+    ...rest,
+  ];
+}
+
+/** The menus agentMenuBar withholds, whose shortcuts must not be sent as keys either. */
+export function systemMenus(bar: readonly MenuItem[]): MenuItem[] {
+  const [apple, application] = bar;
+  return [
+    ...(apple ? [apple] : []),
+    ...(application ? application.children().filter((item) => item.hasSubmenu()) : []),
+  ];
+}
+
+/** The enabled item within two levels below `items` whose key equivalent is `character` with `mask`. */
+export function findShortcut(
+  items: readonly MenuItem[],
+  character: string,
+  mask: number,
+  depth = 0,
+): MenuItem | undefined {
+  for (const item of items) {
+    if (item.enabled && item.shortcut?.character === character && item.shortcut.mask === mask)
+      return item;
+    if (depth < 2) {
+      const found = findShortcut(item.children(), character, mask, depth + 1);
+      if (found) return found;
+    }
+  }
+  return undefined;
+}
+
 function pressMenuPath(native: MacNative, pid: number, path: readonly string[]): WorkerResponse {
-  let items = native.menuBar(pid);
+  let items = agentMenuBar(native.menuBar(pid));
   for (const [index, title] of path.entries()) {
     const item = items.find((candidate) => menuTitle(candidate.title) === menuTitle(title));
     if (!item || (index === path.length - 1 && !item.enabled))
@@ -433,22 +476,6 @@ function pressMenuPath(native: MacNative, pid: number, path: readonly string[]):
   return { ok: false, code: "menu_not_found" };
 }
 
-/** The enabled menu item whose key equivalent is `character` with `mask`. */
-function menuShortcut(native: MacNative, pid: number, character: string, mask: number) {
-  const search = (items: MenuItem[], depth: number): MenuItem | undefined => {
-    for (const item of items) {
-      if (item.enabled && item.shortcut?.character === character && item.shortcut.mask === mask)
-        return item;
-      if (depth < 2) {
-        const found = search(item.children(), depth + 1);
-        if (found) return found;
-      }
-    }
-    return undefined;
-  };
-  return search(native.menuBar(pid), 0);
-}
-
 async function pressKey(
   native: MacNative,
   pid: number,
@@ -456,15 +483,22 @@ async function pressKey(
 ): Promise<WorkerResponse> {
   const chord = parseKeyChord(action.key);
   if (!chord) return { ok: false, code: "unsupported_action" };
-  // Background AppKit apps ignore posted command shortcuts, but their menu
-  // items still run through accessibility. Shortcuts with no menu item fall
-  // through to key events, which web and Electron content does handle.
-  if (isShortcut(chord) && chord.character && (await frontmostPid()) !== pid) {
-    const item = menuShortcut(native, pid, chord.character, menuModifierMask(chord));
-    if (item) {
-      for (let index = 0; index < (action.repeat ?? 1); index++)
-        if (!item.press()) return { ok: false, code: "failed" };
-      return { ok: true, via: "menu" };
+  if (isShortcut(chord) && chord.character) {
+    const bar = native.menuBar(pid);
+    const mask = menuModifierMask(chord);
+    // Posted keys still reach the Apple and Services menus (shift+cmd+q logs out).
+    if (findShortcut(systemMenus(bar), chord.character, mask))
+      return { ok: false, code: "unsupported_action" };
+    // Background AppKit apps ignore posted command shortcuts, but their menu
+    // items still run through accessibility. Shortcuts with no menu item fall
+    // through to key events, which web and Electron content does handle.
+    if ((await frontmostPid()) !== pid) {
+      const item = findShortcut(agentMenuBar(bar), chord.character, mask);
+      if (item) {
+        for (let index = 0; index < (action.repeat ?? 1); index++)
+          if (!item.press()) return { ok: false, code: "failed" };
+        return { ok: true, via: "menu" };
+      }
     }
   }
   let flags = 0;

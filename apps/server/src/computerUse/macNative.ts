@@ -22,6 +22,8 @@ export type MenuItem = {
   readonly shortcut: { readonly character: string; readonly mask: number } | null;
   readonly press: () => boolean;
   readonly children: () => MenuItem[];
+  /** Whether the item opens a submenu, even one AppKit fills only when it opens. */
+  readonly hasSubmenu: () => boolean;
 };
 
 const LIBRARIES = {
@@ -158,6 +160,7 @@ export async function loadMacNative() {
             ? toArray(attribute(child, "AXChildren")).map(menuItem)
             : [menuItem(child)],
         ),
+      hasSubmenu: () => toArray(attribute(element, "AXChildren")).length > 0,
     };
   };
 

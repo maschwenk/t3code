@@ -3,12 +3,16 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeURL from "node:url";
 import { expect, it } from "@effect/vitest";
 import {
+  agentMenuBar,
   backgroundAction,
+  findShortcut,
   identityMatches,
   launchServicesPids,
   nativeFailure,
   relocationMatches,
+  systemMenus,
 } from "./nativeWorker.ts";
+import type { MenuItem } from "./macNative.ts";
 import { ComputerUseError, type ElementTarget } from "./protocol.ts";
 
 it.each([
@@ -179,4 +183,37 @@ it("relocates a named element that moved, never an unnamed one", () => {
   expect(relocationMatches({ ...unnamed, bounds: { ...row.bounds!, y: 90 } }, unnamed)).toBe(false);
   expect(relocationMatches(unnamed, unnamed)).toBe(true);
   expect(relocationMatches({ ...row, name: "Drafts" }, row)).toBe(false);
+});
+
+const menu = (
+  title: string,
+  children: MenuItem[] = [],
+  shortcut: MenuItem["shortcut"] = null,
+): MenuItem => ({
+  title,
+  enabled: true,
+  shortcut,
+  press: () => true,
+  children: () => children,
+  hasSubmenu: () => children.length > 0 || title === "Services",
+});
+// Services is filled only when it opens, so it reports a submenu with no items yet.
+const menuBar = [
+  menu("Apple", [menu("System Settings…"), menu("Log Out Max…", [], { character: "q", mask: 1 })]),
+  menu("TextEdit", [
+    menu("Settings…"),
+    menu("Services"),
+    menu("Quit TextEdit", [], { character: "q", mask: 0 }),
+  ]),
+  menu("File", [menu("New", [], { character: "n", mask: 0 })]),
+];
+
+it("keeps the Apple menu and Services out of an agent's menu bar and shortcuts", () => {
+  const bar = agentMenuBar(menuBar);
+  expect(bar.map((item) => item.title)).toEqual(["TextEdit", "File"]);
+  expect(bar[0]?.children().map((item) => item.title)).toEqual(["Settings…", "Quit TextEdit"]);
+  expect(findShortcut(bar, "q", 0)?.title).toBe("Quit TextEdit");
+  expect(findShortcut(bar, "q", 1)).toBeUndefined();
+  expect(findShortcut(systemMenus(menuBar), "q", 1)?.title).toBe("Log Out Max…");
+  expect(systemMenus(menuBar).map((item) => item.title)).toEqual(["Apple", "Services"]);
 });
