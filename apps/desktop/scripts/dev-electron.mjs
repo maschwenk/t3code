@@ -91,8 +91,27 @@ const serverDir = NodePath.join(desktopDir, "../server");
 const serverWatch = NodeChildProcess.spawn(
   NodePath.join(serverDir, "node_modules/.bin/vp"),
   ["pack", "--watch", "--no-clean", "--logLevel", "warn"],
-  { cwd: serverDir, env: process.env, stdio: ["ignore", "inherit", "inherit"] },
+  {
+    cwd: serverDir,
+    env: process.env,
+    stdio: ["ignore", "inherit", "inherit"],
+    // vp runs the real watcher as its own child, so give the pair a process
+    // group that shutdown can signal as a whole.
+    detached: hostPlatform !== "win32",
+  },
 );
+
+function stopServerWatch(signal) {
+  try {
+    if (hostPlatform !== "win32" && serverWatch.pid !== undefined) {
+      process.kill(-serverWatch.pid, signal);
+    } else {
+      serverWatch.kill(signal);
+    }
+  } catch {
+    // Already exited.
+  }
+}
 
 let shuttingDown = false;
 let restartTimer = null;
@@ -281,7 +300,7 @@ async function shutdown(exitCode) {
     watcher.close();
   }
 
-  serverWatch.kill("SIGTERM");
+  stopServerWatch("SIGTERM");
   try {
     if (NodeFS.readFileSync(runnerPidPath, "utf8") === String(process.pid)) {
       NodeFS.rmSync(runnerPidPath);
@@ -295,6 +314,7 @@ async function shutdown(exitCode) {
     setTimeout(resolve, childTreeGracePeriodMs);
   });
   killChildTree("KILL");
+  stopServerWatch("SIGKILL");
 
   process.exit(exitCode);
 }
