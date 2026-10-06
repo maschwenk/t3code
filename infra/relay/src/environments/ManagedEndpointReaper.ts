@@ -18,7 +18,7 @@ export const MANAGED_ENDPOINT_SWEEP_ATTEMPT_LIMIT = 100;
 export const MANAGED_ENDPOINT_SWEEP_LIST_REQUEST_LIMIT = 10;
 // Age buckets for legacy candidates, in days since the tunnel went down (or
 // was created, for one that never connected).
-export const MANAGED_ENDPOINT_LEGACY_AGE_BUCKET_DAYS = [7, 30, 90] as const;
+const MANAGED_ENDPOINT_LEGACY_AGE_BUCKET_DAYS = [7, 30, 90] as const;
 
 export interface ManagedEndpointSweepResult {
   readonly mode: RelayConfiguration.ManagedEndpointCleanupMode;
