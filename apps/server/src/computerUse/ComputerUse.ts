@@ -140,31 +140,30 @@ const make = Effect.gen(function* () {
     })),
     Effect.mapError((cause) => new ComputerUseError({ code: "disabled", cause })),
   );
+  /**
+   * Checks the live settings. Native work runs for seconds to minutes, so it
+   * must not hold the settings write lock: that would also hold back the user
+   * turning computer use off. Batches check again before every step instead.
+   */
+  const check = (app: string, includeImage: boolean) =>
+    settings.getSettings.pipe(
+      Effect.mapError((cause) => new ComputerUseError({ code: "disabled", cause })),
+      Effect.flatMap((current) => {
+        if (!current.enableAgentComputerAccess) {
+          receipts.clear();
+          return Effect.fail(fail("disabled"));
+        }
+        if (!current.computerUseAllowedApps.includes(app)) return Effect.fail(fail("app_denied"));
+        if (includeImage && !current.enableComputerScreenCapture)
+          return Effect.fail(fail("capture_denied"));
+        return Effect.void;
+      }),
+    );
   const authorized = <A>(
     app: string,
     includeImage: boolean,
     work: Effect.Effect<A, ComputerUseError>,
-  ) =>
-    settings
-      .withSettingsSnapshot((current) =>
-        Effect.gen(function* () {
-          if (!current.enableAgentComputerAccess) {
-            receipts.clear();
-            return yield* fail("disabled");
-          }
-          if (!current.computerUseAllowedApps.includes(app)) return yield* fail("app_denied");
-          if (includeImage && !current.enableComputerScreenCapture)
-            return yield* fail("capture_denied");
-          return yield* work;
-        }),
-      )
-      .pipe(
-        Effect.mapError((cause) =>
-          cause._tag === "ComputerUseError"
-            ? cause
-            : new ComputerUseError({ code: "disabled", cause }),
-        ),
-      );
+  ) => check(app, includeImage).pipe(Effect.andThen(work));
 
   /** Takes a snapshot and issues its receipt. Callers hold the mutex and authorization. */
   const observe = (caller: string, app: string, includeImage: boolean, options: SnapshotOptions) =>
@@ -252,6 +251,12 @@ const make = Effect.gen(function* () {
             const completed: ActResult["completed"][number][] = [];
             let error: ComputerUseError | undefined;
             for (const { action, target } of steps) {
+              // Turning computer use off, or removing the app, stops the rest of a batch.
+              const allowed = yield* Effect.result(check(app, false));
+              if (Result.isFailure(allowed)) {
+                error = allowed.failure;
+                break;
+              }
               if (action.kind === "wait") {
                 yield* Effect.sleep(action.ms);
                 completed.push("wait");
@@ -272,8 +277,9 @@ const make = Effect.gen(function* () {
             // Starting the snapshot worker takes longer than most apps need to
             // finish reacting, so the view is taken without an extra delay.
             const options = { ...receipt.options, offset: 0 };
+            const includeImage = input.includeImage ?? false;
             let after = yield* Effect.result(
-              observe(caller, app, input.includeImage ?? false, options),
+              authorized(app, includeImage, observe(caller, app, includeImage, options)),
             );
             if (
               Result.isFailure(after) &&
@@ -282,7 +288,7 @@ const make = Effect.gen(function* () {
             ) {
               const { root: _root, ...whole } = options;
               after = yield* Effect.result(
-                observe(caller, app, input.includeImage ?? false, whole),
+                authorized(app, includeImage, observe(caller, app, includeImage, whole)),
               );
             }
             return {

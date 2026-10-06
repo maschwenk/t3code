@@ -147,6 +147,50 @@ it.effect("checks live settings before an existing session can act", () => {
   }).pipe(Effect.provide(setup(calls)));
 });
 
+it.effect("stops a batch when computer use is turned off while it runs", () => {
+  const calls: WorkerRequest[] = [];
+  // The user turns computer use off while the first step's native work runs.
+  const layer = ComputerUse.layer.pipe(
+    Layer.provide(
+      Layer.effect(
+        Driver.Driver,
+        Effect.gen(function* () {
+          const settings = yield* ServerSettings.ServerSettingsService;
+          return {
+            execute: (request: WorkerRequest) =>
+              Effect.gen(function* () {
+                calls.push(request);
+                if (request.kind === "snapshot") return { ok: true as const, snapshot };
+                yield* settings
+                  .updateSettings({ enableAgentComputerAccess: false })
+                  .pipe(Effect.orDie);
+                return { ok: true as const };
+              }),
+          };
+        }),
+      ),
+    ),
+    Layer.provide(DesktopTelemetryReceiver.layerTest()),
+    Layer.provideMerge(
+      ServerSettings.layerTest({
+        enableAgentComputerAccess: true,
+        computerUseAllowedApps: ["Calculator"],
+      }),
+    ),
+    Layer.provide(NodeServices.layer),
+  );
+  return Effect.gen(function* () {
+    const computer = yield* ComputerUse.ComputerUse;
+    const shot = yield* computer.snapshot("a", { app: "Calculator", includeImage: false });
+    const press = { ref: 1, action: { kind: "press" as const } };
+    const result = yield* computer.act("a", { snapshotId: shot.snapshotId, steps: [press, press] });
+    expect(result.completed).toEqual(["accessibility"]);
+    expect(result.error?.code).toBe("disabled");
+    expect(result.snapshotError?.code).toBe("disabled");
+    expect(calls.filter((call) => call.kind === "action")).toHaveLength(1);
+  }).pipe(Effect.provide(layer));
+});
+
 it.effect("expires snapshots and invalidates all observations after an uncertain action", () => {
   const calls: WorkerRequest[] = [];
   return Effect.gen(function* () {
