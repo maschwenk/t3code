@@ -35,6 +35,7 @@ import * as NodeURL from "node:url";
 
 import * as ElectronWindow from "../../electron/ElectronWindow.ts";
 import * as BrowserImport from "../../preview/BrowserImport/BrowserImport.ts";
+import * as PreviewExtensions from "../../preview/extensions/PreviewExtensions.ts";
 import * as PreviewManager from "../../preview/Manager.ts";
 import * as DesktopClientSettings from "../../settings/DesktopClientSettings.ts";
 import { PREVIEW_WEBVIEW_PREFERENCES } from "../../preview/WebviewPreferences.ts";
@@ -284,17 +285,24 @@ const resolveClearPartitions = Effect.fn("desktop.ipc.preview.resolveClearPartit
   return [yield* manager.getBrowserPartition(scope, persistent, namespace)];
 });
 
+/**
+ * Registered separately from `methods`: it also needs `PreviewExtensions`,
+ * which loads the profile's extensions before the tab's first page so their
+ * content scripts run there too.
+ */
 export const getPreviewConfig = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.PREVIEW_GET_CONFIG_CHANNEL,
   payload: DesktopPreviewConfigInputSchema,
   result: DesktopPreviewWebviewConfigSchema,
   handler: Effect.fn("desktop.ipc.preview.getConfig")(function* ({ environmentId, profileId }) {
     const manager = yield* PreviewManager.PreviewManager;
+    const extensions = yield* PreviewExtensions.PreviewExtensions;
     const { scope, persistent, namespace } = resolvePartitionScope(environmentId, profileId);
     // Creating the session first is what installs the UA rewrite and permission
     // handlers; a guest that attached to an untouched partition would run with
     // Electron's default UA and Chromium's default permission behaviour.
-    yield* manager.getBrowserSession(scope, persistent, namespace);
+    const session = yield* manager.getBrowserSession(scope, persistent, namespace);
+    yield* extensions.attachSession(session);
     return {
       partition: yield* manager.getBrowserPartition(scope, persistent, namespace),
       webPreferences: PREVIEW_WEBVIEW_PREFERENCES,
@@ -499,7 +507,6 @@ export const methods = [
   openDevTools,
   clearCookies,
   clearCache,
-  getPreviewConfig,
   setAnnotationTheme,
   pickElement,
   cancelPickElement,

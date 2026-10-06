@@ -69,6 +69,7 @@ import {
   setSnapShotShortcutSuppressed,
 } from "./methods/snapShot.ts";
 import * as PreviewIpc from "./methods/preview.ts";
+import * as PreviewExtensionsIpc from "./methods/previewExtensions.ts";
 import * as AppActivationIpc from "./methods/appActivation.ts";
 import {
   completeLegacyLocalStorage,
@@ -80,6 +81,7 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   const ipc = yield* DesktopIpc.DesktopIpc;
   yield* installNotificationBadge();
   yield* PreviewIpc.installPreviewEventForwarding();
+  yield* PreviewExtensionsIpc.installPreviewExtensionEventForwarding();
 
   yield* ipc.handle(AppActivationIpc.setReady);
   yield* ipc.handle(AppActivationIpc.complete);
@@ -154,4 +156,12 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   }
   yield* ipc.handle(PreviewIpc.listBrowserImportSources);
   yield* ipc.handle(PreviewIpc.importBrowserCookies);
+  yield* ipc.handle(PreviewIpc.getPreviewConfig);
+  yield* ipc.handle(PreviewExtensionsIpc.list);
+  yield* ipc.handle(PreviewExtensionsIpc.openPopup);
+  yield* ipc.handle(PreviewExtensionsIpc.listBrowserCandidates);
+  yield* ipc.handle(PreviewExtensionsIpc.importFromBrowser);
+  yield* ipc.handle(PreviewExtensionsIpc.installFromWebStore);
+  yield* ipc.handle(PreviewExtensionsIpc.setEnabled);
+  yield* ipc.handle(PreviewExtensionsIpc.remove);
 });

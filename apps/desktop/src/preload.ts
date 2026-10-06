@@ -419,5 +419,33 @@ contextBridge.exposeInMainWorld("desktopBridge", {
       return () =>
         ipcRenderer.removeListener(IpcChannels.PREVIEW_POINTER_EVENT_CHANNEL, wrappedListener);
     },
+    extensions: {
+      list: (tabWebContentsId) =>
+        ipcRenderer.invoke(IpcChannels.PREVIEW_EXTENSIONS_LIST_CHANNEL, { tabWebContentsId }),
+      onChange: (listener) => {
+        const wrappedListener = () => listener();
+        ipcRenderer.on(IpcChannels.PREVIEW_EXTENSIONS_CHANGED_CHANNEL, wrappedListener);
+        return () =>
+          ipcRenderer.removeListener(
+            IpcChannels.PREVIEW_EXTENSIONS_CHANGED_CHANNEL,
+            wrappedListener,
+          );
+      },
+      openPopup: (input) =>
+        ipcRenderer.invoke(IpcChannels.PREVIEW_EXTENSIONS_OPEN_POPUP_CHANNEL, input),
+      listBrowserCandidates: () =>
+        ipcRenderer.invoke(IpcChannels.PREVIEW_EXTENSIONS_CANDIDATES_CHANNEL),
+      importFromBrowser: (input) =>
+        ipcRenderer.invoke(IpcChannels.PREVIEW_EXTENSIONS_IMPORT_CHANNEL, input),
+      installFromWebStore: (reference) =>
+        ipcRenderer.invoke(IpcChannels.PREVIEW_EXTENSIONS_INSTALL_WEB_STORE_CHANNEL, { reference }),
+      setEnabled: (extensionId, enabled) =>
+        ipcRenderer.invoke(IpcChannels.PREVIEW_EXTENSIONS_SET_ENABLED_CHANNEL, {
+          extensionId,
+          enabled,
+        }),
+      remove: (extensionId) =>
+        ipcRenderer.invoke(IpcChannels.PREVIEW_EXTENSIONS_REMOVE_CHANNEL, { extensionId }),
+    },
   },
 } satisfies DesktopBridge);

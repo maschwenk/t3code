@@ -57,6 +57,8 @@ interface Props {
    * to mount the three-dot menu (hard reload, devtools, zoom, clear data).
    */
   trailingActions?: ReactNode;
+  /** Browser extension toolbar buttons, shown before the trailing actions. */
+  extensionActions?: ReactNode;
   /**
    * Slot between the nav buttons and the URL input. The preview view uses it
    * to name the tab's browser profile, which is otherwise invisible.
@@ -90,6 +92,7 @@ export function PreviewChromeRow({
   pickDisabled,
   pickDisabledReason,
   trailingActions,
+  extensionActions,
   leadingActions,
 }: Props) {
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -307,6 +310,7 @@ export function PreviewChromeRow({
             </TooltipPopup>
           </Tooltip>
         ) : null}
+        {extensionActions}
         {trailingActions}
       </form>
       <div

@@ -76,6 +76,7 @@ function overlay(
 ) {
   return {
     hasWebContents: true,
+    webContentsId: 1,
     canGoBack: false,
     canGoForward: false,
     loading: false,

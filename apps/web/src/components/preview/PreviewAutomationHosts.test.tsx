@@ -225,6 +225,7 @@ describe("PreviewAutomationHosts ownership", () => {
     );
     const overlay = {
       hasWebContents: true,
+      webContentsId: 1,
       canGoBack: false,
       canGoForward: false,
       loading: false,

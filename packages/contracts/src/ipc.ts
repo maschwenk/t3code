@@ -14,6 +14,11 @@ import { SnapShotSource } from "./chatAttachment.ts";
 import { EnvironmentId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { BrowserProfileId } from "./browserProfile.ts";
 import type {
+  PreviewExtension,
+  PreviewExtensionAnchor,
+  PreviewExtensionCandidateProfile,
+} from "./previewExtensions.ts";
+import type {
   BrowserImportResult,
   BrowserImportSource,
   BrowserImportSourceId,
@@ -1349,6 +1354,29 @@ export interface DesktopPreviewBridge {
   };
   onStateChange: (listener: (tabId: string, state: DesktopPreviewTabState) => void) => () => void;
   onPointerEvent: (listener: (event: DesktopPreviewPointerEvent) => void) => () => void;
+  /** Chrome extensions loaded into the preview browser's persistent profiles. */
+  extensions: {
+    /** Installed extensions with toolbar state resolved for one preview tab. */
+    list: (tabWebContentsId?: number) => Promise<ReadonlyArray<PreviewExtension>>;
+    /** Fires when the installed set or any toolbar state changes; re-list to read it. */
+    onChange: (listener: () => void) => () => void;
+    openPopup: (input: {
+      readonly extensionId: string;
+      readonly tabWebContentsId: number;
+      readonly anchor: PreviewExtensionAnchor;
+    }) => Promise<void>;
+    /** Extensions installed in other browsers on this machine, by profile. */
+    listBrowserCandidates: () => Promise<ReadonlyArray<PreviewExtensionCandidateProfile>>;
+    importFromBrowser: (input: {
+      readonly sourceId: string;
+      readonly profileDirectory: string;
+      readonly extensionIds: ReadonlyArray<string>;
+    }) => Promise<ReadonlyArray<PreviewExtension>>;
+    /** Accepts a Chrome Web Store URL or an extension id. */
+    installFromWebStore: (reference: string) => Promise<PreviewExtension>;
+    setEnabled: (extensionId: string, enabled: boolean) => Promise<void>;
+    remove: (extensionId: string) => Promise<void>;
+  };
 }
 
 export type ConfirmDialogVariant = "default" | "destructive";
