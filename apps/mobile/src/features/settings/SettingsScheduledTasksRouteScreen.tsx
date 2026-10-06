@@ -7,6 +7,7 @@ import type {
 import {
   MAX_WEBHOOK_DELIVERY_AGE_MINUTES,
   resolveEnvironmentMachineKind,
+  scheduledTaskLifecycle,
 } from "@t3tools/contracts";
 import type { MenuAction } from "@react-native-menu/menu";
 import { DateTimePicker } from "@expo/ui/community/datetime-picker";
@@ -667,6 +668,9 @@ function TaskForm({
       runtimeMode: draft.runtimeMode,
       interactionMode: draft.task?.interactionMode ?? "default",
       creationSource: draft.task?.creationSource ?? "mobile",
+      // Ends are set from chat or desktop; a mobile edit keeps the current one.
+      endsAt: liveTask?.endsAt ?? draft.task?.endsAt ?? null,
+      maxRuns: liveTask?.maxRuns ?? draft.task?.maxRuns ?? null,
     };
     // Lock before React renders, and keep successful creates locked until the form closes.
     submissionPending.current = true;
@@ -1190,11 +1194,16 @@ function EnvironmentTasks({
               </Text>
               <Text className="text-sm text-foreground-muted" numberOfLines={2}>
                 {describeSchedule(task)}
-                {!task.enabled
-                  ? " · Paused"
-                  : task.nextRunAt
-                    ? ` · ${formatNextScheduledTaskRun(task.nextRunAt, now)}`
-                    : ""}
+                {scheduledTaskLifecycle(task) === "ended"
+                  ? " · Ended"
+                  : !task.enabled
+                    ? " · Paused"
+                    : task.nextRunAt
+                      ? ` · ${formatNextScheduledTaskRun(task.nextRunAt, now)}`
+                      : ""}
+                {task.endsAt && scheduledTaskLifecycle(task) === "active"
+                  ? ` · until ${new Date(task.endsAt).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" })}`
+                  : ""}
               </Text>
               {task.lastRunError ? (
                 <Text className="text-sm text-danger-foreground" numberOfLines={2}>
