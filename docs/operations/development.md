@@ -106,6 +106,14 @@ vp lint <files>
 vp run --filter <package> typecheck
 ```
 
+`typecheck` runs `tsrs`, and type-aware rules in `vp lint` and `vp check` run on `tsrslint`
+through a Vite+ patch. Neither ships Windows or Intel macOS binaries: lint falls back to the
+bundled tsgolint there, and `tsrs` needs a locally built binary via `TSRS_BINARY`.
+
+`tsrs` does not run the Effect language service. `vp run --filter <package> lint:effect` runs the
+Effect-patched `tsc`, which reports both TypeScript and Effect diagnostics; CI runs it after
+`typecheck`.
+
 Use `vp run lint:mobile` for native mobile changes. CI owns the full suite; see
 [ci.yml](../../.github/workflows/ci.yml) for its current jobs.
 The [manual Windows lane](../../.github/workflows/windows-tests.yml) is available for focused

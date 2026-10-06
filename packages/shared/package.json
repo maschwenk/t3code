@@ -401,8 +401,9 @@
     }
   },
   "scripts": {
-    "typecheck": "tsc --noEmit",
-    "test": "vp test run --config ../../vite.config.ts --dir ."
+    "typecheck": "tsrs --noEmit",
+    "test": "vp test run --config ../../vite.config.ts --dir .",
+    "lint:effect": "tsc --noEmit"
   },
   "dependencies": {
     "@noble/curves": "catalog:",

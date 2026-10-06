@@ -1,0 +1,18 @@
+diff --git a/dist/bin.js b/dist/bin.js
+--- a/dist/bin.js
++++ b/dist/bin.js
+@@ -1649,7 +1649,13 @@ async function lint() {
+ 	const oxlintMainPath = resolve$1("oxlint");
+ 	const oxlintPackageRoot = dirname(dirname(oxlintMainPath));
+ 	const binPath = join(oxlintPackageRoot, "bin", "oxlint");
+-	const oxlintTsgolintPath = resolveTsgolintExecutable(resolve$1("oxlint-tsgolint/bin/tsgolint"), import.meta.url);
++	// Prefer the workspace's tsrslint backend; fall back to the bundled tsgolint where tsrslint has no binary.
++	let oxlintTsgolintPath = process.env.OXLINT_TSGOLINT_PATH;
++	if (!oxlintTsgolintPath) try {
++		oxlintTsgolintPath = createRequire(join(process.cwd(), "package.json"))("@maschwenk/tsrslint").binaryPath();
++	} catch {
++		oxlintTsgolintPath = resolveTsgolintExecutable(resolve$1("oxlint-tsgolint/bin/tsgolint"), import.meta.url);
++	}
+ 	return {
+ 		binPath,
+ 		envs: {

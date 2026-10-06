@@ -81,6 +81,9 @@ jobs:
       - name: Typecheck
         run: vpr typecheck
 
+      - name: Check Effect diagnostics
+        run: vpr lint:effect
+
   build:
     name: Build
     runs-on: ${{ github.repository_owner == 'pingdotgg' && 'blacksmith-8vcpu-ubuntu-2404' || 'ubuntu-24.04' }}
