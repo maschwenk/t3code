@@ -1257,6 +1257,7 @@ export const ServerSettings = Schema.Struct({
   enableComputerPointerTakeover: Schema.Boolean.pipe(
     Schema.withDecodingDefault(Effect.succeed(true)),
   ),
+  computerUseAllowAllApps: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   computerUseAllowedApps: Schema.Array(
     Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(200)),
   )
@@ -1654,6 +1655,7 @@ export const ServerSettingsPatch = Schema.Struct({
   enableAgentComputerAccess: Schema.optionalKey(Schema.Boolean),
   enableComputerScreenCapture: Schema.optionalKey(Schema.Boolean),
   enableComputerPointerTakeover: Schema.optionalKey(Schema.Boolean),
+  computerUseAllowAllApps: Schema.optionalKey(Schema.Boolean),
   computerUseAllowedApps: Schema.optionalKey(
     Schema.Array(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(200))).check(
       Schema.isMaxLength(64),

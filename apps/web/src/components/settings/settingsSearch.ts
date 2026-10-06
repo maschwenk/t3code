@@ -625,6 +625,13 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["native macOS accessibility remote control claude computer use"],
   },
   {
+    id: "computer-all-apps",
+    title: "Allow all computer apps",
+    to: "/settings/integrations",
+    scope: "environment",
+    searchTerms: ["native macOS allowlist whitelist any every app computer use approval"],
+  },
+  {
     id: "computer-allowed-apps",
     title: "Allowed computer apps",
     to: "/settings/integrations",

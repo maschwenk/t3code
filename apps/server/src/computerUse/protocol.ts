@@ -282,7 +282,7 @@ export class ComputerUseError extends Schema.TaggedError<ComputerUseError>()("Co
       case "disabled":
         return "Computer use is off. Enable it in Settings > Integrations > Computer use on the environment you want to control.";
       case "app_denied":
-        return "This app is not in the environment's computer-use allowlist. Ask the user to add it in Settings > Integrations.";
+        return "This app is not allowed for computer use. Ask the user to enable Allow all computer apps or add it to Allowed computer apps in Settings > Integrations.";
       case "capture_denied":
         return "Screen capture is off. Ask the user to enable it in Settings > Integrations, or request a text-only snapshot.";
       case "snapshot_expired":

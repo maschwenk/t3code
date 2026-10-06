@@ -99,7 +99,7 @@ const setup = (calls: WorkerRequest[], enabled = true, failAction = false) =>
           Effect.sync(() => {
             calls.push(request);
             return request.kind === "snapshot"
-              ? { ok: true as const, snapshot }
+              ? { ok: true as const, snapshot: { ...snapshot, app: request.app } }
               : failAction
                 ? { ok: false as const, code: "failed" as const }
                 : { ok: true as const };
@@ -206,6 +206,65 @@ it.effect("blocks native work until enabled, including screen capture's separate
       "app_denied",
     );
     expect(yield* code(computer.snapshot("a", { app: "Calculator", includeImage: true }))).toBe(
+      "capture_denied",
+    );
+    expect(calls).toHaveLength(0);
+  }).pipe(Effect.provide(setup(calls, false)));
+});
+
+it.effect(
+  "allows unlisted apps and revokes existing access when all-app access is turned off",
+  () => {
+    const calls: WorkerRequest[] = [];
+    return Effect.gen(function* () {
+      const computer = yield* ComputerUse.ComputerUse;
+      const settings = yield* ServerSettings.ServerSettingsService;
+      const input = { app: "TextEdit", activate: false };
+      expect(yield* code(computer.open("a", input))).toBe("app_denied");
+      expect(calls).toHaveLength(0);
+
+      yield* settings.updateSettings({ computerUseAllowAllApps: true, computerUseAllowedApps: [] });
+      expect(yield* computer.status).toMatchObject({ allowAllApps: true, allowedApps: [] });
+      const opened = yield* computer.open("a", input);
+      const result = yield* computer.act("a", {
+        snapshotId: opened.snapshotId,
+        steps: [{ ref: 1, action: { kind: "press" } }],
+      });
+      expect(result.completed).toEqual(["accessibility"]);
+      expect(calls.map((call) => [call.kind, call.app])).toEqual([
+        ["open", "TextEdit"],
+        ["snapshot", "TextEdit"],
+        ["action", "TextEdit"],
+        ["snapshot", "TextEdit"],
+      ]);
+
+      yield* settings.updateSettings({ computerUseAllowAllApps: false });
+      expect(yield* computer.status).toMatchObject({ allowAllApps: false, allowedApps: [] });
+      expect(
+        yield* code(
+          computer.act("a", {
+            snapshotId: result.snapshot!.snapshotId,
+            steps: [{ ref: 1, action: { kind: "press" } }],
+          }),
+        ),
+      ).toBe("app_denied");
+      expect(yield* code(computer.snapshot("a", { app: "TextEdit", includeImage: false }))).toBe(
+        "app_denied",
+      );
+      expect(calls).toHaveLength(4);
+    }).pipe(Effect.provide(setup(calls)));
+  },
+);
+
+it.effect("all-app access still requires computer access and the separate capture grant", () => {
+  const calls: WorkerRequest[] = [];
+  return Effect.gen(function* () {
+    const computer = yield* ComputerUse.ComputerUse;
+    const settings = yield* ServerSettings.ServerSettingsService;
+    yield* settings.updateSettings({ computerUseAllowAllApps: true });
+    expect(yield* code(computer.open("a", { app: "TextEdit", activate: false }))).toBe("disabled");
+    yield* settings.updateSettings({ enableAgentComputerAccess: true });
+    expect(yield* code(computer.snapshot("a", { app: "TextEdit", includeImage: true }))).toBe(
       "capture_denied",
     );
     expect(calls).toHaveLength(0);

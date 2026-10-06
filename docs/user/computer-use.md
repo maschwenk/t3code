@@ -4,9 +4,10 @@ Computer use lets Claude Code and other agents inspect and operate native macOS 
 machine running your T3 environment, while you keep working in other apps. It works through the
 same agent connection when you send instructions from another computer or your phone.
 
-In **Settings → Integrations → Computer use**, select the environment, add exact app names to
-**Allowed computer apps**, and enable **Agent computer access**. Start with Calculator, TextEdit or
-another harmless app. macOS must grant Accessibility permission to the host runtime; T3 does not
+In **Settings → Integrations → Computer use**, select the environment and enable **Agent computer
+access**. Enable **Allow all computer apps** to let agents use any app without per-app approval,
+including apps you install later. To limit access, leave it off and add exact names to **Allowed
+computer apps**. macOS must grant Accessibility permission to the host runtime; T3 does not
 grant or bypass operating-system permissions for you. The native accessibility library may also
 require macOS Screen & System Audio Recording permission for text-only snapshots. This OS
 permission does not enable T3's separate screen-capture setting.
@@ -55,7 +56,8 @@ In a background Mac app, a shortcut runs the matching menu command; shortcuts th
 selection, such as Select All, may do nothing until the app is in front.
 
 Turn off Agent computer access to block further calls and stop the remaining steps of one in
-progress, or remove an app from the allowlist to revoke access to it. These grants apply to agents
+progress. To revoke access to one app, turn off **Allow all computer apps** and remove that app
+from **Allowed computer apps**. These grants apply to agents
 across the selected environment.
 
 **Allow screen captures** is a separate opt-in that requires Screen Recording permission. A capture

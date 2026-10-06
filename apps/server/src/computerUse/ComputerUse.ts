@@ -141,7 +141,12 @@ export class ComputerUse extends Context.Service<
   ComputerUse,
   {
     readonly status: Effect.Effect<
-      { enabled: boolean; allowedApps: readonly string[]; screenCaptureEnabled: boolean },
+      {
+        enabled: boolean;
+        allowAllApps: boolean;
+        allowedApps: readonly string[];
+        screenCaptureEnabled: boolean;
+      },
       ComputerUseError
     >;
     readonly snapshot: (
@@ -194,6 +199,7 @@ const make = Effect.gen(function* () {
   const status = settings.getSettings.pipe(
     Effect.map((current) => ({
       enabled: current.enableAgentComputerAccess,
+      allowAllApps: current.computerUseAllowAllApps,
       allowedApps: current.computerUseAllowedApps,
       screenCaptureEnabled: current.enableComputerScreenCapture,
     })),
@@ -212,7 +218,8 @@ const make = Effect.gen(function* () {
           receipts.clear();
           return Effect.fail(fail("disabled"));
         }
-        if (!current.computerUseAllowedApps.includes(app)) return Effect.fail(fail("app_denied"));
+        if (!current.computerUseAllowAllApps && !current.computerUseAllowedApps.includes(app))
+          return Effect.fail(fail("app_denied"));
         if (includeImage && !current.enableComputerScreenCapture)
           return Effect.fail(fail("capture_denied"));
         return Effect.succeed(current);

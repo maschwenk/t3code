@@ -26,13 +26,30 @@ export function ComputerUseSettings() {
         }
       />
       <SettingsRow
+        {...searchableSetting("computer-all-apps")}
+        serverScoped
+        settingKeys={["computerUseAllowAllApps"]}
+        description="Let agents open, read and control any macOS app on this environment's machine, including newly installed apps. No per-app approval is needed. Turn this off to use the app list below."
+        control={
+          <ScopedSwitch
+            settingKeys={["computerUseAllowAllApps"]}
+            checked={settings.computerUseAllowAllApps}
+            aria-label="Allow all computer apps"
+            onCheckedChange={(checked) =>
+              updateSettings({ computerUseAllowAllApps: Boolean(checked) })
+            }
+          />
+        }
+      />
+      <SettingsRow
         {...searchableSetting("computer-allowed-apps")}
         serverScoped
         settingKeys={["computerUseAllowedApps"]}
-        description="Exact names of running apps, separated by commas. Start with Calculator or a test app. An empty list permits no apps."
+        description="Used when Allow all computer apps is off. Enter exact app names, separated by commas. An empty list permits no apps."
         control={
           <DraftInput
             aria-label="Allowed computer apps"
+            disabled={settings.computerUseAllowAllApps}
             value={settings.computerUseAllowedApps.join(", ")}
             placeholder="Calculator, TextEdit"
             onCommit={(value) =>
