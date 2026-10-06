@@ -641,7 +641,8 @@ describe("DesktopWindow", () => {
         assert.isFalse(createdWindowOptions[0]?.webPreferences?.backgroundThrottling);
         assert.deepEqual(fakeWindow.setAutoHideCursor.mock.calls, [[false]]);
         assert.deepEqual(fakeWindow.loadURL.mock.calls[0], ["t3code-dev://app/"]);
-        assert.equal(fakeWindow.openDevTools.mock.calls.length, 1);
+        // DevTools slows the development build down; it opens only on request.
+        assert.equal(fakeWindow.openDevTools.mock.calls.length, 0);
       }).pipe(Effect.provide(layer));
     }),
   );

@@ -57,6 +57,10 @@ export const DesktopConfig = Config.all({
   ),
   appImagePath: trimmedString("APPIMAGE"),
   disableAutoUpdate: optionalBoolean("T3CODE_DISABLE_AUTO_UPDATE"),
+  // An open DevTools window makes React's development build several times
+  // slower (it records an async stack for every element), so development
+  // builds open it only on request. View → Toggle Developer Tools still works.
+  openDevToolsOnLaunch: optionalBoolean("T3CODE_DESKTOP_OPEN_DEVTOOLS"),
   mockUpdates: optionalBoolean("T3CODE_DESKTOP_MOCK_UPDATES"),
   mockUpdateServerPort: Config.Port("T3CODE_DESKTOP_MOCK_UPDATE_SERVER_PORT").pipe(
     Config.withDefault(3000),

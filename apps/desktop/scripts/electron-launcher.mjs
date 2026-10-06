@@ -118,6 +118,7 @@ function developmentEnvironment(environment) {
     ["T3CODE_OTLP_EXPORT_INTERVAL_MS", environment.T3CODE_OTLP_EXPORT_INTERVAL_MS],
     ["T3CODE_OTLP_HEADERS", environment.T3CODE_OTLP_HEADERS],
     ["T3CODE_OTLP_PROTOCOL", environment.T3CODE_OTLP_PROTOCOL],
+    ["T3CODE_DESKTOP_OPEN_DEVTOOLS", environment.T3CODE_DESKTOP_OPEN_DEVTOOLS],
     ["T3CODE_DESKTOP_APP_USER_MODEL_ID", APP_BUNDLE_ID],
   ].filter((entry) => typeof entry[1] === "string" && entry[1].trim().length > 0);
   return Object.fromEntries(envEntries);
