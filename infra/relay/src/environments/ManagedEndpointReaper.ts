@@ -37,7 +37,7 @@ export const MANAGED_ENDPOINT_SWEEP_DELETE_CONCURRENCY = 4;
 // Stop starting deletions this long after the sweep starts, leaving room under
 // the cron's two-minute timeout to finish in-flight ones and record the
 // counters. Counted from sweep start so slow listing eats into it.
-export const MANAGED_ENDPOINT_SWEEP_DELETE_BUDGET_MS = 90_000;
+const MANAGED_ENDPOINT_SWEEP_DELETE_BUDGET_MS = 90_000;
 
 export interface ManagedEndpointSweepResult {
   readonly mode: RelayConfiguration.ManagedEndpointCleanupMode;
