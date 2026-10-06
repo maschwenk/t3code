@@ -566,7 +566,27 @@ async function runPointer(
   const outcome = await deliverPointer(
     desktop,
     { pid: request.pid, points, takeover: request.takeover, ownInputAt: request.ownInputAt },
-    () => gesture(input),
+    async () => {
+      const action = request.action;
+      const release =
+        action.kind === "click" || action.kind === "click_at"
+          ? { button: action.button, count: action.count }
+          : action.kind === "drag"
+            ? { button: "left" as const, count: 1 }
+            : undefined;
+      const before = release && native.pointerReleaseCount(release.button);
+      await gesture(input);
+      // xa11y resolves after posting events, before macOS delivers them. If
+      // we restore now, the queued final drag/click moves the pointer back or
+      // reactivates the target app. Wait for the actual mouse-up events.
+      if (release && before !== undefined) {
+        const deadline = performance.now() + 1_000;
+        while ((native.pointerReleaseCount(release.button) - before) >>> 0 < release.count) {
+          if (performance.now() >= deadline) throw new Error("Pointer release was not delivered");
+          await NodeTimersPromises.setTimeout(10);
+        }
+      }
+    },
   );
   return outcome.ok
     ? { ok: true, via: outcome.via, inputAt: outcome.inputAt }

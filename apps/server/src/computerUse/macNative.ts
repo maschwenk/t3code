@@ -265,6 +265,15 @@ export async function loadMacNative() {
     /** Whether this process may capture other apps' windows (Screen Recording). */
     canCaptureScreen: () =>
       call<boolean>("cg", "CGPreflightScreenCaptureAccess", T.Boolean, [], []),
+    /** Delivered button releases, including synthesized input, in this login session. */
+    pointerReleaseCount: (button: "left" | "right") =>
+      call<number>(
+        "cg",
+        "CGEventSourceCounterForEventType",
+        T.U32,
+        [T.I32, T.U32],
+        [0, button === "left" ? 2 : 4],
+      ),
     /** Seconds since the last input event of any type in this login session. */
     idleSeconds: () =>
       call<number>(
