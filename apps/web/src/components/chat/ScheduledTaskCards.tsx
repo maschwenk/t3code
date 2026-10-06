@@ -97,6 +97,7 @@ interface ThreadScheduledTaskCardsValue extends ScheduledTaskCardPlacement {
 }
 
 const ThreadScheduledTaskCardsContext = createContext<ThreadScheduledTaskCardsValue | null>(null);
+const NO_CARDS: ScheduledTaskCardPlacement = { byMessageId: new Map(), trailing: [] };
 export const ThreadScheduledTaskCardsProvider = ThreadScheduledTaskCardsContext;
 
 /** The schedules bound to the open thread, placed against its timeline rows. */
@@ -120,6 +121,8 @@ export function useThreadScheduledTaskCards(input: {
     [allTasks, threadRef],
   );
   const placement = useMemo(() => {
+    // Most threads have no schedules; skip walking rows on every streamed update.
+    if (boundTasks.length === 0) return NO_CARDS;
     const anchors = rows.flatMap((row) =>
       row.kind === "assistant-meta" ||
       (row.kind === "message" && row.message.role === "assistant" && row.showAssistantMeta)
