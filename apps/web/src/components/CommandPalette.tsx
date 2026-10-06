@@ -64,6 +64,7 @@ import {
   SquarePenIcon,
   SunIcon,
   TextSearchIcon,
+  CalendarClockIcon,
 } from "lucide-react";
 import {
   useCallback,
@@ -186,6 +187,7 @@ import { EnvironmentMachineIcon } from "./EnvironmentMachineIcon";
 import { Checkbox } from "./ui/checkbox";
 import { ProjectFavicon } from "./ProjectFavicon";
 import { ProjectFilePicker } from "./files/ProjectFilePicker";
+import { openScheduledTaskEditor } from "./chat/ScheduledTaskCards";
 import { openLinkPullRequestDialog } from "./pullRequest/LinkPullRequestDialog";
 import { ProjectContentSearchDialog } from "./search/ProjectContentSearchDialog";
 import { toggleThemeEditorForTheme } from "./settings/themeEditorStore";
@@ -1979,6 +1981,26 @@ function OpenCommandPaletteDialog(props: {
     const thread = activeThread;
     actionItems.push({
       kind: "action",
+      value: "action:schedule-in-thread",
+      searchTerms: ["schedule", "scheduled", "recurring", "every", "remind", "later", "repeat"],
+      title: "Schedule a task in this chat",
+      icon: <CalendarClockIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        openScheduledTaskEditor({
+          environmentId: thread.environmentId,
+          task: null,
+          thread: {
+            threadId: thread.id,
+            projectId: thread.projectId,
+            modelSelection: thread.modelSelection,
+            runtimeMode: thread.runtimeMode,
+            interactionMode: thread.interactionMode,
+          },
+        });
+      },
+    });
+    actionItems.push({
+      kind: "action",
       value: "action:restart-agent-session",
       searchTerms: ["restart", "reset", "reload", "agent", "session", "skills", "plugins", "mcp"],
       title: "Restart agent session",
@@ -2230,6 +2252,17 @@ function OpenCommandPaletteDialog(props: {
       },
     });
   }
+
+  actionItems.push({
+    kind: "action",
+    value: "action:scheduled",
+    searchTerms: ["scheduled", "schedule", "tasks", "automations", "upcoming", "recurring"],
+    title: "Open scheduled tasks",
+    icon: <CalendarClockIcon className={ITEM_ICON_CLASS} />,
+    run: async () => {
+      await navigate({ to: "/scheduled" });
+    },
+  });
 
   actionItems.push({
     kind: "action",

@@ -20,6 +20,8 @@ import {
   scheduledTaskDefaultModel,
   matchesScheduledTaskScope,
   scheduleFromDraft,
+  endFromDraft,
+  sortScheduledTasksByUpcoming,
   taskToDraft,
 } from "./scheduledTasksSettings.logic";
 
@@ -314,5 +316,56 @@ describe("scheduled task model defaults", () => {
         null,
       ),
     ).toBeNull();
+  });
+});
+
+describe("scheduled task end conditions", () => {
+  const now = Date.parse("2026-10-06T12:00:00.000Z");
+  const intervalTask: ScheduledTask = {
+    ...legacyTask,
+    schedule: { type: "interval", everyMs: 15 * 60_000 },
+    endsAt: "2026-10-06T23:59:59.250Z",
+    maxRuns: 40,
+  };
+
+  it("saves an untouched end exactly so an edit does not restart the schedule", () => {
+    expect(endFromDraft(taskToDraft(intervalTask), now)).toEqual({
+      endsAt: "2026-10-06T23:59:59.250Z",
+      maxRuns: 40,
+    });
+  });
+
+  it("resolves a duration from the time of saving", () => {
+    const draft = {
+      ...taskToDraft(intervalTask),
+      endMode: "duration" as const,
+      endAfterHours: "12",
+    };
+    expect(endFromDraft(draft, now)).toEqual({ endsAt: "2026-10-07T00:00:00.000Z", maxRuns: 40 });
+  });
+
+  it("rejects an end in the past and a fractional run limit", () => {
+    const draft = taskToDraft(intervalTask);
+    expect(endFromDraft({ ...draft, endAt: "2020-01-01T09:00" }, now)).toEqual({
+      error: "Choose an end time in the future.",
+    });
+    expect(endFromDraft({ ...draft, maxRuns: "2.5" }, now)).toEqual({
+      error: "Enter a whole number of runs, or leave it blank.",
+    });
+  });
+
+  it("lists active timers by next run ahead of paused and ended schedules", () => {
+    const task = (id: string, overrides: Partial<ScheduledTask>): ScheduledTask => ({
+      ...intervalTask,
+      id: ScheduledTaskId.make(id),
+      ...overrides,
+    });
+    const ordered = sortScheduledTasksByUpcoming([
+      task("ended", { nextRunAt: null }),
+      task("paused", { enabled: false, nextRunAt: null }),
+      task("later", { nextRunAt: "2026-10-06T13:00:00.000Z" }),
+      task("sooner", { nextRunAt: "2026-10-06T12:15:00.000Z" }),
+    ]);
+    expect(ordered.map((entry) => entry.id)).toEqual(["sooner", "later", "paused", "ended"]);
   });
 });
