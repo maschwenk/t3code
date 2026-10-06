@@ -14,7 +14,8 @@ type Point = { readonly x: number; readonly y: number };
 const PRESENT_MS = 8_000;
 const MAX_TRACKED = 32;
 
-const MENU_ROLES = new Set(["AXMenuButton", "AXPopUpButton", "AXMenuBarItem", "AXComboBox"]);
+// xa11y's snake_case roles, as snapshots report them.
+const MENU_ROLES = new Set(["menu_button", "pop_up_button", "menu_bar_item", "combo_box"]);
 /** The feedback the agent cursor plays for an action. */
 export const cursorCue = (action: ComputerAction, role: string) => {
   switch (action.kind) {
@@ -61,7 +62,7 @@ const contains = (bounds: Bounds, point: Point) =>
  */
 export const lookTarget = (snapshot: Pick<NativeSnapshot, "elements">) => {
   const window = snapshot.elements.find(
-    (element) => element.role === "AXWindow" && hasArea(element.bounds),
+    (element) => element.role === "window" && hasArea(element.bounds),
   )?.bounds;
   if (!window) return undefined;
   return {
