@@ -252,6 +252,9 @@ async function takeSnapshot(
     }
     visited++;
     if (element.pid !== null && element.pid !== app.pid) return;
+    // xa11y lists the application as its own child when it has no windows
+    // (for example while the screen is locked); never walk into that cycle.
+    if (walkDepth > 0 && element.role === "application") return;
     // Never return password values, names, or descendants to the agent.
     if (secure(element)) return;
     const bounds = element.bounds;
