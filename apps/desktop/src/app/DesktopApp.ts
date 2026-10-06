@@ -18,6 +18,7 @@ import * as DesktopClerk from "./DesktopClerk.ts";
 import * as DesktopApplicationMenu from "../window/DesktopApplicationMenu.ts";
 import * as DesktopWindow from "../window/DesktopWindow.ts";
 import * as DesktopBackendPool from "../backend/DesktopBackendPool.ts";
+import * as DesktopDevServerReload from "../backend/DesktopDevServerReload.ts";
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 import * as DesktopLegacyLocalStorage from "./DesktopLegacyLocalStorage.ts";
 import * as DesktopLifecycle from "./DesktopLifecycle.ts";
@@ -252,6 +253,14 @@ const bootstrap = Effect.gen(function* () {
     }
     yield* primaryBackend.start;
     yield* logBootstrapInfo("bootstrap backend start requested");
+    if (environment.isDevelopment) {
+      yield* Effect.forkScoped(
+        DesktopDevServerReload.restartBackendOnServerRebuild(
+          primaryBackend,
+          environment.backendEntryPath,
+        ),
+      );
+    }
     yield* appActivation.start.pipe(
       Effect.tap(() => logBootstrapInfo("desktop app control socket ready")),
       Effect.catch((error) => logStartupError("desktop app control socket unavailable", { error })),

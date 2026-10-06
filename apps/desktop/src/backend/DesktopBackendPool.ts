@@ -93,6 +93,8 @@ import * as FileSystem from "effect/FileSystem";
 import { HttpClient } from "effect/http";
 import { ChildProcessSpawner } from "effect/process";
 
+import * as NetService from "@t3tools/shared/Net";
+
 import * as DesktopBackendConfiguration from "./DesktopBackendConfiguration.ts";
 import * as DesktopBackendManager from "./DesktopBackendManager.ts";
 import * as DesktopObservability from "../app/DesktopObservability.ts";
@@ -214,6 +216,7 @@ export const layer = Layer.effect(
     const desktopWindow = yield* DesktopWindow.DesktopWindow;
     const electronDialog = yield* ElectronDialog.ElectronDialog;
     const appSettings = yield* DesktopAppSettings.DesktopAppSettings;
+    const net = yield* NetService.NetService;
     // Anchor the pool's lifetime to its layer scope so registered
     // instance scopes can be forked off it. Without this, instance
     // scopes are orphaned: they only close via explicit unregister()
@@ -301,6 +304,12 @@ export const layer = Layer.effect(
         ),
       onShutdown: () => desktopWindow.handleBackendNotReady,
       onPreflightFailed: handlePrimaryPreflightFailure,
+      // Only loopback backends can collide with a local process. A WSL-only
+      // primary listens inside the distro and reports that address instead.
+      isPortAvailable: (httpBaseUrl) =>
+        httpBaseUrl.hostname === "127.0.0.1" && httpBaseUrl.port !== ""
+          ? net.canListenOnHost(Number(httpBaseUrl.port), httpBaseUrl.hostname)
+          : Effect.succeed(true),
     });
 
     const instancesRef = yield* SynchronizedRef.make<
