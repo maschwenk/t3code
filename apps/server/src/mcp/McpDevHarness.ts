@@ -15,7 +15,7 @@ import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import type * as McpInvocationContext from "./McpInvocationContext.ts";
 
 /** The provider instance id the harness acts as; the agent cursor labels it "Dev harness". */
-export const DEV_HARNESS_ID = "dev-harness";
+const DEV_HARNESS_ID = "dev-harness";
 
 const LOOPBACK_ADDRESSES = new Set(["127.0.0.1", "::1"]);
 const FORWARDING_HEADERS = ["forwarded", "x-forwarded-for", "x-real-ip"];
