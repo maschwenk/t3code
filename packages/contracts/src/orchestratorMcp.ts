@@ -510,7 +510,7 @@ export type OrchestratorMcpCapabilitiesResult = typeof OrchestratorMcpCapabiliti
 const OrchestratorMcpEndsAfterMs = Schema.Int.check(Schema.isGreaterThanOrEqualTo(60_000)).annotate(
   {
     description:
-      "End the schedule this many milliseconds from now; use it for 'for the next 12 hours' (43200000). No run starts after the end.",
+      "End the schedule this many milliseconds from now; use it for 'for the next 12 hours' (43200000). No run starts after the end, and a run due exactly at the end still runs, so every minute for 10 minutes is 10 runs.",
   },
 );
 const OrchestratorMcpEndsAt = IsoDateTime.annotate({
