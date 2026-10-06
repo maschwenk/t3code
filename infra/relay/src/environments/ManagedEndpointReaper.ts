@@ -26,7 +26,7 @@ const MANAGED_ENDPOINT_LEGACY_AGE_BUCKET_DAYS = [7, 30, 90] as const;
 // its own build. Only delete its tunnel after it has been gone this long. A
 // returning host that has updated recovers the tunnel at the same hostname;
 // one that has not sees the client's "update T3 Code" message instead.
-export const MANAGED_ENDPOINT_LEGACY_GRACE_PERIOD_DAYS = 7;
+const MANAGED_ENDPOINT_LEGACY_GRACE_PERIOD_DAYS = 7;
 
 export interface ManagedEndpointSweepResult {
   readonly mode: RelayConfiguration.ManagedEndpointCleanupMode;
