@@ -7,7 +7,7 @@ import {
   type ComponentProps,
   type CSSProperties,
 } from "react";
-import { ChatCanvasContext } from "./ChatCanvasContext";
+import { ChatCanvasActionsContext, ChatCanvasContext } from "./ChatCanvasContext";
 import { resolveChatCanvasLayout, type ChatCanvasPreview } from "./chatCanvasLayout";
 import type { PreviewMiniPlayerObstacles } from "../preview/previewMiniPlayerLayout";
 
@@ -95,6 +95,10 @@ export function ChatCanvas({
     if (timelineElement) observer.observe(timelineElement);
     return () => observer.disconnect();
   }, [composerOverlayElement, timelineElement]);
+  const actions = useMemo(
+    () => ({ reportPreview, clearPreview, registerTimeline, reportDetailsCard }),
+    [reportPreview, clearPreview, reportDetailsCard],
+  );
   const context = useMemo(() => {
     const container = { width: measurements.width, height: measurements.height };
     return {
@@ -102,36 +106,35 @@ export function ChatCanvas({
       lane: { padding: measurements.padding, minChatWidth: measurements.minChatWidth },
       layout: resolveChatCanvasLayout({ ...measurements, container, preview, detailsCard }),
       previewKey: preview?.key ?? null,
-      reportPreview,
-      clearPreview,
-      registerTimeline,
-      reportDetailsCard,
+      ...actions,
     };
-  }, [measurements, preview, detailsCard, reportPreview, clearPreview, reportDetailsCard]);
+  }, [measurements, preview, detailsCard, actions]);
   const { layout } = context;
   return (
-    <ChatCanvasContext value={context}>
-      <div
-        {...props}
-        ref={elementRef}
-        data-chat-canvas
-        data-preview-overlaps-chat={layout.overlapsChat || undefined}
-        className="relative flex min-h-0 min-w-0 flex-1 flex-col"
-        style={
-          {
-            "--chat-timeline-gutter": `${measurements.timelineGutter}px`,
-            "--chat-lane-inset-start": `${layout.chat.insetStart}px`,
-            "--chat-lane-inset-end": `${layout.chat.insetEnd}px`,
-          } as CSSProperties
-        }
-      >
+    <ChatCanvasActionsContext value={actions}>
+      <ChatCanvasContext value={context}>
         <div
-          ref={widthProbeRef}
-          aria-hidden
-          className="pointer-events-none invisible absolute h-0 w-(--chat-content-max-width) min-w-[40rem] box-content ps-3 sm:ps-5"
-        />
-        {children}
-      </div>
-    </ChatCanvasContext>
+          {...props}
+          ref={elementRef}
+          data-chat-canvas
+          data-preview-overlaps-chat={layout.overlapsChat || undefined}
+          className="relative flex min-h-0 min-w-0 flex-1 flex-col"
+          style={
+            {
+              "--chat-timeline-gutter": `${measurements.timelineGutter}px`,
+              "--chat-lane-inset-start": `${layout.chat.insetStart}px`,
+              "--chat-lane-inset-end": `${layout.chat.insetEnd}px`,
+            } as CSSProperties
+          }
+        >
+          <div
+            ref={widthProbeRef}
+            aria-hidden
+            className="pointer-events-none invisible absolute h-0 w-(--chat-content-max-width) min-w-[40rem] box-content ps-3 sm:ps-5"
+          />
+          {children}
+        </div>
+      </ChatCanvasContext>
+    </ChatCanvasActionsContext>
   );
 }

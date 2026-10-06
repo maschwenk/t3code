@@ -1,5 +1,5 @@
 import { ComputerUseAppIcon } from "~/components/Icons";
-import { useChatCanvas } from "./ChatCanvasContext";
+import { useChatCanvasActions } from "./ChatCanvasContext";
 import { WorkLogBlock, WorkLogButton, WorkLogDetails, WorkLogList, WorkLogRow } from "./WorkLog";
 import { PullRequestGlyph } from "../pullRequest/pullRequestIcons";
 import type { WorktreeSetupSnapshot } from "@t3tools/contracts";
@@ -1289,8 +1289,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     );
   }, [historyControls, onOpenThread, parentThreadLink, topFadeEnabled]);
 
-  const canvas = useChatCanvas();
-  const registerTimeline = canvas?.registerTimeline;
+  // Actions only: the timeline does not depend on canvas geometry, which
+  // changes on every frame the conversation is resized.
+  const registerTimeline = useChatCanvasActions()?.registerTimeline;
   const setTimelineList = useCallback(
     (list: LegendListRef | null) => {
       listRef.current = list;

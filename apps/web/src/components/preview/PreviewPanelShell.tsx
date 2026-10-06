@@ -22,7 +22,6 @@ export type PreviewPanelMode = "inline" | "sheet" | "sidebar" | "embedded";
 interface PreviewPanelShellProps {
   mode: PreviewPanelMode;
   maximized?: boolean;
-  inlineSize?: PreviewPanelInlineSize;
   open?: boolean;
   /**
    * Overrides the localStorage key used to persist the panel width. Callers
@@ -33,23 +32,26 @@ interface PreviewPanelShellProps {
   widthStorageKey?: string;
   /** Overrides the initial width (px) before the user has resized the panel. */
   defaultWidth?: number;
+  /**
+   * Width of the row the panel sits in, when the caller already measures it.
+   * Bounds the panel so the column beside it keeps its minimum width.
+   */
+  containerWidth?: number;
   children: ReactNode;
 }
 
+/**
+ * The width lives here, so dragging the edge re-renders only this shell. The
+ * panel's content arrives as `children`, which React reuses as long as the
+ * parent does not render again.
+ */
 export function PreviewPanelShell(props: PreviewPanelShellProps) {
-  if (props.inlineSize) {
-    return <PreviewPanelShellFrame {...props} inlineSize={props.inlineSize} />;
-  }
-
-  return <ResizablePreviewPanelShell {...props} />;
-}
-
-function ResizablePreviewPanelShell(props: PreviewPanelShellProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const inlineSize = usePreviewPanelInlineSize(hostRef, {
     enabled: props.mode === "inline" && !props.maximized,
     widthStorageKey: props.widthStorageKey,
     defaultWidth: props.defaultWidth,
+    containerWidth: props.containerWidth,
   });
   return <PreviewPanelShellFrame {...props} inlineSize={inlineSize} hostRef={hostRef} />;
 }
