@@ -156,6 +156,8 @@ export const WorkerRequest = Schema.Union([
     ),
     /** Whether pointer input may briefly bring a background app forward while the user is idle. */
     takeover: Schema.Boolean,
+    /** When the agent's previous pointer gesture ended (epoch ms), for the idle check. */
+    ownInputAt: Schema.optionalKey(Schema.Number),
   }),
   Schema.Struct({ kind: Schema.Literal("open"), app: Schema.String, activate: Schema.Boolean }),
 ]);
@@ -226,6 +228,8 @@ export const WorkerResponse = Schema.Union([
         "launch_services",
       ]),
     ),
+    /** When pointer input ended (epoch ms). */
+    inputAt: Schema.optionalKey(Schema.Number),
   }),
   Schema.Struct({
     ok: Schema.Literal(false),

@@ -560,14 +560,17 @@ async function runPointer(
     warp: native.warp,
     moveTo: (point) => input.moveTo([point.x, point.y]),
     sleep: (ms) => NodeTimersPromises.setTimeout(ms),
-    now: () => performance.now(),
+    // @effect-diagnostics-next-line globalDate:off -- The worker has no Effect runtime.
+    now: () => Date.now(),
   };
   const outcome = await deliverPointer(
     desktop,
-    { pid: request.pid, points, takeover: request.takeover },
+    { pid: request.pid, points, takeover: request.takeover, ownInputAt: request.ownInputAt },
     () => gesture(input),
   );
-  return outcome.ok ? { ok: true, via: outcome.via } : { ok: false, code: outcome.code };
+  return outcome.ok
+    ? { ok: true, via: outcome.via, inputAt: outcome.inputAt }
+    : { ok: false, code: outcome.code };
 }
 
 /** click_at, move_at and drag: pointer gestures between capture pixels and elements. */

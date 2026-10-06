@@ -172,6 +172,8 @@ const make = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
   const mutex = yield* Semaphore.make(1);
   const receipts = new Map<string, Receipt>();
+  // When the last agent pointer gesture ended; see deliverPointer's ownInputAt.
+  let pointerInputAt: number | undefined;
   const fail = (code: ComputerUseError["code"]) => new ComputerUseError({ code });
   const execute = (request: WorkerRequest) =>
     driver.execute(request).pipe(
@@ -343,12 +345,14 @@ const make = Effect.gen(function* () {
                   pid,
                   ...step,
                   takeover: allowed.success.enableComputerPointerTakeover,
+                  ...(pointerInputAt !== undefined ? { ownInputAt: pointerInputAt } : {}),
                 }),
               );
               if (Result.isFailure(outcome)) {
                 error = outcome.failure;
                 break;
               }
+              if (outcome.success.inputAt !== undefined) pointerInputAt = outcome.success.inputAt;
               // A drag ends where it dropped.
               const dropped = step.drop ?? (action.kind === "drag" ? step.screen?.to : undefined);
               if (dropped) yield* cursor.point(caller, { kind: "move" }, dropped);

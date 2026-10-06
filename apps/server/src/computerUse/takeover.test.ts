@@ -72,7 +72,7 @@ describe("pointer delivery", () => {
       { pid: TARGET, points: [AT], takeover: false },
       gesture,
     );
-    expect(outcome).toEqual({ ok: true, via: "pointer" });
+    expect(outcome).toMatchObject({ ok: true, via: "pointer" });
     expect(state.activations).toEqual([]);
   });
 
@@ -83,7 +83,7 @@ describe("pointer delivery", () => {
       { pid: TARGET, points: [AT], takeover: true },
       gesture,
     );
-    expect(outcome).toEqual({ ok: true, via: "takeover" });
+    expect(outcome).toMatchObject({ ok: true, via: "takeover" });
     expect(state.gestureFront).toBe(TARGET);
     expect(state.front).toBe(USER_APP);
     expect(state.pointer).toEqual({ x: 10, y: 20 });
@@ -109,6 +109,26 @@ describe("pointer delivery", () => {
     for (const { state } of [active, off]) {
       expect(state.activations).toEqual([]);
       expect(state.gestureFront).toBeUndefined();
+    }
+  });
+
+  it("counts the agent's own recent gesture as idle time, but not the user's input after it", async () => {
+    for (const userInputAt of [undefined, 400]) {
+      const { desktop, state, gesture } = fakeDesktop({
+        front: USER_APP,
+        ...(userInputAt ? { userInputAt } : {}),
+      });
+      const options = { pid: TARGET, points: [AT], takeover: true };
+      const first = await deliverPointer(desktop, options, gesture);
+      if (!first.ok) throw new Error("first gesture failed");
+      await desktop.sleep(500);
+      const second = await deliverPointer(
+        desktop,
+        { ...options, ownInputAt: first.inputAt },
+        gesture,
+      );
+      expect(second.ok ? second.via : second.code).toBe(userInputAt ? "user_active" : "takeover");
+      expect(state.front).toBe(USER_APP);
     }
   });
 

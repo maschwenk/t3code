@@ -25,11 +25,13 @@ export type Desktop = {
   readonly warp: (point: Point) => void;
   readonly moveTo: (point: Point) => Promise<void>;
   readonly sleep: (ms: number) => Promise<void>;
+  /** Wall-clock milliseconds, comparable across worker processes. */
   readonly now: () => number;
 };
 
 export type PointerOutcome =
-  | { readonly ok: true; readonly via: "pointer" | "takeover" }
+  /** `inputAt` is when the agent's own input ended, for the next step's idle check. */
+  | { readonly ok: true; readonly via: "pointer" | "takeover"; readonly inputAt: number }
   | { readonly ok: false; readonly code: "input_requires_foreground" | "user_active" };
 
 /**
@@ -41,16 +43,29 @@ export type PointerOutcome =
  * the user's pointer and frontmost app are restored. Any user input during
  * the takeover aborts it before the gesture, or skips putting the pointer
  * back after it, so the agent never fights the user for the mouse.
+ *
+ * `ownInputAt` is when an earlier gesture of the agent's ended. macOS may
+ * count synthesized events as input, so a user who has not touched anything
+ * since then is still idle, and a batch can run several pointer steps.
  */
 export async function deliverPointer(
   desktop: Desktop,
-  options: { readonly pid: number; readonly points: readonly Point[]; readonly takeover: boolean },
+  options: {
+    readonly pid: number;
+    readonly points: readonly Point[];
+    readonly takeover: boolean;
+    readonly ownInputAt?: number | undefined;
+  },
   gesture: () => Promise<void>,
 ): Promise<PointerOutcome> {
   const { pid, points } = options;
   const owned = () => points.every((point) => desktop.owner(point) === pid);
   const lead = points[0];
   if (!lead) return { ok: false, code: "input_requires_foreground" };
+  // Our own synthesized events may count as input too, so input "since t" is
+  // detected as the idle clock being younger than the time since t.
+  const userMovedSince = (at: number) =>
+    desktop.idleSeconds() < (desktop.now() - at) / 1000 - CLOCK_SLACK_SECONDS;
 
   if ((await desktop.frontmost()) === pid && owned()) {
     await desktop.moveTo(lead);
@@ -58,17 +73,16 @@ export async function deliverPointer(
     if ((await desktop.frontmost()) !== pid || !owned())
       return { ok: false, code: "input_requires_foreground" };
     await gesture();
-    return { ok: true, via: "pointer" };
+    return { ok: true, via: "pointer", inputAt: desktop.now() };
   }
   if (!options.takeover) return { ok: false, code: "input_requires_foreground" };
-  if (desktop.idleSeconds() < USER_IDLE_SECONDS) return { ok: false, code: "user_active" };
+  const idle =
+    desktop.idleSeconds() >= USER_IDLE_SECONDS ||
+    (options.ownInputAt !== undefined && !userMovedSince(options.ownInputAt));
+  if (!idle) return { ok: false, code: "user_active" };
 
   const previous = { app: await desktop.frontmost(), pointer: desktop.pointer() };
-  // Our own synthesized events may count as input too, so input "since t" is
-  // detected as the idle clock being younger than the time we last posted.
   let quietSince = desktop.now();
-  const userMovedSince = (at: number) =>
-    desktop.idleSeconds() < (desktop.now() - at) / 1000 - CLOCK_SLACK_SECONDS;
   let userMoved = false;
   try {
     if (!desktop.activate(pid)) return { ok: false, code: "input_requires_foreground" };
@@ -88,7 +102,7 @@ export async function deliverPointer(
       return { ok: false, code: "input_requires_foreground" };
     await gesture();
     quietSince = desktop.now();
-    return { ok: true, via: "takeover" };
+    return { ok: true, via: "takeover", inputAt: quietSince };
   } finally {
     // A user who moved the mouse meanwhile keeps it where they put it.
     if (!userMoved && !userMovedSince(quietSince)) desktop.warp(previous.pointer);
