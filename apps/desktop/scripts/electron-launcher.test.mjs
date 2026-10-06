@@ -8,6 +8,7 @@ import { assert, describe, it } from "vite-plus/test";
 import {
   makeDevelopmentEnvironmentScript,
   makeDevelopmentBootstrap,
+  isDevAppMainProcess,
   makeDevelopmentLauncherScript,
   resolveElectronBinaryPath,
   resolveMacBundleInfoPlistStrings,
@@ -18,6 +19,36 @@ import {
 } from "./electron-launcher.mjs";
 
 describe("electron development launcher", () => {
+  it("recognizes only the main process of this bundle's app", () => {
+    const executable =
+      "/work/t3code/apps/desktop/.electron-runtime/T3 Code (Dev).app/Contents/MacOS/Electron";
+    const paths = [executable];
+    assert.equal(isDevAppMainProcess(executable, paths), true);
+    assert.equal(isDevAppMainProcess(`${executable} --t3code-dev-runner-child`, paths), true);
+    // The backend child runs the same executable on the server entry.
+    assert.equal(
+      isDevAppMainProcess(
+        `${executable} /work/t3code/apps/server/dist/bin.mjs --bootstrap-fd 3`,
+        paths,
+      ),
+      false,
+    );
+    assert.equal(
+      isDevAppMainProcess(
+        "/work/t3code/apps/desktop/.electron-runtime/T3 Code (Dev).app/Contents/Frameworks/Electron Helper.app/Contents/MacOS/Electron Helper --type=gpu-process",
+        paths,
+      ),
+      false,
+    );
+    assert.equal(
+      isDevAppMainProcess(
+        "/other/t3code/apps/desktop/.electron-runtime/T3 Code (Dev).app/Contents/MacOS/Electron",
+        paths,
+      ),
+      false,
+    );
+  });
+
   it("boots without shell arguments and preserves the live runner environment", () => {
     const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-bootstrap-"));
     try {

@@ -378,6 +378,19 @@ export function resolveMacLauncherPaths(appBundlePath, displayName = APP_DISPLAY
   };
 }
 
+/**
+ * True for the main process of a dev app instance, given the executables the
+ * bundle can run as. A backend child shares the executable but runs the server
+ * entry, and Electron helpers run from the framework directory, so neither
+ * counts: both exit with their app.
+ */
+export function isDevAppMainProcess(command, executablePaths) {
+  if (command.includes("apps/server/dist/bin.mjs")) return false;
+  return executablePaths.some(
+    (executablePath) => command === executablePath || command.startsWith(`${executablePath} `),
+  );
+}
+
 function buildMacLauncher(electronBinaryPath) {
   const sourceAppBundlePath = NodePath.resolve(NodePath.dirname(electronBinaryPath), "../..");
   const runtimeDir = NodePath.join(desktopDir, ".electron-runtime");

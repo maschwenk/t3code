@@ -85,6 +85,8 @@ if (process.argv.includes("--version")) {
 // macOS can relaunch the dev bundle without its runner: Quit & Reopen after a
 // privacy grant, the Dock, or Finder. That copy would fight the runner's own
 // instance for the backend port, so ask the runner to relaunch its instance.
+// The runner starts its own instance with --t3code-dev-runner-child (see
+// scripts/dev-electron.mjs, which refuses to launch from a bundle without it).
 function requestDevRunnerRelaunch(devRoot: string): boolean {
   const runtimeDir = `${devRoot}/.electron-runtime`;
   try {
@@ -101,7 +103,7 @@ function requestDevRunnerRelaunch(devRoot: string): boolean {
 const devRootArgument = process.argv.find((arg) => arg.startsWith("--t3code-dev-root="));
 if (
   devRootArgument !== undefined &&
-  process.env.T3CODE_DEV_ELECTRON_CHILD !== "1" &&
+  !process.argv.includes("--t3code-dev-runner-child") &&
   requestDevRunnerRelaunch(devRootArgument.slice("--t3code-dev-root=".length))
 ) {
   process.exit(0);
