@@ -88,10 +88,19 @@ export const listen: Effect.Effect<
     overlays.clear();
     visible = false;
   };
-  // Display layout or scale changed: rebuild windows lazily at the new geometry.
-  Electron.screen.on("display-added", destroyAll);
-  Electron.screen.on("display-removed", destroyAll);
-  Electron.screen.on("display-metrics-changed", destroyAll);
+  // Follow display geometry and scale changes; windows re-render at the new
+  // scale on their own. Overlays for new displays are created on first use.
+  const onDisplayRemoved = (_event: unknown, display: Electron.Display) => {
+    const overlay = overlays.get(display.id);
+    if (overlay && !overlay.window.isDestroyed()) overlay.window.destroy();
+    overlays.delete(display.id);
+  };
+  const onDisplayChanged = (_event: unknown, display: Electron.Display) => {
+    const overlay = overlays.get(display.id);
+    if (overlay && !overlay.window.isDestroyed()) overlay.window.setBounds(display.bounds);
+  };
+  Electron.screen.on("display-removed", onDisplayRemoved);
+  Electron.screen.on("display-metrics-changed", onDisplayChanged);
 
   const overlayFor = (display: Electron.Display) => {
     const existing = overlays.get(display.id);
@@ -192,9 +201,8 @@ export const listen: Effect.Effect<
 
   yield* Effect.addFinalizer(() =>
     Effect.sync(() => {
-      Electron.screen.off("display-added", destroyAll);
-      Electron.screen.off("display-removed", destroyAll);
-      Electron.screen.off("display-metrics-changed", destroyAll);
+      Electron.screen.off("display-removed", onDisplayRemoved);
+      Electron.screen.off("display-metrics-changed", onDisplayChanged);
       destroyAll();
     }),
   );
