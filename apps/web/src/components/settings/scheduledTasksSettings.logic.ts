@@ -10,6 +10,7 @@ import {
   type ServerSettings,
 } from "@t3tools/contracts";
 import { parseMaxDeliveryAge } from "@t3tools/client-runtime/scheduled-task-webhook";
+import { resolveScheduleEnd, type ScheduleEndMode } from "@t3tools/client-runtime/scheduled-tasks";
 
 import {
   resolveProjectSettings,
@@ -47,6 +48,8 @@ export function validateScheduledTasksSearch(raw: Record<string, unknown>) {
 
 export type ScheduleMode = "fixed" | "interval" | "webhook";
 export type WorkspaceMode = "root" | "worktree" | "existing_worktree";
+/** How a timer stops: never, a duration from when it is saved, or at a clock time. */
+export type EndMode = ScheduleEndMode;
 
 export interface DraftState {
   readonly editingId: string | null;
@@ -81,6 +84,63 @@ export interface DraftState {
   readonly signatureSecret: string;
   /** Minutes as typed; empty runs every held request regardless of age. */
   readonly maxDeliveryAgeMinutes: string;
+  readonly endMode: EndMode;
+  /** Hours as typed, for endMode "duration". */
+  readonly endAfterHours: string;
+  /** A datetime-local value, for endMode "at". */
+  readonly endAt: string;
+  /**
+   * The saved end and how it rendered in the form. An untouched end saves
+   * back exactly, so editing a title cannot restart the schedule's clock.
+   */
+  readonly savedEndsAt: string | null;
+  /** Runs as typed; empty means no run limit. */
+  readonly maxRuns: string;
+}
+
+export const EMPTY_END_FIELDS = {
+  endMode: "never",
+  endAfterHours: "12",
+  endAt: "",
+  savedEndsAt: null,
+  maxRuns: "",
+} as const satisfies Pick<
+  DraftState,
+  "endMode" | "endAfterHours" | "endAt" | "savedEndsAt" | "maxRuns"
+>;
+
+/** The local wall-clock value a datetime-local input shows for an instant. */
+export function toDateTimeLocalInput(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+/** The end condition a draft saves, or a message explaining why it cannot. */
+export function endFromDraft(
+  draft: DraftState,
+  nowMs: number,
+):
+  | { readonly endsAt: string | null; readonly maxRuns: number | null }
+  | { readonly error: string } {
+  const unchanged =
+    draft.savedEndsAt !== null && draft.endAt === toDateTimeLocalInput(draft.savedEndsAt);
+  const parsed = draft.endAt === "" ? Number.NaN : new Date(draft.endAt).getTime();
+  return resolveScheduleEnd(
+    {
+      mode: draft.endMode,
+      afterHours: draft.endAfterHours,
+      endAt: unchanged
+        ? draft.savedEndsAt
+        : Number.isNaN(parsed)
+          ? null
+          : new Date(parsed).toISOString(),
+      endAtUnchanged: unchanged,
+      maxRuns: draft.maxRuns,
+    },
+    nowMs,
+  );
 }
 
 /** GitHub's signature settings, the most common sender. */
@@ -167,6 +227,11 @@ export function taskToDraft(task: ScheduledTask): DraftState {
       schedule.type === "webhook" && schedule.maxDeliveryAgeMinutes != null
         ? String(schedule.maxDeliveryAgeMinutes)
         : "",
+    ...EMPTY_END_FIELDS,
+    ...(task.endsAt == null
+      ? {}
+      : { endMode: "at", endAt: toDateTimeLocalInput(task.endsAt), savedEndsAt: task.endsAt }),
+    maxRuns: task.maxRuns == null ? "" : String(task.maxRuns),
   };
 }
 

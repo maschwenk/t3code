@@ -82,6 +82,31 @@ if (process.argv.includes("--version")) {
   Electron.app.exit(0);
 }
 
+// macOS can relaunch the dev bundle without its runner: Quit & Reopen after a
+// privacy grant, the Dock, or Finder. That copy would fight the runner's own
+// instance for the backend port, so ask the runner to relaunch its instance.
+function requestDevRunnerRelaunch(devRoot: string): boolean {
+  const runtimeDir = `${devRoot}/.electron-runtime`;
+  try {
+    const pid = Number.parseInt(NodeFS.readFileSync(`${runtimeDir}/dev-runner.pid`, "utf8"), 10);
+    if (!Number.isInteger(pid) || pid <= 0) return false;
+    process.kill(pid, 0);
+    NodeFS.writeFileSync(`${runtimeDir}/relaunch-request`, String(process.pid));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const devRootArgument = process.argv.find((arg) => arg.startsWith("--t3code-dev-root="));
+if (
+  devRootArgument !== undefined &&
+  process.env.T3CODE_DEV_ELECTRON_CHILD !== "1" &&
+  requestDevRunnerRelaunch(devRootArgument.slice("--t3code-dev-root=".length))
+) {
+  process.exit(0);
+}
+
 const layerDesktopEnvironment = Layer.unwrap(
   Effect.gen(function* () {
     const metadata = yield* Effect.service(ElectronApp.ElectronApp).pipe(

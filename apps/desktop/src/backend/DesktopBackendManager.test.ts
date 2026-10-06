@@ -126,6 +126,7 @@ interface MakeInstanceInput {
   readonly onPreflightFailed?: (
     failure: DesktopBackendManager.PreflightFailure,
   ) => Effect.Effect<boolean>;
+  readonly isPortAvailable?: (httpBaseUrl: URL) => Effect.Effect<boolean>;
   readonly config?: DesktopBackendManager.DesktopBackendStartConfig;
   readonly configResolve?: Effect.Effect<
     DesktopBackendManager.DesktopBackendStartConfig,
@@ -171,6 +172,7 @@ function makeTestInstance(input: MakeInstanceInput) {
       updateRequests: Stream.empty,
       updateCommits: Stream.empty,
       updateCancellations: Stream.empty,
+      computerCursorRequests: Stream.empty,
       ...input.desktopTelemetryPublisher,
     }),
     DesktopWslEnvironment.layerTest(
@@ -185,12 +187,52 @@ function makeTestInstance(input: MakeInstanceInput) {
     ...(input.onReady ? { onReady: () => input.onReady! } : {}),
     ...(input.onShutdown ? { onShutdown: () => input.onShutdown! } : {}),
     ...(input.onPreflightFailed ? { onPreflightFailed: input.onPreflightFailed } : {}),
+    ...(input.isPortAvailable ? { isPortAvailable: input.isPortAvailable } : {}),
   });
 
   return instance.pipe(Effect.provide(layerServices));
 }
 
 describe("DesktopBackendManager", () => {
+  it.effect("backs off instead of reporting a foreign listener on its port as ready", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let spawnCount = 0;
+        let readyCount = 0;
+        const checked = yield* Deferred.make<URL>();
+        const layerSpawner = Layer.succeed(
+          ChildProcessSpawner.ChildProcessSpawner,
+          ChildProcessSpawner.make(() =>
+            Effect.sync(() => {
+              spawnCount += 1;
+            }).pipe(Effect.andThen(Effect.die("backend spawned onto an occupied port"))),
+          ),
+        );
+
+        // The default HTTP client answers the readiness probe, like the stale
+        // server that already owns the port would.
+        const instance = yield* makeTestInstance({
+          spawnerLayer: layerSpawner,
+          isPortAvailable: (httpBaseUrl) =>
+            Deferred.succeed(checked, httpBaseUrl).pipe(Effect.as(false)),
+          onReady: Effect.sync(() => {
+            readyCount += 1;
+          }),
+        });
+
+        yield* instance.start;
+
+        assert.equal((yield* Deferred.await(checked)).port, "3773");
+        const snapshot = yield* instance.snapshot;
+        assert.equal(spawnCount, 0);
+        assert.equal(readyCount, 0);
+        assert.isFalse(snapshot.ready);
+        assert.isTrue(snapshot.restartScheduled);
+        assert.equal(snapshot.restartAttempt, 1);
+      }),
+    ),
+  );
+
   it.effect("spawns the backend with fd3 bootstrap and fd4 telemetry", () =>
     Effect.scoped(
       Effect.gen(function* () {

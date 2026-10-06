@@ -29,6 +29,7 @@ export const CLI_RUNTIME_EXTERNAL_PREFIXES = [
   // Cursor ships computed Webpack imports and platform helper packages.
   "@cursor/sdk",
   "node-pty",
+  "@crowecawcaw/xa11y",
   "ffi-rs",
   "@yuuang/",
   "@ff-labs/",

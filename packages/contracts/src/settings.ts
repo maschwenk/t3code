@@ -1249,6 +1249,20 @@ export const ServerSettings = Schema.Struct({
    * between a desktop window and a phone attached to the same server.
    */
   enableAgentBrowserAccess: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  enableAgentComputerAccess: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  enableComputerScreenCapture: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(false)),
+  ),
+  /** Whether pointer-only computer-use input may briefly bring a background app forward while the user is idle. */
+  enableComputerPointerTakeover: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(true)),
+  ),
+  computerUseAllowAllApps: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  computerUseAllowedApps: Schema.Array(
+    Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(200)),
+  )
+    .check(Schema.isMaxLength(64))
+    .pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   projectAgentBrowserAccessOverrides: Schema.Record(ProjectId, Schema.Boolean).pipe(
     Schema.withDecodingDefault(Effect.succeed({})),
   ),
@@ -1638,6 +1652,15 @@ export const ServerSettingsPatch = Schema.Struct({
   enableProviderUpdateChecks: Schema.optionalKey(Schema.Boolean),
   continueThreadsAfterServerUpdate: Schema.optionalKey(Schema.Boolean),
   enableAgentBrowserAccess: Schema.optionalKey(Schema.Boolean),
+  enableAgentComputerAccess: Schema.optionalKey(Schema.Boolean),
+  enableComputerScreenCapture: Schema.optionalKey(Schema.Boolean),
+  enableComputerPointerTakeover: Schema.optionalKey(Schema.Boolean),
+  computerUseAllowAllApps: Schema.optionalKey(Schema.Boolean),
+  computerUseAllowedApps: Schema.optionalKey(
+    Schema.Array(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(200))).check(
+      Schema.isMaxLength(64),
+    ),
+  ),
   projectAgentBrowserAccessOverrides: Schema.optionalKey(
     Schema.Record(ProjectId, Schema.NullOr(Schema.Boolean)),
   ),

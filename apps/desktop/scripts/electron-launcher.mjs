@@ -20,7 +20,7 @@ const APP_BUNDLE_ID = isDevelopment
   ? `com.t3tools.t3code.dev.${devBundleIdSuffix || "local"}`
   : "com.t3tools.t3code";
 const APP_PROTOCOL_SCHEMES = isDevelopment ? ["t3code-dev"] : ["t3code"];
-const LAUNCHER_VERSION = 19;
+const LAUNCHER_VERSION = 20;
 const developmentMacIconPngPath = NodePath.join(
   repoRoot,
   "assets",
@@ -108,7 +108,7 @@ function shellSingleQuote(value) {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
-export function makeDevelopmentEnvironmentScript(environment) {
+function developmentEnvironment(environment) {
   const envEntries = [
     ["VITE_DEV_SERVER_URL", environment.VITE_DEV_SERVER_URL],
     ["T3CODE_PORT", environment.T3CODE_PORT],
@@ -120,8 +120,12 @@ export function makeDevelopmentEnvironmentScript(environment) {
     ["T3CODE_OTLP_PROTOCOL", environment.T3CODE_OTLP_PROTOCOL],
     ["T3CODE_DESKTOP_APP_USER_MODEL_ID", APP_BUNDLE_ID],
   ].filter((entry) => typeof entry[1] === "string" && entry[1].trim().length > 0);
+  return Object.fromEntries(envEntries);
+}
+
+export function makeDevelopmentEnvironmentScript(environment) {
   return [
-    ...envEntries.map(
+    ...Object.entries(developmentEnvironment(environment)).map(
       ([name, value]) =>
         `if [ -z "\${${name}:-}" ]; then export ${name}=${shellSingleQuote(value)}; fi`,
     ),
@@ -154,6 +158,39 @@ function writeDevelopmentEnvironmentScript() {
   NodeFS.writeFileSync(
     developmentEnvironmentFilePath,
     makeDevelopmentEnvironmentScript(process.env),
+  );
+  NodeFS.writeFileSync(
+    `${developmentEnvironmentFilePath}.json`,
+    JSON.stringify(developmentEnvironment(process.env)),
+    { mode: 0o600 },
+  );
+}
+
+export function makeDevelopmentBootstrap({ mainEntryPath, desktopRoot, environmentFilePath }) {
+  return `const fs = require("node:fs");
+const fallback = JSON.parse(fs.readFileSync(${JSON.stringify(environmentFilePath)}, "utf8"));
+for (const [key, value] of Object.entries(fallback)) {
+  if (!process.env[key]?.trim()) process.env[key] = value;
+}
+process.argv.push(${JSON.stringify(`--t3code-dev-root=${desktopRoot}`)});
+require(${JSON.stringify(mainEntryPath)});
+`;
+}
+
+function writeDevelopmentBootstrap(appBundlePath) {
+  const appDir = NodePath.join(appBundlePath, "Contents", "Resources", "app");
+  NodeFS.mkdirSync(appDir, { recursive: true });
+  NodeFS.writeFileSync(
+    NodePath.join(appDir, "package.json"),
+    JSON.stringify({ main: "index.cjs" }),
+  );
+  NodeFS.writeFileSync(
+    NodePath.join(appDir, "index.cjs"),
+    makeDevelopmentBootstrap({
+      mainEntryPath: NodePath.join(desktopDir, "dist-electron", "main.cjs"),
+      desktopRoot: desktopDir,
+      environmentFilePath: `${developmentEnvironmentFilePath}.json`,
+    }),
   );
 }
 
@@ -396,7 +433,10 @@ function buildMacLauncher(electronBinaryPath) {
   patchMainBundleInfoPlist(
     targetAppBundlePath,
     iconPath,
-    isDevelopment ? developmentPaths.launcherExecutableName : "Electron",
+    // TCC must identify the executable that actually calls native APIs.
+    // Signing a shell script as the main executable leaves Electron with an
+    // unrelated, unbound code identity, so the app's Accessibility grant fails.
+    "Electron",
   );
   patchHelperBundleInfoPlists(targetAppBundlePath);
   if (isDevelopment) {
@@ -407,6 +447,10 @@ function buildMacLauncher(electronBinaryPath) {
     // in development mode instead of making app.isPackaged report true.
     writeDevelopmentEnvironmentScript();
     writeDevelopmentLauncherScript(launcherBinaryPath, runtimeElectronBinaryPath);
+    // Finder/protocol launches enter the native executable without CLI args.
+    // Keep their environment outside the signed bundle so a port change does
+    // not invalidate its identity. Direct dev-runner launches retain the shim.
+    writeDevelopmentBootstrap(targetAppBundlePath);
   }
   signMacLauncherBundle(targetAppBundlePath);
   NodeFS.writeFileSync(metadataPath, `${JSON.stringify(expectedMetadata, null, 2)}\n`);

@@ -3,6 +3,7 @@ import {
   MessageId,
   PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
   ScheduledTask,
+  scheduledTaskEndReached,
   ScheduledTaskError,
   ScheduledTaskId,
   ThreadId,
@@ -45,7 +46,12 @@ import * as Metrics from "../observability/Metrics.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
-import { isMissedFixedTimeRun, isSameSchedule, nextScheduledRunAt } from "./Schedule.ts";
+import {
+  isMissedFixedTimeRun,
+  isPastScheduleEnd,
+  isSameSchedule,
+  nextScheduledRunWithinEnd,
+} from "./Schedule.ts";
 import {
   redactHeaders,
   redactQuery,
@@ -134,6 +140,7 @@ export type WebhookDeliveryOutcome =
   | "queue_full"
   | "rate_limited"
   | "disabled"
+  | "ended"
   | "rejected_signature"
   | "expired"
   | "not_found"
@@ -149,6 +156,7 @@ export type WebhookTriggerResult =
   | { readonly _tag: "not_found" }
   | { readonly _tag: "rejected_signature" }
   | { readonly _tag: "disabled" }
+  | { readonly _tag: "ended" }
   | {
       readonly _tag: "rate_limited";
       /** Too many requests to this hook, or too many runs already waiting. */
@@ -195,6 +203,8 @@ interface ScheduledTaskRow {
   readonly last_run_status: string;
   readonly last_run_error: string | null;
   readonly run_count: number;
+  readonly ends_at: string | null;
+  readonly max_runs: number | null;
   readonly webhook_token: string | null;
   readonly webhook_secret: string | null;
 }
@@ -271,14 +281,15 @@ function iso(value: DateTime.DateTime): string {
 const localNow = DateTime.withCurrentZoneLocal(DateTime.nowInCurrentZone);
 
 function nextRunAt(
-  task: Pick<ScheduledTask, "enabled" | "schedule">,
+  task: Pick<ScheduledTask, "enabled" | "schedule" | "endsAt" | "maxRuns" | "runCount">,
   from: DateTime.DateTime,
+  dueAt?: DateTime.DateTime,
 ): string | null {
   if (!task.enabled) return null;
   // A stored interval can decode yet overflow the representable DateTime
   // range; an unrepresentable occurrence means the task has no next run.
   try {
-    const next = nextScheduledRunAt(task.schedule, from);
+    const next = nextScheduledRunWithinEnd(task.schedule, from, task, dueAt);
     return next !== null && Number.isFinite(DateTime.toEpochMillis(next)) ? iso(next) : null;
   } catch {
     return null;
@@ -337,6 +348,8 @@ const decodeRow = (row: ScheduledTaskRow, origin: WebhookOrigin | null = null) =
       lastRunStatus: row.last_run_status,
       lastRunError: row.last_run_error,
       runCount: row.run_count,
+      endsAt: row.ends_at,
+      maxRuns: row.max_runs,
       ...(webhook === undefined ? {} : { webhook }),
     });
   }).pipe(
@@ -435,6 +448,8 @@ export const layer = Layer.effect(
         last_run_status,
         last_run_error,
         run_count,
+        ends_at,
+        max_runs,
         webhook_token,
         webhook_secret
       FROM scheduled_tasks
@@ -470,6 +485,8 @@ export const layer = Layer.effect(
         last_run_status,
         last_run_error,
         run_count,
+        ends_at,
+        max_runs,
         webhook_token,
         webhook_secret
       FROM scheduled_tasks
@@ -550,6 +567,8 @@ export const layer = Layer.effect(
           last_run_status,
           last_run_error,
           run_count,
+          ends_at,
+          max_runs,
           webhook_token,
           webhook_secret
         )
@@ -574,6 +593,8 @@ export const layer = Layer.effect(
           ${task.lastRunStatus},
           ${task.lastRunError},
           ${task.runCount},
+          ${task.endsAt ?? null},
+          ${task.maxRuns ?? null},
           ${webhook.token},
           ${webhook.secret}
         WHERE ${requireExisting ? 0 : 1} = 1
@@ -593,6 +614,8 @@ export const layer = Layer.effect(
           creation_source = excluded.creation_source,
           updated_at = excluded.updated_at,
           next_run_at = excluded.next_run_at,
+          ends_at = excluded.ends_at,
+          max_runs = excluded.max_runs,
           -- Only rotate changes a live token, so a save racing a rotation
           -- cannot bring the old URL back.
           webhook_token = CASE
@@ -692,7 +715,7 @@ export const layer = Layer.effect(
           UPDATE scheduled_tasks
           SET last_run_status = 'failed',
               last_run_error = ${message},
-              next_run_at = ${nextRunAt(source, now)},
+              next_run_at = ${nextRunAt({ ...source, runCount: source.runCount + 1 }, now)},
               updated_at = ${iso(now)},
               run_count = run_count + 1
           WHERE task_id = ${task.id} AND last_run_status = 'running'
@@ -769,7 +792,9 @@ export const layer = Layer.effect(
                 ? "The task's trigger changed before this delivery ran."
                 : !active.enabled
                   ? "The task was paused before this delivery ran."
-                  : null;
+                  : scheduledTaskEndReached(active, DateTime.toEpochMillis(startedAt))
+                    ? "The schedule ended before this delivery ran."
+                    : null;
           if (reason !== null) return yield* new WebhookDeliverySkipped({ reason });
         }
 
@@ -842,7 +867,12 @@ export const layer = Layer.effect(
           ...scheduleSource,
           updatedAt: iso(completedAt),
           lastRunAt: startedAtIso,
-          nextRunAt: nextRunAt(scheduleSource, completedAt),
+          // A timed run keeps its cadence slot; a manual run restarts the clock.
+          nextRunAt: nextRunAt(
+            { ...scheduleSource, runCount: scheduleSource.runCount + 1 },
+            completedAt,
+            trigger === "scheduled" ? Option.getOrUndefined(parsedNextRunAt) : undefined,
+          ),
           lastRunStatus,
           lastRunError,
           runCount: scheduleSource.runCount + 1,
@@ -899,6 +929,30 @@ export const layer = Layer.effect(
       yield* notifyChanged;
     });
 
+    // A run that comes due after its schedule ended (the server was off or
+    // asleep across the end time) is dropped, and the schedule ends there.
+    const endExpiredSchedule = Effect.fn("ScheduledTaskService.endExpiredSchedule")(function* (
+      task: ScheduledTask,
+      now: DateTime.DateTime,
+    ) {
+      yield* Effect.logInfo("Ending schedule task past its end time", {
+        taskId: task.id,
+        missedRunAt: task.nextRunAt,
+        endsAt: task.endsAt,
+      });
+      yield* sql`
+        UPDATE scheduled_tasks
+        SET next_run_at = NULL,
+            updated_at = ${iso(now)}
+        WHERE task_id = ${task.id}
+      `.pipe(
+        Effect.mapError((cause) =>
+          taskError("Could not end expired schedule task.", { taskId: task.id, cause }),
+        ),
+      );
+      yield* notifyChanged;
+    });
+
     const runDueTasks = Effect.fn("ScheduledTaskService.runDueTasks")(function* () {
       const now = yield* localNow;
       const tasks = yield* listDueTasks(now).pipe(
@@ -911,9 +965,11 @@ export const layer = Layer.effect(
         due,
         ({ task, dueAt }) =>
           Effect.suspend(() =>
-            isMissedFixedTimeRun(task.schedule, dueAt, now)
-              ? rescheduleMissedRun(task, now)
-              : runTask(task, "scheduled"),
+            isPastScheduleEnd(task.endsAt, now)
+              ? endExpiredSchedule(task, now)
+              : isMissedFixedTimeRun(task.schedule, dueAt, now)
+                ? rescheduleMissedRun(task, now)
+                : runTask(task, "scheduled"),
           ).pipe(
             Effect.catch((cause) =>
               Effect.logWarning("Scheduled task run failed", { taskId: task.id, cause }),
@@ -945,7 +1001,10 @@ export const layer = Layer.effect(
                 UPDATE scheduled_tasks
                 SET last_run_status = 'failed',
                     last_run_error = 'Run was interrupted by a server restart.',
-                    next_run_at = ${nextRunAt(decoded.success, now)},
+                    next_run_at = ${nextRunAt(
+                      { ...decoded.success, runCount: decoded.success.runCount + 1 },
+                      now,
+                    )},
                     updated_at = ${iso(now)},
                     run_count = run_count + 1
                 WHERE task_id IS ${row.task_id} AND last_run_status = 'running'
@@ -1074,10 +1133,17 @@ export const layer = Layer.effect(
                 return { token, secret, secretChanged };
               })
             : { token: null, secret: null, secretChanged: true };
+        // Clients that predate end conditions omit both fields; their edits
+        // must not turn "for the next 12 hours" into a schedule with no end.
+        const endsAt = input.endsAt === undefined ? (existingTask?.endsAt ?? null) : input.endsAt;
+        const maxRuns =
+          input.maxRuns === undefined ? (existingTask?.maxRuns ?? null) : input.maxRuns;
         const scheduleUnchanged =
           existingTask !== null &&
           existingTask.enabled === input.enabled &&
-          isSameSchedule(existingTask.schedule, schedule);
+          isSameSchedule(existingTask.schedule, schedule) &&
+          (existingTask.endsAt ?? null) === endsAt &&
+          (existingTask.maxRuns ?? null) === maxRuns;
         const task: ScheduledTask = {
           id,
           title: input.title,
@@ -1096,11 +1162,22 @@ export const layer = Layer.effect(
           updatedAt: iso(now),
           nextRunAt: scheduleUnchanged
             ? existingTask.nextRunAt
-            : nextRunAt({ enabled: input.enabled, schedule }, now),
+            : nextRunAt(
+                {
+                  enabled: input.enabled,
+                  schedule,
+                  endsAt,
+                  maxRuns,
+                  runCount: existingTask?.runCount ?? 0,
+                },
+                now,
+              ),
           lastRunAt: existingTask?.lastRunAt ?? null,
           lastRunStatus: existingTask?.lastRunStatus ?? "never",
           lastRunError: existingTask?.lastRunError ?? null,
           runCount: existingTask?.runCount ?? 0,
+          endsAt,
+          maxRuns,
         };
         yield* saveTask(task, input.requireExisting === true, webhook);
         yield* notifyChanged;
@@ -1112,7 +1189,7 @@ export const layer = Layer.effect(
         const existing = yield* loadTask(input.id);
         if (existing.enabled === input.enabled) return { task: existing };
         const now = yield* localNow;
-        const next = nextRunAt({ enabled: input.enabled, schedule: existing.schedule }, now);
+        const next = nextRunAt({ ...existing, enabled: input.enabled }, now);
         // RETURNING so a task deleted between the load and this UPDATE is a
         // visible not-found error, not a false success.
         const updated = yield* sql<{ task_id: string }>`
@@ -1539,6 +1616,14 @@ export const layer = Layer.effect(
               yield* log("disabled");
               yield* observe("disabled");
               return { _tag: "disabled" as const };
+            }
+            // "Review the next 5 PRs" or "listen until Friday" ends a webhook too.
+            if (scheduledTaskEndReached(task, DateTime.toEpochMillis(now))) {
+              // Logged as "disabled" so clients that predate end conditions can
+              // still decode the delivery list.
+              yield* log("disabled", { error: "The schedule ended." });
+              yield* observe("ended");
+              return { _tag: "ended" as const };
             }
             const signature = schedule.signature;
             if (signature !== null) {

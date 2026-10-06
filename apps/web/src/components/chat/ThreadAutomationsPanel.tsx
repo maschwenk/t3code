@@ -1,8 +1,14 @@
 import { ThreadDetailsControl } from "./ThreadDetailsControl";
 import { useNavigate } from "@tanstack/react-router";
-import { CalendarClockIcon, PencilIcon, PlayIcon, Settings2Icon } from "lucide-react";
-import { useState } from "react";
-import type { EnvironmentId, ScheduledTask, ThreadId } from "@t3tools/contracts";
+import { CalendarClockIcon, PencilIcon, PlayIcon, PlusIcon, Settings2Icon } from "lucide-react";
+import { useMemo, useState } from "react";
+import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import {
+  scheduledTaskLifecycle,
+  type EnvironmentId,
+  type ScheduledTask,
+  type ThreadId,
+} from "@t3tools/contracts";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
@@ -10,7 +16,9 @@ import {
 
 import { ThreadDetailsSection } from "./ThreadDetailsSection";
 import { cn } from "../../lib/utils";
-import { relativeLabel, scheduleLabel } from "../settings/ScheduledTasksSettings";
+import { relativeLabel } from "../settings/ScheduledTasksSettings";
+import { scheduledTaskStatusText } from "@t3tools/client-runtime/scheduled-tasks";
+import { openScheduledTaskEditor, useScheduleInThread } from "./ScheduledTaskCards";
 import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -51,6 +59,11 @@ export function ThreadAutomationsPanel(props: {
   });
   const navigate = useNavigate();
   const [busyTaskId, setBusyTaskId] = useState<string | null>(null);
+  const threadRef = useMemo(
+    () => scopeThreadRef(props.environmentId, props.threadId),
+    [props.environmentId, props.threadId],
+  );
+  const scheduleInThread = useScheduleInThread(threadRef);
 
   const boundTasks = (tasksQuery.data?.tasks ?? []).filter(
     (task) => task.threadId === props.threadId,
@@ -101,30 +114,45 @@ export function ThreadAutomationsPanel(props: {
   return (
     <ThreadDetailsSection
       headingId="thread-details-automations-heading"
-      title="Automations"
+      title="Scheduled tasks"
       data-thread-automations-panel
       actions={
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <ThreadDetailsControl
-                size="icon-xs"
-                variant="ghost"
-                part="icon"
-                aria-label="Manage scheduled tasks"
-                onClick={() =>
-                  void navigate({
-                    to: "/settings/scheduled-tasks",
-                    search: { environmentId: props.environmentId },
-                  })
+        <>
+          {scheduleInThread ? (
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <ThreadDetailsControl
+                    size="icon-xs"
+                    variant="ghost"
+                    part="icon"
+                    aria-label="Schedule in this chat"
+                    onClick={scheduleInThread}
+                  >
+                    <PlusIcon className="size-3.5" />
+                  </ThreadDetailsControl>
                 }
-              >
-                <Settings2Icon className="size-3.5" />
-              </ThreadDetailsControl>
-            }
-          />
-          <TooltipPopup>Manage scheduled tasks</TooltipPopup>
-        </Tooltip>
+              />
+              <TooltipPopup>Schedule in this chat</TooltipPopup>
+            </Tooltip>
+          ) : null}
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <ThreadDetailsControl
+                  size="icon-xs"
+                  variant="ghost"
+                  part="icon"
+                  aria-label="Manage scheduled tasks"
+                  onClick={() => void navigate({ to: "/scheduled" })}
+                >
+                  <Settings2Icon className="size-3.5" />
+                </ThreadDetailsControl>
+              }
+            />
+            <TooltipPopup>Manage scheduled tasks</TooltipPopup>
+          </Tooltip>
+        </>
       }
     >
       {tasksQuery.error !== null ? (
@@ -157,12 +185,15 @@ export function ThreadAutomationsPanel(props: {
                 {task.title}
               </span>
               <p className="truncate text-2xs text-muted-foreground">
-                {scheduleLabel(task.schedule)}
+                {scheduledTaskStatusText(
+                  task,
+                  (iso) =>
+                    new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
+                  Date.now(),
+                )}
                 {task.enabled && task.nextRunAt !== null
                   ? ` · next ${relativeLabel(task.nextRunAt)}`
-                  : task.enabled
-                    ? ""
-                    : " · paused"}
+                  : ""}
               </p>
             </div>
             <Tooltip>
@@ -174,10 +205,7 @@ export function ThreadAutomationsPanel(props: {
                     part="icon"
                     aria-label={`Edit ${task.title}`}
                     onClick={() =>
-                      void navigate({
-                        to: "/settings/scheduled-tasks",
-                        search: { environmentId: props.environmentId, taskId: task.id },
-                      })
+                      openScheduledTaskEditor({ environmentId: props.environmentId, task })
                     }
                   >
                     <PencilIcon className="size-3.5" />
@@ -206,12 +234,15 @@ export function ThreadAutomationsPanel(props: {
                 <TooltipPopup>Run now</TooltipPopup>
               </Tooltip>
             )}
-            <Switch
-              checked={task.enabled}
-              disabled={busyTaskId !== null}
-              aria-label={task.enabled ? `Pause ${task.title}` : `Resume ${task.title}`}
-              onCheckedChange={(enabled) => void toggleEnabled(task, enabled)}
-            />
+            {/* An ended schedule only reopens by moving its end, which the editor does. */}
+            {scheduledTaskLifecycle(task, Date.now()) === "ended" ? null : (
+              <Switch
+                checked={task.enabled}
+                disabled={busyTaskId !== null}
+                aria-label={task.enabled ? `Pause ${task.title}` : `Resume ${task.title}`}
+                onCheckedChange={(enabled) => void toggleEnabled(task, enabled)}
+              />
+            )}
           </li>
         ))}
       </ul>

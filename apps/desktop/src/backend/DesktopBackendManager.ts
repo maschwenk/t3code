@@ -299,6 +299,11 @@ export interface BackendInstanceSpec {
   // retries. Returns true when the callback changed configuration and the
   // manager should resolve once more; false stops the failed instance.
   readonly onPreflightFailed?: (failure: PreflightFailure) => Effect.Effect<boolean>;
+  // Checked before every spawn. Returns false when another process already
+  // listens on the backend port. The readiness probe cannot tell that
+  // listener from our own child, so spawning anyway would report a foreign
+  // (often stale) server as ready while our child dies with EADDRINUSE.
+  readonly isPortAvailable?: (httpBaseUrl: URL) => Effect.Effect<boolean>;
 }
 
 interface ActiveBackendRun {
@@ -806,6 +811,16 @@ export const makeBackendInstance = Effect.fn("makeBackendInstance")(function* (
 
         if (!entryExists) {
           yield* scheduleRestart(`missing server entry at ${config.value.entryPath}`);
+          return;
+        }
+
+        const portAvailable = yield* (
+          spec.isPortAvailable?.(config.value.httpBaseUrl) ?? Effect.succeed(true)
+        );
+        if (!portAvailable) {
+          yield* scheduleRestart(
+            `backend port ${config.value.httpBaseUrl.port} is already in use by another process`,
+          );
           return;
         }
 

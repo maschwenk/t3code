@@ -24,6 +24,7 @@ import type {
   ThreadId,
 } from "@t3tools/contracts";
 import { DEFAULT_WEBHOOK_PROMPT } from "@t3tools/client-runtime/scheduled-task-webhook";
+import { scheduledTaskStatusText } from "@t3tools/client-runtime/scheduled-tasks";
 import {
   MAX_WEBHOOK_DELIVERY_AGE_MINUTES,
   MIN_SCHEDULED_TASK_INTERVAL_MS,
@@ -62,11 +63,14 @@ import { EnvironmentMachineIcon } from "../EnvironmentMachineIcon";
 import { useSettingsScope } from "./SettingsScopeContext";
 import {
   WEBHOOK_SIGNATURE_DEFAULTS,
+  EMPTY_END_FIELDS,
+  endFromDraft,
   matchesScheduledTaskScope,
   scheduleFromDraft,
   scheduledTaskDefaultModel,
   taskToDraft,
   type DraftState,
+  type EndMode,
   type ScheduleMode,
   type WorkspaceMode,
 } from "./scheduledTasksSettings.logic";
@@ -134,7 +138,37 @@ const EMPTY_DRAFT: DraftState = {
   ...WEBHOOK_SIGNATURE_DEFAULTS,
   signatureSecret: "",
   maxDeliveryAgeMinutes: "",
+  ...EMPTY_END_FIELDS,
 };
+
+const END_MODE_LABELS: Record<EndMode, string> = {
+  never: "Never",
+  duration: "After",
+  at: "At a time",
+};
+
+/** The chat a schedule created from a conversation posts into, and the settings it inherits. */
+export interface ScheduledTaskThreadContext {
+  readonly threadId: ThreadId;
+  readonly projectId: ProjectId;
+  readonly modelSelection: ModelSelection;
+  readonly runtimeMode: DraftState["runtimeMode"];
+  readonly interactionMode: DraftState["interactionMode"];
+}
+
+function draftForThread(thread: ScheduledTaskThreadContext): DraftState {
+  return {
+    ...EMPTY_DRAFT,
+    scheduleMode: "interval",
+    projectId: thread.projectId,
+    threadId: thread.threadId,
+    workspaceMode: "root",
+    modelKey: `${thread.modelSelection.instanceId}:${thread.modelSelection.model}`,
+    baseModelSelection: thread.modelSelection,
+    runtimeMode: thread.runtimeMode,
+    interactionMode: thread.interactionMode,
+  };
+}
 
 /** Labelled field: a caption sitting above its control. */
 function Field({
@@ -443,14 +477,10 @@ function ScheduledTaskRow({
       status={
         <div className="flex flex-wrap items-center gap-2">
           <span>
-            {scheduleLabel(task.schedule)} ·{" "}
-            {!task.enabled
-              ? "Paused"
-              : isWebhook
-                ? "Listening"
-                : task.nextRunAt
-                  ? `Next run ${relativeLabel(task.nextRunAt)}`
-                  : "Not scheduled"}
+            {scheduledTaskStatusText(task, (iso) => new Date(iso).toLocaleString(), Date.now())}
+            {task.enabled && !isWebhook && task.nextRunAt
+              ? ` · Next run ${relativeLabel(task.nextRunAt)}`
+              : ""}
           </span>
           {task.lastRunStatus !== "never" ? (
             <Badge variant={statusVariant(task.lastRunStatus)}>{task.lastRunStatus}</Badge>
@@ -757,13 +787,16 @@ function WebhookDeliveryMode({ environmentId }: { readonly environmentId: Enviro
   );
 }
 
-function ScheduledTaskEditorDialog({
+export function ScheduledTaskEditorDialog({
   initialEnvironmentId,
   task,
+  thread = null,
   onClose,
 }: {
   readonly initialEnvironmentId: EnvironmentId;
   readonly task: ScheduledTask | null;
+  /** Creating from a chat: runs post into that chat unless the user opts into a new chat per run. */
+  readonly thread?: ScheduledTaskThreadContext | null;
   readonly onClose: () => void;
 }) {
   const { scope, connectedEnvironments } = useSettingsScope();
@@ -790,6 +823,9 @@ function ScheduledTaskEditorDialog({
   const upsertTask = useAtomCommand(serverEnvironment.upsertScheduledTask, {
     label: "scheduled task upsert",
   });
+  const deleteTask = useAtomCommand(serverEnvironment.deleteScheduledTask, {
+    label: "scheduled task delete",
+  });
   const instanceEntries = useMemo(
     () =>
       sortProviderInstanceEntries(
@@ -798,8 +834,16 @@ function ScheduledTaskEditorDialog({
     [providers, settings],
   );
   const [draft, setDraft] = useState<DraftState>(() =>
-    task ? taskToDraft(task) : { ...EMPTY_DRAFT, projectId: projects[0]?.id ?? "" },
+    task
+      ? taskToDraft(task)
+      : thread
+        ? draftForThread(thread)
+        : { ...EMPTY_DRAFT, projectId: projects[0]?.id ?? "" },
   );
+  // The chat this schedule can post into; switching to a new chat per run
+  // clears draft.threadId and switching back restores it.
+  const bindableThreadId = task?.threadId ?? thread?.threadId ?? null;
+  const boundToChat = draft.threadId !== "";
   const [saving, setSaving] = useState(false);
   const submissionPending = useRef(false);
   const editingTaskMissing =
@@ -886,6 +930,11 @@ function ScheduledTaskEditorDialog({
       reportFailure("Checkout path is required", "Enter the path of the checkout to run in.");
       return;
     }
+    const end = endFromDraft(draft, Date.now());
+    if ("error" in end) {
+      reportFailure("Invalid end", end.error);
+      return;
+    }
     // Keep the original selection object (with provider options) when the
     // picker still points at the same instance+model.
     const modelSelection =
@@ -895,7 +944,7 @@ function ScheduledTaskEditorDialog({
         ? draft.baseModelSelection
         : selection;
     const workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy =
-      draft.workspaceMode === "root"
+      boundToChat || draft.workspaceMode === "root"
         ? { type: "root" }
         : draft.workspaceMode === "existing_worktree"
           ? { type: "existing_worktree", worktreePath: draft.existingWorktreePath.trim() }
@@ -917,6 +966,8 @@ function ScheduledTaskEditorDialog({
       runtimeMode: draft.runtimeMode,
       interactionMode: draft.interactionMode,
       creationSource: "web",
+      endsAt: end.endsAt,
+      maxRuns: end.maxRuns,
     };
     // Lock before React renders, and keep successful creates locked until the form closes.
     submissionPending.current = true;
@@ -933,6 +984,26 @@ function ScheduledTaskEditorDialog({
     onClose();
   };
 
+  const remove = async () => {
+    if (!draft.editingId || saving) return;
+    if (!(await requestConfirmDialog(`Delete "${draft.title}"?\nIt stops running immediately.`))) {
+      return;
+    }
+    setSaving(true);
+    const result = await deleteTask({
+      environmentId,
+      input: { id: draft.editingId as ScheduledTaskId },
+    });
+    setSaving(false);
+    if (result._tag === "Failure") {
+      if (!isAtomCommandInterrupted(result)) {
+        reportFailure("Could not delete scheduled task", squashAtomCommandFailure(result));
+      }
+      return;
+    }
+    onClose();
+  };
+
   return (
     <Dialog
       open
@@ -942,10 +1013,11 @@ function ScheduledTaskEditorDialog({
     >
       <DialogPopup className="max-w-xl">
         <DialogHeader>
-          <DialogTitle>{draft.editingId ? "Edit task" : "New task"}</DialogTitle>
+          <DialogTitle>{draft.editingId ? "Edit scheduled task" : "Schedule a task"}</DialogTitle>
           <DialogDescription>
-            Run a prompt automatically — on an interval, at a fixed time, or when a webhook is
-            called.
+            {boundToChat
+              ? "Each run posts these instructions into this chat, then the agent works there."
+              : "Run a prompt automatically — on an interval, at a fixed time, or when a webhook is called."}
           </DialogDescription>
         </DialogHeader>
 
@@ -1018,82 +1090,113 @@ function ScheduledTaskEditorDialog({
               />
             </Field>
 
-            <div className="grid gap-3 sm:grid-cols-2">
-              <Field label="Project" htmlFor="scheduled-task-project">
-                <Select
-                  value={selectedProjectId}
-                  onValueChange={(projectId) =>
-                    setDraft((current) => ({ ...current, projectId: projectId ?? "" }))
-                  }
-                >
-                  <SelectTrigger size="sm" id="scheduled-task-project">
-                    <SelectValue placeholder="Select a project">
-                      {selectedProject?.title}
-                    </SelectValue>
-                  </SelectTrigger>
-                  <SelectPopup>
-                    {projects.map((project) => (
-                      <SelectItem key={project.id} value={project.id}>
-                        {project.title}
-                      </SelectItem>
-                    ))}
-                  </SelectPopup>
-                </Select>
-              </Field>
-
-              <Field label="Workspace" htmlFor="scheduled-task-workspace">
-                <Select
-                  value={draft.workspaceMode}
-                  onValueChange={(value) =>
-                    setDraft((current) => ({ ...current, workspaceMode: value as WorkspaceMode }))
-                  }
-                >
-                  <SelectTrigger size="sm" id="scheduled-task-workspace">
-                    <SelectValue>{WORKSPACE_MODE_LABELS[draft.workspaceMode]}</SelectValue>
-                  </SelectTrigger>
-                  <SelectPopup>
-                    <SelectItem value="worktree">Create a new worktree</SelectItem>
-                    <SelectItem value="root">Use the project checkout</SelectItem>
-                    <SelectItem value="existing_worktree">Use a specific checkout</SelectItem>
-                  </SelectPopup>
-                </Select>
-              </Field>
-            </div>
-
-            {draft.workspaceMode === "worktree" ? (
-              <Field label="Base branch" htmlFor="scheduled-task-base-ref">
-                <WorktreeBaseBranchPicker
-                  key={`${environmentId}:${selectedProjectId}`}
-                  id="scheduled-task-base-ref"
-                  environmentId={environmentId}
-                  cwd={selectedProject?.workspaceRoot ?? null}
-                  value={draft.baseRef}
-                  onValueChange={(baseRef) => setDraft((current) => ({ ...current, baseRef }))}
-                  startFromOrigin={draft.startFromOrigin}
-                  onStartFromOriginChange={(startFromOrigin) =>
-                    setDraft((current) => ({ ...current, startFromOrigin }))
-                  }
-                  disabled={saving || !connected}
-                />
-              </Field>
-            ) : null}
-            {draft.workspaceMode === "existing_worktree" ? (
-              <Field label="Checkout path" htmlFor="scheduled-task-checkout">
-                <Input
-                  id="scheduled-task-checkout"
-                  value={draft.existingWorktreePath}
-                  placeholder="/path/to/checkout"
-                  onChange={(event) =>
+            {bindableThreadId !== null ? (
+              <div className="flex items-center justify-between gap-4">
+                <div className="min-w-0 space-y-1">
+                  <Label htmlFor="scheduled-task-new-chat">Start each run in new chat</Label>
+                  <p className="text-sm text-muted-foreground">
+                    {boundToChat
+                      ? "Off: runs post into this chat, queued behind any turn in progress."
+                      : "On: each run starts a separate conversation."}
+                  </p>
+                </div>
+                <Switch
+                  id="scheduled-task-new-chat"
+                  checked={!boundToChat}
+                  onCheckedChange={(newChat) =>
                     setDraft((current) => ({
                       ...current,
-                      existingWorktreePath: event.target.value,
+                      threadId: newChat ? "" : bindableThreadId,
+                      workspaceMode: newChat ? "worktree" : "root",
                     }))
                   }
                 />
-              </Field>
+              </div>
             ) : null}
 
-            <Field label="Prompt" htmlFor="scheduled-task-prompt">
+            {boundToChat ? null : (
+              <>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <Field label="Project" htmlFor="scheduled-task-project">
+                    <Select
+                      value={selectedProjectId}
+                      onValueChange={(projectId) =>
+                        setDraft((current) => ({ ...current, projectId: projectId ?? "" }))
+                      }
+                    >
+                      <SelectTrigger size="sm" id="scheduled-task-project">
+                        <SelectValue placeholder="Select a project">
+                          {selectedProject?.title}
+                        </SelectValue>
+                      </SelectTrigger>
+                      <SelectPopup>
+                        {projects.map((project) => (
+                          <SelectItem key={project.id} value={project.id}>
+                            {project.title}
+                          </SelectItem>
+                        ))}
+                      </SelectPopup>
+                    </Select>
+                  </Field>
+
+                  <Field label="Workspace" htmlFor="scheduled-task-workspace">
+                    <Select
+                      value={draft.workspaceMode}
+                      onValueChange={(value) =>
+                        setDraft((current) => ({
+                          ...current,
+                          workspaceMode: value as WorkspaceMode,
+                        }))
+                      }
+                    >
+                      <SelectTrigger size="sm" id="scheduled-task-workspace">
+                        <SelectValue>{WORKSPACE_MODE_LABELS[draft.workspaceMode]}</SelectValue>
+                      </SelectTrigger>
+                      <SelectPopup>
+                        <SelectItem value="worktree">Create a new worktree</SelectItem>
+                        <SelectItem value="root">Use the project checkout</SelectItem>
+                        <SelectItem value="existing_worktree">Use a specific checkout</SelectItem>
+                      </SelectPopup>
+                    </Select>
+                  </Field>
+                </div>
+
+                {draft.workspaceMode === "worktree" ? (
+                  <Field label="Base branch" htmlFor="scheduled-task-base-ref">
+                    <WorktreeBaseBranchPicker
+                      key={`${environmentId}:${selectedProjectId}`}
+                      id="scheduled-task-base-ref"
+                      environmentId={environmentId}
+                      cwd={selectedProject?.workspaceRoot ?? null}
+                      value={draft.baseRef}
+                      onValueChange={(baseRef) => setDraft((current) => ({ ...current, baseRef }))}
+                      startFromOrigin={draft.startFromOrigin}
+                      onStartFromOriginChange={(startFromOrigin) =>
+                        setDraft((current) => ({ ...current, startFromOrigin }))
+                      }
+                      disabled={saving || !connected}
+                    />
+                  </Field>
+                ) : null}
+                {draft.workspaceMode === "existing_worktree" ? (
+                  <Field label="Checkout path" htmlFor="scheduled-task-checkout">
+                    <Input
+                      id="scheduled-task-checkout"
+                      value={draft.existingWorktreePath}
+                      placeholder="/path/to/checkout"
+                      onChange={(event) =>
+                        setDraft((current) => ({
+                          ...current,
+                          existingWorktreePath: event.target.value,
+                        }))
+                      }
+                    />
+                  </Field>
+                ) : null}
+              </>
+            )}
+
+            <Field label="Instructions" htmlFor="scheduled-task-prompt">
               <Textarea
                 id="scheduled-task-prompt"
                 className="max-h-64 overflow-y-auto"
@@ -1322,6 +1425,75 @@ function ScheduledTaskEditorDialog({
               )}
             </div>
 
+            {
+              <div className="flex flex-wrap items-center gap-3">
+                <Label htmlFor="scheduled-task-end-mode">Ends</Label>
+                <Select
+                  value={draft.endMode}
+                  onValueChange={(value) =>
+                    setDraft((current) => ({
+                      ...current,
+                      endMode: value === "duration" || value === "at" ? value : "never",
+                    }))
+                  }
+                >
+                  <SelectTrigger size="sm" id="scheduled-task-end-mode" className="w-32">
+                    <SelectValue>{END_MODE_LABELS[draft.endMode]}</SelectValue>
+                  </SelectTrigger>
+                  <SelectPopup>
+                    <SelectItem value="never">Never</SelectItem>
+                    <SelectItem value="duration">After</SelectItem>
+                    <SelectItem value="at">At a time</SelectItem>
+                  </SelectPopup>
+                </Select>
+                {draft.endMode === "duration" ? (
+                  <div className="flex items-center gap-2">
+                    <Input
+                      type="number"
+                      nativeInput
+                      min={0}
+                      step="any"
+                      className="w-20"
+                      aria-label="Hours until the schedule ends"
+                      value={draft.endAfterHours}
+                      onChange={(event) =>
+                        setDraft((current) => ({ ...current, endAfterHours: event.target.value }))
+                      }
+                    />
+                    <span className="text-xs text-muted-foreground">hours from now</span>
+                  </div>
+                ) : draft.endMode === "at" ? (
+                  <Input
+                    type="datetime-local"
+                    nativeInput
+                    className="w-56"
+                    aria-label="End time"
+                    value={draft.endAt}
+                    onChange={(event) =>
+                      setDraft((current) => ({ ...current, endAt: event.target.value }))
+                    }
+                  />
+                ) : null}
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-muted-foreground">or after</span>
+                  <Input
+                    type="number"
+                    id="scheduled-task-max-runs"
+                    aria-label="Run limit"
+                    nativeInput
+                    min={1}
+                    className="w-20"
+                    placeholder="∞"
+                    value={draft.maxRuns}
+                    onChange={(event) =>
+                      setDraft((current) => ({ ...current, maxRuns: event.target.value }))
+                    }
+                  />
+                  <span className="text-xs text-muted-foreground">runs</span>
+                </div>
+              </div>
+            }
+
             <div className="flex items-center justify-between gap-4">
               <div className="min-w-0 space-y-1">
                 <Label htmlFor="scheduled-task-enabled">Enabled</Label>
@@ -1343,6 +1515,17 @@ function ScheduledTaskEditorDialog({
         </DialogPanel>
 
         <DialogFooter>
+          {draft.editingId ? (
+            <Button
+              variant="destructive-outline"
+              size="sm"
+              className="me-auto"
+              disabled={saving || editingTaskMissing}
+              onClick={() => void remove()}
+            >
+              Delete
+            </Button>
+          ) : null}
           <DialogClose render={<Button variant="outline" size="sm" disabled={saving} />}>
             Cancel
           </DialogClose>
@@ -1351,7 +1534,7 @@ function ScheduledTaskEditorDialog({
             disabled={saving || editingTaskMissing || !connected || !tasksQuery.data}
             onClick={() => void submit()}
           >
-            {draft.editingId ? "Save task" : "Create task"}
+            {draft.editingId ? "Save" : "Create"}
           </Button>
         </DialogFooter>
       </DialogPopup>

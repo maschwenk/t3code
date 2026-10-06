@@ -12,6 +12,7 @@ import * as Metric from "effect/Metric";
 import * as Queue from "effect/Queue";
 import * as EffectScheduler from "effect/Scheduler";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
@@ -265,6 +266,46 @@ it.effect("logs but does not run deliveries to a disabled task, and refuses run 
       assert.equal(runNow.message, "Webhook tasks run when their URL receives a request.");
     }),
   ),
+);
+
+it.effect("stops running a webhook once it has used its run limit", () =>
+  withService(({ service, launches }) =>
+    Effect.gen(function* () {
+      const { task } = yield* service.upsert(yield* webhookTaskInput({ maxRuns: 1 }));
+      assert.equal((yield* service.triggerWebhook(requestFor(task)))._tag, "accepted");
+      yield* Queue.take(launches);
+      yield* service.subscribeList().pipe(
+        Stream.filter(({ tasks }) => tasks[0]?.runCount === 1),
+        Stream.runHead,
+      );
+
+      assert.equal((yield* service.triggerWebhook(requestFor(task)))._tag, "ended");
+      assert.equal(yield* Queue.size(launches), 0);
+      const { deliveries } = yield* service.listWebhookDeliveries({ id: task.id });
+      assert.deepEqual(
+        deliveries.map((delivery) => [delivery.outcome, delivery.error]).toSorted(),
+        [
+          ["accepted", null],
+          ["disabled", "The schedule ended."],
+        ],
+      );
+    }),
+  ),
+);
+
+it.effect("refuses webhook requests after the schedule's end time", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(Date.parse("2026-10-06T12:00:00.000Z"));
+    yield* withService(({ service, launches }) =>
+      Effect.gen(function* () {
+        const { task } = yield* service.upsert(
+          yield* webhookTaskInput({ endsAt: "2026-10-06T11:00:00.000Z" }),
+        );
+        assert.equal((yield* service.triggerWebhook(requestFor(task)))._tag, "ended");
+        assert.equal(yield* Queue.size(launches), 0);
+      }),
+    );
+  }),
 );
 
 it.effect("queues a burst of deliveries instead of dropping them", () =>

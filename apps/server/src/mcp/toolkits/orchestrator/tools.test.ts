@@ -69,7 +69,8 @@ describe("orchestrator MCP tool guidance", () => {
     assert.isString(schema.properties?.schedule?.description);
     assert.isAtLeast(schema.properties?.schedule?.anyOf?.length ?? 0, 2);
     assert.include(ScheduleTaskTool.description ?? "", "STRUCTURED OBJECT");
-    assert.include(ScheduleTaskTool.description ?? "", "nextRunAt");
+    assert.include(ScheduleTaskTool.description ?? "", "nextRunLocal");
+    assert.include(ScheduleTaskTool.description ?? "", "endsAfterMs");
   });
 
   it("publishes thread metadata actions from an object-root schema", () => {

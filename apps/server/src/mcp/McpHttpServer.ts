@@ -1,3 +1,6 @@
+import * as ComputerUse from "../computerUse/ComputerUse.ts";
+import * as ComputerDriver from "../computerUse/Driver.ts";
+import * as ComputerRegistration from "./toolkits/computer/registration.ts";
 import * as NodeCrypto from "node:crypto";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -691,6 +694,10 @@ const layerPreviewSnapshotRegistration = Layer.effectDiscard(registerPreviewSnap
   Layer.provide(PreviewHandlers.layerSnapshot),
 );
 
+const layerComputerToolkit = ComputerRegistration.layer.pipe(
+  Layer.provide(ComputerUse.layer.pipe(Layer.provide(ComputerDriver.layer))),
+);
+
 export const layerPreviewToolkit = Layer.mergeAll(
   layerPreviewStandardToolkitRegistration,
   layerPreviewSnapshotRegistration,
@@ -753,6 +760,7 @@ const layerMcpTransport = McpServer.layerHttp({
 
 export const layer = Layer.mergeAll(
   layerPreviewToolkit,
+  layerComputerToolkit,
   layerOrchestratorToolkit,
   layerThreadToolkit,
   layerAttachmentRegistration,

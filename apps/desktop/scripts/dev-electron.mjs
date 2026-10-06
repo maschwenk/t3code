@@ -30,6 +30,11 @@ const requiredFiles = [
   "dist-electron/snapShot/SnapShotAccessibilityWorker.cjs",
   "../server/dist/bin.mjs",
 ];
+const runtimeDir = NodePath.join(desktopDir, ".electron-runtime");
+const runnerPidPath = NodePath.join(runtimeDir, "dev-runner.pid");
+// The server bundle is not watched here: the desktop main restarts only its
+// backend when the bundle changes. A relaunch request comes from a copy of the
+// bundle that macOS started without this runner (see src/main.ts).
 const watchedDirectories = [
   { directory: "dist-electron", files: new Set(["main.cjs", "preload.cjs"]) },
   {
@@ -44,7 +49,7 @@ const watchedDirectories = [
       "SnapShotAccessibilityWorker.cjs",
     ]),
   },
-  { directory: "../server/dist", files: new Set(["bin.mjs"]) },
+  { directory: ".electron-runtime", files: new Set(["relaunch-request"]) },
 ];
 const forcedShutdownTimeoutMs = 1_500;
 const restartDebounceMs = 120;
@@ -68,11 +73,26 @@ await waitForResources({
 
 const childEnv = { ...process.env };
 delete childEnv.ELECTRON_RUN_AS_NODE;
+childEnv.T3CODE_DEV_ELECTRON_CHILD = "1";
 const devProtocolClient = resolveDevProtocolClient();
 if (devProtocolClient) {
   childEnv.T3CODE_DESKTOP_APP_USER_MODEL_ID = devProtocolClient.appBundleId;
   childEnv.T3CODE_DESKTOP_PROTOCOL_REGISTRATION_MANAGED = "1";
 }
+const electronExecutablePath = resolveElectronLaunchCommand().electronPath;
+
+NodeFS.mkdirSync(runtimeDir, { recursive: true });
+NodeFS.writeFileSync(runnerPidPath, String(process.pid));
+
+// Rebuild the server bundle on every server edit (about a second).
+// --no-clean keeps old chunks in place so the running backend can still load
+// them until the desktop main restarts it on the new bundle.
+const serverDir = NodePath.join(desktopDir, "../server");
+const serverWatch = NodeChildProcess.spawn(
+  NodePath.join(serverDir, "node_modules/.bin/vp"),
+  ["pack", "--watch", "--no-clean", "--logLevel", "warn"],
+  { cwd: serverDir, env: process.env, stdio: ["ignore", "inherit", "inherit"] },
+);
 
 let shuttingDown = false;
 let restartTimer = null;
@@ -97,6 +117,23 @@ function cleanupStaleDevApps() {
   NodeChildProcess.spawnSync("pkill", ["-f", "--", `--t3code-dev-root=${desktopDir}`], {
     stdio: "ignore",
   });
+
+  // Copies macOS launched from this worktree's bundle carry no arguments, so
+  // the pattern above misses them. Match this bundle's executable exactly.
+  const processes = NodeChildProcess.spawnSync("ps", ["-axo", "pid=,command="], {
+    encoding: "utf8",
+  });
+  for (const line of processes.stdout?.split("\n") ?? []) {
+    const match = /^\s*(\d+)\s+(.*)$/.exec(line);
+    if (match?.[2]?.trim() !== electronExecutablePath) continue;
+    const pid = Number(match[1]);
+    if (pid === currentApp?.pid) continue;
+    try {
+      process.kill(pid, "SIGTERM");
+    } catch {
+      // Already gone.
+    }
+  }
 }
 
 function startApp() {
@@ -244,6 +281,14 @@ async function shutdown(exitCode) {
     watcher.close();
   }
 
+  serverWatch.kill("SIGTERM");
+  try {
+    if (NodeFS.readFileSync(runnerPidPath, "utf8") === String(process.pid)) {
+      NodeFS.rmSync(runnerPidPath);
+    }
+  } catch {
+    // Another runner replaced or removed it.
+  }
   await stopApp();
   killChildTree("TERM");
   await new Promise((resolve) => {
