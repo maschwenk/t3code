@@ -236,8 +236,9 @@ Set the legacy mode back to `off` and deploy if any of these happen:
 - Relay request errors rise while sweeps run. Deletions share the Postgres connection pool with
   request handlers.
 
-Turning the switch off stops new deletions. Deleted tunnels stay deleted; their hosts recover as
-described above.
+Turning the legacy mode off stops new legacy deletions; `RELAY_TUNNEL_CLEANUP_MODE` keeps deleting
+tunnels of hosts with recovery while it is `enabled`. Deleted tunnels stay deleted; their hosts
+recover as described above.
 
 ### Disposable-host canary
 
