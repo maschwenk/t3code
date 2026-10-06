@@ -52,6 +52,27 @@ to override its environment defaults. Worktree directories keep their original n
 If generation fails, or a custom name is invalid or already taken, the temporary
 branch name remains.
 
+## Scheduled tasks in a chat
+
+Ask the agent in any chat to do something on a schedule, such as "check
+#deploys every 15 minutes for the next 12 hours and tell me about new
+problems". The agent schedules it and confirms the cadence and when it ends,
+and a card for the schedule appears in the conversation. Each run posts its
+instructions into the same chat, marked **Sent by scheduled task**, and the
+agent works there. You can keep chatting between runs; a run that comes due
+while the agent is busy waits in the queue.
+
+A schedule can end after a duration, at a set time, or after a number of runs,
+and it stops on its own when the end passes, even if T3 Code was closed at the
+time. Say "stop checking" or "pause that" in the chat to cancel or pause it, or
+select **Open** on its card. To schedule from the app instead, use **Schedule a
+task in this chat** in the command palette. The **Scheduled** view in the
+sidebar lists upcoming, paused, and ended schedules across your environments.
+
+Runs use the chat's model and permission mode. To give every run a fresh
+conversation instead, turn on **Start each run in new chat** in the schedule
+editor.
+
 ## Scheduled tasks on mobile
 
 Open **Settings → Scheduled tasks** to create recurring tasks or manage existing
