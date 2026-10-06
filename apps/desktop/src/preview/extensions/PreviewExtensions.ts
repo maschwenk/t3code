@@ -69,7 +69,10 @@ export class PreviewExtensions extends Context.Service<
       enabled: boolean,
     ) => Effect.Effect<void, PreviewExtensionError>;
     readonly remove: (extensionId: string) => Effect.Effect<void, PreviewExtensionError>;
-    readonly subscribeChanges: (listener: () => void) => Effect.Effect<void, never, Scope.Scope>;
+    /** `listener` runs on every change, until the scope closes. */
+    readonly subscribeChanges: (
+      listener: () => Effect.Effect<void>,
+    ) => Effect.Effect<void, never, Scope.Scope>;
   }
 >()("@t3tools/desktop/preview/extensions/PreviewExtensions") {}
 
@@ -81,7 +84,7 @@ export const make = Effect.gen(function* PreviewExtensionsMake() {
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
   const fileSystem = yield* FileSystem.FileSystem;
   const pathContext = yield* sourcePathContext;
-  const listeners = new Set<() => void>();
+  const listeners = new Set<() => Effect.Effect<void>>();
   const runFork = Effect.runForkWith(yield* Effect.context<never>());
 
   const host = yield* Effect.acquireRelease(
@@ -96,7 +99,7 @@ export const make = Effect.gen(function* PreviewExtensionsMake() {
           homeDirectory: environment.homeDirectory,
           chromeVersion: process.versions.chrome ?? "140.0.0.0",
           onChange: () => {
-            for (const listener of listeners) listener();
+            for (const listener of listeners) runFork(listener());
           },
           log: (message, details) => {
             runFork(Effect.logWarning(message, details ?? {}));
