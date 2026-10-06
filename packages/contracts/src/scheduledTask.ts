@@ -345,7 +345,6 @@ export const ScheduledTaskWebhookDeliveryOutcome = Schema.Literals([
   "disabled",
   "rate_limited",
   "expired",
-  "ended",
 ]);
 export type ScheduledTaskWebhookDeliveryOutcome = typeof ScheduledTaskWebhookDeliveryOutcome.Type;
 

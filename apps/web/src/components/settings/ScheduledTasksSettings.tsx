@@ -250,17 +250,11 @@ const DELIVERY_OUTCOME_LABELS: Record<ScheduledTaskWebhookDeliveryOutcome, strin
   disabled: "Task paused",
   rate_limited: "Rate limited",
   expired: "Too old",
-  ended: "Schedule ended",
 };
 
 function deliveryOutcomeVariant(outcome: ScheduledTaskWebhookDeliveryOutcome) {
   if (outcome === "accepted") return "success";
-  if (
-    outcome === "disabled" ||
-    outcome === "ended" ||
-    outcome === "rate_limited" ||
-    outcome === "expired"
-  ) {
+  if (outcome === "disabled" || outcome === "rate_limited" || outcome === "expired") {
     return "warning";
   }
   return "error";

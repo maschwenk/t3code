@@ -282,10 +282,13 @@ it.effect("stops running a webhook once it has used its run limit", () =>
       assert.equal((yield* service.triggerWebhook(requestFor(task)))._tag, "ended");
       assert.equal(yield* Queue.size(launches), 0);
       const { deliveries } = yield* service.listWebhookDeliveries({ id: task.id });
-      assert.deepEqual(deliveries.map((delivery) => delivery.outcome).toSorted(), [
-        "accepted",
-        "ended",
-      ]);
+      assert.deepEqual(
+        deliveries.map((delivery) => [delivery.outcome, delivery.error]).toSorted(),
+        [
+          ["accepted", null],
+          ["disabled", "The schedule ended."],
+        ],
+      );
     }),
   ),
 );

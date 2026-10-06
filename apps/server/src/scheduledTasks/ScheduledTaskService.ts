@@ -1619,7 +1619,9 @@ export const layer = Layer.effect(
             }
             // "Review the next 5 PRs" or "listen until Friday" ends a webhook too.
             if (scheduledTaskEndReached(task, DateTime.toEpochMillis(now))) {
-              yield* log("ended");
+              // Logged as "disabled" so clients that predate end conditions can
+              // still decode the delivery list.
+              yield* log("disabled", { error: "The schedule ended." });
               yield* observe("ended");
               return { _tag: "ended" as const };
             }
