@@ -640,9 +640,22 @@ async function pointerGesture(
     to = asPoint(pointerTarget(drop.element.bounds, drop.window?.bounds ?? null));
   }
   if (!from || !to) return { ok: false, code: "input_requires_foreground" };
-  return runPointer(xa11y, native, request, [from, to], window, (input) =>
-    input.drag([from.x, from.y], [to.x, to.y], { duration: 400 }),
-  );
+  return runPointer(xa11y, native, request, [from, to], window, async () => {
+    let at = from;
+    native.postDrag(at, "down");
+    try {
+      for (let step = 1; step <= 25; step++) {
+        await NodeTimersPromises.setTimeout(16);
+        at = {
+          x: from.x + ((to.x - from.x) * step) / 25,
+          y: from.y + ((to.y - from.y) * step) / 25,
+        };
+        native.postDrag(at, "move");
+      }
+    } finally {
+      native.postDrag(at, "up");
+    }
+  });
 }
 
 async function act(

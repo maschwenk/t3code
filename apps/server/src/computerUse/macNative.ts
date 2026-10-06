@@ -274,6 +274,24 @@ export async function loadMacNative() {
         [T.I32, T.U32],
         [0, button === "left" ? 2 : 4],
       ),
+    /** A left-button drag event. AppKit text selection requires a click count of one. */
+    postDrag(point: { x: number; y: number }, phase: "down" | "move" | "up") {
+      const event = call<bigint>(
+        "cg",
+        "CGEventCreateMouseEvent",
+        Ref,
+        [Ref, T.U32, CGPoint, T.U32],
+        [0n, phase === "down" ? 1 : phase === "up" ? 2 : 6, point, 0],
+      );
+      try {
+        // kCGMouseEventClickState. Leaving this at zero moves the cursor but
+        // TextEdit ignores the drag for selection.
+        call("cg", "CGEventSetIntegerValueField", T.Void, [Ref, T.U32, T.I64], [event, 1, 1]);
+        call("cg", "CGEventPost", T.Void, [T.U32, Ref], [0, event]);
+      } finally {
+        release(event);
+      }
+    },
     /** Seconds since the last input event of any type in this login session. */
     idleSeconds: () =>
       call<number>(
