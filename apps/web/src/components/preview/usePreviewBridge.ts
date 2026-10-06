@@ -115,6 +115,7 @@ export function projectDesktopState(state: DesktopPreviewTabState): DesktopPrevi
   const navOrigin = state.navStatus.kind === "Idle" ? null : originOf(state.navStatus.url);
   return {
     hasWebContents: state.webContentsId !== null,
+    webContentsId: state.webContentsId,
     canGoBack: state.canGoBack,
     canGoForward: state.canGoForward,
     loading: state.navStatus.kind === "Loading",

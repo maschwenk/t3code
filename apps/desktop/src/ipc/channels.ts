@@ -110,6 +110,15 @@ export const PREVIEW_RECORDING_SAVE_CHANNEL = "desktop:preview-recording-save";
 export const PREVIEW_RECORDING_FRAME_CHANNEL = "desktop:preview-recording-frame";
 export const PREVIEW_STATE_CHANGE_CHANNEL = "desktop:preview-state-change";
 export const PREVIEW_POINTER_EVENT_CHANNEL = "desktop:preview-pointer-event";
+export const PREVIEW_EXTENSIONS_LIST_CHANNEL = "desktop:preview-extensions-list";
+export const PREVIEW_EXTENSIONS_OPEN_POPUP_CHANNEL = "desktop:preview-extensions-open-popup";
+export const PREVIEW_EXTENSIONS_CANDIDATES_CHANNEL = "desktop:preview-extensions-candidates";
+export const PREVIEW_EXTENSIONS_IMPORT_CHANNEL = "desktop:preview-extensions-import";
+export const PREVIEW_EXTENSIONS_INSTALL_WEB_STORE_CHANNEL =
+  "desktop:preview-extensions-install-web-store";
+export const PREVIEW_EXTENSIONS_SET_ENABLED_CHANNEL = "desktop:preview-extensions-set-enabled";
+export const PREVIEW_EXTENSIONS_REMOVE_CHANNEL = "desktop:preview-extensions-remove";
+export const PREVIEW_EXTENSIONS_CHANGED_CHANNEL = "desktop:preview-extensions-changed";
 
 export const MAC_PERMISSION_HELPER_CHANNEL = "desktop:mac-permission-helper";
 

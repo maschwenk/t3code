@@ -47,6 +47,7 @@ import { openPreviewSession } from "./openPreviewSession";
 import { PreviewChromeRow } from "./PreviewChromeRow";
 import { PreviewEmptyState } from "./PreviewEmptyState";
 import { PreviewMoreMenu } from "./PreviewMoreMenu";
+import { PreviewExtensionButtons } from "./PreviewExtensionButtons";
 import {
   commitBrowserViewportChange,
   subscribeBrowserViewportChange,
@@ -759,19 +760,22 @@ export function PreviewView({
         }
         trailingActions={
           previewBridge ? (
-            <PreviewMoreMenu
-              environmentId={threadRef.environmentId}
-              profileId={activeProfileId}
-              profileName={activeProfileName}
-              tabId={runtimeTabId}
-              hasWebContents={desktopOverlay?.hasWebContents ?? false}
-              zoomFactor={desktopOverlay?.zoomFactor ?? 1}
-              colorScheme={desktopOverlay?.colorScheme ?? "system"}
-              deviceToolbarVisible={viewport._tag !== "fill"}
-              onToggleDeviceToolbar={handleToggleDeviceToolbar}
-              nativePictureInPicture={desktopOverlay?.pictureInPicture ?? false}
-              onNativePictureInPicture={handleNativePictureInPicture}
-            />
+            <>
+              <PreviewExtensionButtons tabWebContentsId={desktopOverlay?.webContentsId ?? null} />
+              <PreviewMoreMenu
+                environmentId={threadRef.environmentId}
+                profileId={activeProfileId}
+                profileName={activeProfileName}
+                tabId={runtimeTabId}
+                hasWebContents={desktopOverlay?.hasWebContents ?? false}
+                zoomFactor={desktopOverlay?.zoomFactor ?? 1}
+                colorScheme={desktopOverlay?.colorScheme ?? "system"}
+                deviceToolbarVisible={viewport._tag !== "fill"}
+                onToggleDeviceToolbar={handleToggleDeviceToolbar}
+                nativePictureInPicture={desktopOverlay?.pictureInPicture ?? false}
+                onNativePictureInPicture={handleNativePictureInPicture}
+              />
+            </>
           ) : null
         }
       />

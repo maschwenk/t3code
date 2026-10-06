@@ -133,6 +133,15 @@ export default defineConfig({
       entry: ["src/preview-pip-preload.ts"],
     },
     {
+      // Runs in extension service workers and pages; must be self-contained.
+      format: "cjs",
+      outDir: "dist-electron",
+      dts: false,
+      sourcemap: true,
+      outExtensions: () => ({ js: ".cjs" }),
+      entry: ["src/preview-extension-preload.ts"],
+    },
+    {
       // Sandboxed preloads must be self-contained, without shared runtime chunks.
       format: "cjs",
       outDir: "dist-electron",

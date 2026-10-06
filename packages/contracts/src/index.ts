@@ -49,6 +49,7 @@ export * from "./agentSessions.ts";
 export * from "./assets.ts";
 export * from "./review.ts";
 export * from "./browserImport.ts";
+export * from "./previewExtensions.ts";
 export * from "./browserProfile.ts";
 export * from "./device.ts";
 export * from "./preview.ts";

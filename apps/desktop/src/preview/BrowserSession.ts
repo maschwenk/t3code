@@ -9,6 +9,8 @@ import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 import * as SynchronizedRef from "effect/SynchronizedRef";
 
+import { confirmExternalProtocol } from "./ExternalProtocolPrompt.ts";
+
 const PREVIEW_PARTITION_PREFIX = "persist:t3code-preview-";
 /**
  * Incognito partitions deliberately omit the `persist:` prefix, which is what
@@ -33,6 +35,12 @@ const ALLOWED_PREVIEW_PERMISSIONS: ReadonlySet<string> = new Set([
   "clipboard-sanitized-write",
   "notifications",
   "geolocation",
+  // Pages may reach servers on this machine, as they could before Chrome's
+  // Local Network Access prompt. Previews talk to local dev servers, and Okta
+  // Verify's FastPass answers sign-in pages from a loopback port. The wider
+  // `local-network` (other devices on the LAN) stays denied.
+  "loopback-network",
+  "local-network-access",
   // Deliberately NOT local-fonts: preview sessions run untrusted web content,
   // and silently granting it would hand every page the user's installed-font
   // fingerprint (and font file bytes via FontData.blob()). The app's own font
@@ -203,9 +211,19 @@ export const make = Effect.gen(function* BrowserSessionMake() {
           // the challenge every few seconds, so logins behind it never complete
           // (#5002). Re-setting the unchanged native string is harmless, so it
           // is the rewritten string itself that trips the check.
-          browserSession.setPermissionRequestHandler((_webContents, permission, callback) => {
-            callback(ALLOWED_PREVIEW_PERMISSIONS.has(permission));
-          });
+          browserSession.setPermissionRequestHandler(
+            (webContents, permission, callback, details) => {
+              if (permission === "openExternal") {
+                const externalUrl = "externalURL" in details ? details.externalURL : undefined;
+                confirmExternalProtocol(webContents, externalUrl, details.requestingUrl).then(
+                  callback,
+                  () => callback(false),
+                );
+                return;
+              }
+              callback(ALLOWED_PREVIEW_PERMISSIONS.has(permission));
+            },
+          );
           browserSession.setPermissionCheckHandler((_webContents, permission) =>
             ALLOWED_PREVIEW_PERMISSIONS.has(permission),
           );
