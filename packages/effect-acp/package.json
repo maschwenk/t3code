@@ -37,9 +37,10 @@
     }
   },
   "scripts": {
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsrs --noEmit",
     "test": "vp test run --config ../../vite.config.ts --dir .",
-    "generate": "node scripts/generate.ts"
+    "generate": "node scripts/generate.ts",
+    "lint:effect": "tsc --noEmit"
   },
   "dependencies": {
     "effect": "catalog:"

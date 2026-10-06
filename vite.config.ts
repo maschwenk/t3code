@@ -338,8 +338,8 @@ export default defineConfig({
     ],
     options: {
       reportUnusedDisableDirectives: "error",
-      // Revisit once Oxlint's tsgolint path can integrate with @effect/tsgo diagnostics.
-      typeAware: false,
+      // Type-aware rules run on tsrslint via patches/vite-plus@1.0.0.patch; Effect diagnostics run in lint:effect.
+      typeAware: true,
       typeCheck: false,
     },
   },

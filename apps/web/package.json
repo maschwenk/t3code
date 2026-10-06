@@ -8,8 +8,9 @@
     "dev": "vp dev",
     "build": "vp build",
     "preview": "vp preview",
-    "typecheck": "tsc --noEmit",
-    "test": "vp test run --passWithNoTests --project unit"
+    "typecheck": "tsrs --noEmit",
+    "test": "vp test run --passWithNoTests --project unit",
+    "lint:effect": "tsc --noEmit"
   },
   "dependencies": {
     "@base-ui/react": "^1.4.1",

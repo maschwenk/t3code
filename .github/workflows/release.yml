@@ -262,6 +262,9 @@ jobs:
       - name: Typecheck
         run: vp run typecheck
 
+      - name: Check Effect diagnostics
+        run: vp run lint:effect
+
   # Keep tests on their own runners, using the same package split and server
   # shards as CI, so the release check job does not spend its budget on tests.
   test:
