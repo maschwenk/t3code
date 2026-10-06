@@ -1,7 +1,7 @@
 import { ScheduledTaskId, type ScheduledTask } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { placeScheduledTaskCards } from "./scheduledTaskCards.logic";
+import { placeScheduledTaskCards, sortScheduledTasksByUpcoming } from "./scheduledTasks.ts";
 
 const task = (id: string, createdAt: string) =>
   ({ id: ScheduledTaskId.make(id), createdAt }) as Pick<
@@ -42,5 +42,50 @@ describe("placeScheduledTaskCards", () => {
     });
     expect(placement.byMessageId.size).toBe(0);
     expect(placement.trailing).toEqual([]);
+  });
+});
+
+describe("sortScheduledTasksByUpcoming", () => {
+  const base = {
+    title: "Watch",
+    prompt: "Check",
+    enabled: true,
+    schedule: { type: "interval", everyMs: 900_000 },
+    projectId: "project",
+    threadId: null,
+    endsAt: "2026-10-06T23:59:59.250Z",
+    maxRuns: null,
+    createdAt: "2026-10-06T11:00:00.000Z",
+    updatedAt: "2026-10-06T11:00:00.000Z",
+    lastRunAt: null,
+    runCount: 0,
+  };
+  const task = (id: string, overrides: Record<string, unknown>) =>
+    ({ ...base, id: ScheduledTaskId.make(id), ...overrides }) as unknown as ScheduledTask;
+
+  it("lists active schedules by next run ahead of paused and ended ones", () => {
+    const ordered = sortScheduledTasksByUpcoming(
+      [
+        task("ended", { nextRunAt: null }),
+        task("paused", { enabled: false, nextRunAt: null }),
+        task("later", { nextRunAt: "2026-10-06T13:00:00.000Z" }),
+        task("sooner", { nextRunAt: "2026-10-06T12:15:00.000Z" }),
+        task("webhook-spent", {
+          schedule: { type: "webhook", signature: null },
+          nextRunAt: null,
+          endsAt: null,
+          maxRuns: 2,
+          runCount: 2,
+        }),
+      ],
+      Date.parse("2026-10-06T12:00:00.000Z"),
+    );
+    expect(ordered.map((entry) => entry.id)).toEqual([
+      "sooner",
+      "later",
+      "paused",
+      "ended",
+      "webhook-spent",
+    ]);
   });
 });
