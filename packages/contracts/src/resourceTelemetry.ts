@@ -355,16 +355,53 @@ export const DesktopTelemetryCancelDesktopUpdate = Schema.Struct({
 });
 export type DesktopTelemetryCancelDesktopUpdate = typeof DesktopTelemetryCancelDesktopUpdate.Type;
 
+/** Feedback the agent cursor plays when it reaches its target. */
+export const ComputerCursorCue = Schema.Literals([
+  "point",
+  "click",
+  "doubleClick",
+  "rightClick",
+  "menu",
+  "type",
+  "scrollUp",
+  "scrollDown",
+  "scrollLeft",
+  "scrollRight",
+]);
+export type ComputerCursorCue = typeof ComputerCursorCue.Type;
+
+/**
+ * How long the agent cursor takes to glide `distance` logical pixels. Grows
+ * with the log of distance, like a person aiming a mouse (Fitts's law), so
+ * short hops stay snappy and cross-screen moves stay readable.
+ */
+export const computerCursorGlideMs = (distance: number): number =>
+  Math.round(Math.min(650, 160 + 80 * Math.log2(1 + Math.max(0, distance) / 30)));
+
 /**
  * Server -> desktop main: draw the agent's computer-use cursor at a global
  * screen point (logical pixels, primary display origin). The desktop animates a
  * click-through overlay so the user's own mouse is never moved.
+ *
+ * The cursor glides to the point over `durationMs` (chosen by the server, which
+ * waits that long before acting) and then plays the feedback for `cue`.
+ * `bounds` is the target element's frame, used to highlight fields and menus.
  */
 export const DesktopTelemetryShowComputerCursor = Schema.Struct({
   version: Schema.Literal(1),
   type: Schema.Literal("showComputerCursor"),
   x: Schema.Finite,
   y: Schema.Finite,
+  durationMs: Schema.optional(Schema.Finite),
+  cue: Schema.optional(ComputerCursorCue),
+  bounds: Schema.optional(
+    Schema.Struct({
+      x: Schema.Finite,
+      y: Schema.Finite,
+      width: Schema.Finite,
+      height: Schema.Finite,
+    }),
+  ),
 });
 export type DesktopTelemetryShowComputerCursor = typeof DesktopTelemetryShowComputerCursor.Type;
 

@@ -7,6 +7,7 @@ import {
   type DesktopHostTelemetryMessage as DesktopHostTelemetryMessageValue,
   type DesktopHostTelemetrySnapshot,
   DesktopTelemetryControlMessage,
+  type DesktopTelemetryShowComputerCursor,
   type DesktopUpdateStatusReport,
   type ResourceTelemetrySourceStatus,
 } from "@t3tools/contracts";
@@ -184,12 +185,11 @@ export class DesktopTelemetryReceiver extends Context.Service<
     readonly cancelDesktopUpdate: (
       requestId: string,
     ) => Effect.Effect<void, DesktopTelemetryControlError>;
-    /** Shows the agent cursor at a global screen point on the supervising
+    /** Glides the agent cursor to a global screen point on the supervising
         desktop app. Succeeds with false when no desktop app can draw it. */
-    readonly showComputerCursor: (point: {
-      readonly x: number;
-      readonly y: number;
-    }) => Effect.Effect<boolean>;
+    readonly showComputerCursor: (
+      cursor: Omit<DesktopTelemetryShowComputerCursor, "version" | "type">,
+    ) => Effect.Effect<boolean>;
     /** Latest desktop update state report plus subsequent reports. The
         desktop replays its latest report when the backend attaches, so this
         is populated shortly after startup on desktop-managed servers. */
@@ -662,10 +662,10 @@ export const make = Effect.fn("resourceTelemetry.desktopTelemetryReceiver.make")
       sendControlMessage({ version: 1, type: "commitDesktopUpdate", requestId }),
     cancelDesktopUpdate: (requestId) =>
       sendControlMessage({ version: 1, type: "cancelDesktopUpdate", requestId }),
-    showComputerCursor: (point) =>
+    showComputerCursor: (cursor) =>
       config.mode !== "desktop" || config.desktopTelemetryControlFd === undefined
         ? Effect.succeed(false)
-        : sendControlMessage({ version: 1, type: "showComputerCursor", ...point }).pipe(
+        : sendControlMessage({ version: 1, type: "showComputerCursor", ...cursor }).pipe(
             Effect.match({ onFailure: () => false, onSuccess: () => true }),
           ),
     desktopUpdates: Effect.gen(function* () {
