@@ -277,12 +277,10 @@ import {
 } from "./V2LifecycleRow";
 import { SecretRequestCard } from "./SecretRequestCard";
 import {
+  ScheduledRunAttribution,
   ScheduledTaskCardsForMessage,
   ThreadScheduledTaskCardsProvider,
   TrailingScheduledTaskCards,
-  openScheduledTaskEditor,
-  useScheduledTaskForRun,
-  useThreadScheduledTaskCards,
 } from "./ScheduledTaskCards";
 import { TimelineSystemDivider } from "./TimelineSystemDivider";
 
@@ -809,11 +807,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     worktreeSetup,
   ]);
   const rows = useStableRows(rawRows, listIdentityKey);
-  const scheduledTaskCards = useThreadScheduledTaskCards({
-    threadRef: citationThreadRef,
-    rows,
-    timestampFormat,
-  });
   // Run status/timestamps churn on every stream event; the shared row context
   // must not change with them or every timeline row re-renders per event.
   const runs = useStableHandoffRuns(runsProp);
@@ -1342,7 +1335,11 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   return (
     <TimelineRowCtx value={sharedState}>
       <TimelineRowActivityCtx value={activityState}>
-        <ThreadScheduledTaskCardsProvider value={scheduledTaskCards}>
+        <ThreadScheduledTaskCardsProvider
+          threadRef={citationThreadRef}
+          rows={rows}
+          timestampFormat={timestampFormat}
+        >
           <TooltipScrollDismissArea
             ref={setTimelineViewportElement}
             className="relative h-full min-h-0"
@@ -2006,7 +2003,6 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
     (attachment) => !isImageAttachment(attachment) && !isFileAttachment(attachment),
   );
   const userMessage = resolveUserMessagePresentation(row.message);
-  const scheduledRun = useScheduledTaskForRun(userMessage.scheduledTaskId);
   const resolvedContext = useMemo(() => resolveUserMessageContext(row.message), [row.message]);
   const previewImages = useMemo(
     () => userImages.filter((image) => image.name.startsWith("preview-annotation-")),
@@ -2137,16 +2133,8 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
           className="me-1 text-2xs text-muted-foreground/70"
           data-user-message-attribution="automation"
         >
-          {scheduledRun ? (
-            <InlineButton
-              onClick={() => openScheduledTaskEditor(scheduledRun)}
-              tone="muted"
-              aria-label={`Open scheduled task ${scheduledRun.task.title}`}
-            >
-              Sent by scheduled task
-            </InlineButton>
-          ) : userMessage.scheduledTaskId ? (
-            "Sent by scheduled task"
+          {userMessage.scheduledTaskId ? (
+            <ScheduledRunAttribution taskId={userMessage.scheduledTaskId} />
           ) : (
             "Sent by automation"
           )}
