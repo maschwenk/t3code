@@ -152,7 +152,7 @@ it.effect("expires snapshots and invalidates all observations after an uncertain
   return Effect.gen(function* () {
     const computer = yield* ComputerUse.ComputerUse;
     const old = yield* computer.snapshot("a", { app: "Calculator", includeImage: false });
-    yield* TestClock.adjust("121 seconds");
+    yield* TestClock.adjust("601 seconds");
     expect(
       yield* code(
         computer.act("a", {

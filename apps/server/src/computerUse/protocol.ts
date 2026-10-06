@@ -216,7 +216,7 @@ export class ComputerUseError extends Schema.TaggedError<ComputerUseError>()("Co
       case "capture_denied":
         return "Screen capture is off. Ask the user to enable it in Settings > Integrations, or request a text-only snapshot.";
       case "snapshot_expired":
-        return "Take a fresh computer_snapshot before acting. Snapshots expire after two minutes and are replaced by the snapshot an action returns.";
+        return "Take a fresh computer_snapshot before acting. Snapshots expire after ten minutes and are replaced by the snapshot an action returns.";
       case "invalid_ref":
         return "That ref was not in the snapshot, a name matched no element or several (add role, or use a ref), or this action needs a target. Use the latest snapshot.";
       case "invalid_input":

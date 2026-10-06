@@ -29,7 +29,9 @@ type Receipt = {
 };
 
 const DEFAULT_LIMIT = 250;
-const RECEIPT_TTL_MS = 120_000;
+// Steps re-find their element and stop on any change, so an older snapshot is
+// safe to act on; a long expiry spares agents a snapshot after every reply.
+const RECEIPT_TTL_MS = 10 * 60_000;
 export const MAX_BATCH_STEPS = 20;
 
 export type SnapshotInput = {
