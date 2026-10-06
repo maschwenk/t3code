@@ -758,24 +758,26 @@ export function PreviewView({
             </Tooltip>
           ) : null
         }
+        extensionActions={
+          previewBridge ? (
+            <PreviewExtensionButtons tabWebContentsId={desktopOverlay?.webContentsId ?? null} />
+          ) : null
+        }
         trailingActions={
           previewBridge ? (
-            <>
-              <PreviewExtensionButtons tabWebContentsId={desktopOverlay?.webContentsId ?? null} />
-              <PreviewMoreMenu
-                environmentId={threadRef.environmentId}
-                profileId={activeProfileId}
-                profileName={activeProfileName}
-                tabId={runtimeTabId}
-                hasWebContents={desktopOverlay?.hasWebContents ?? false}
-                zoomFactor={desktopOverlay?.zoomFactor ?? 1}
-                colorScheme={desktopOverlay?.colorScheme ?? "system"}
-                deviceToolbarVisible={viewport._tag !== "fill"}
-                onToggleDeviceToolbar={handleToggleDeviceToolbar}
-                nativePictureInPicture={desktopOverlay?.pictureInPicture ?? false}
-                onNativePictureInPicture={handleNativePictureInPicture}
-              />
-            </>
+            <PreviewMoreMenu
+              environmentId={threadRef.environmentId}
+              profileId={activeProfileId}
+              profileName={activeProfileName}
+              tabId={runtimeTabId}
+              hasWebContents={desktopOverlay?.hasWebContents ?? false}
+              zoomFactor={desktopOverlay?.zoomFactor ?? 1}
+              colorScheme={desktopOverlay?.colorScheme ?? "system"}
+              deviceToolbarVisible={viewport._tag !== "fill"}
+              onToggleDeviceToolbar={handleToggleDeviceToolbar}
+              nativePictureInPicture={desktopOverlay?.pictureInPicture ?? false}
+              onNativePictureInPicture={handleNativePictureInPicture}
+            />
           ) : null
         }
       />
