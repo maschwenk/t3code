@@ -12,10 +12,12 @@ The native accessibility library may also require macOS Screen & System Audio Re
 for text-only snapshots. This OS permission does not enable T3's separate screen-capture setting.
 
 Ask Claude to inspect the app and perform a small task. Agents can inspect controls, press buttons,
-enter text, and invoke the accessibility actions exposed by a control. Actions use a fresh observation
-and move the visible system cursor to their target before acting. Keep the target window in the
-foreground. Agents can also hover, click, double-click, right-click and scroll at an inspected control.
-Pointer actions share your mouse; avoid simultaneous manual input. Turn off Agent computer access
+enter text, and invoke the accessibility actions exposed by a control. These actions run in the
+background: you can keep working in other apps, and your mouse does not move. When the environment
+runs in the T3 desktop app, an agent cursor appears over the target before each action.
+Hover, double-click, wheel scrolling, and clicks on controls without an accessibility action need
+real pointer input. They work only while the target app is in front, and they move your mouse.
+Turn off Agent computer access
 to block further calls, or remove an app from the allowlist to revoke access to it. These grants apply to agents across the selected environment.
 
 **Allow screen captures** is a separate opt-in. It requires Screen Recording permission and the target
@@ -38,7 +40,7 @@ T3 desktop browser host; this change does not add a server-only Chromium host.
 
 This is the fork's first native computer-use implementation. macOS is supported; Windows and Linux
 are not enabled. Apps must expose usable accessibility controls. Free-coordinate clicking,
-dragging, global keyboard shortcuts, app launch, a separate native agent cursor overlay, live desktop
+dragging, global keyboard shortcuts, app launch, live desktop
 video, and phone takeover are not implemented. Native mobile settings for these grants are not yet available; configure them from web or desktop settings.
 The existing mobile app can steer a compatible server's agent, but end-to-end mobile compatibility
 and native app actions must be verified on your devices before relying on them.
