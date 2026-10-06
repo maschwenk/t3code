@@ -48,7 +48,7 @@ const make = Effect.gen(function* () {
             const child = NodeChildProcess.spawn(execPath, args, {
               stdio: ["pipe", "pipe", "pipe"],
               signal,
-              timeout: 12_000,
+              timeout: request.kind === "open" ? 25_000 : 12_000,
               killSignal: "SIGKILL",
               env: { ...env, ELECTRON_RUN_AS_NODE: "1" },
             });

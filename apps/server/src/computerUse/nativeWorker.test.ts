@@ -2,8 +2,14 @@
 import * as NodeChildProcess from "node:child_process";
 import * as NodeURL from "node:url";
 import { expect, it } from "@effect/vitest";
-import { backgroundAction, launchServicesPids, nativeFailure } from "./nativeWorker.ts";
-import { ComputerUseError } from "./protocol.ts";
+import {
+  backgroundAction,
+  identityMatches,
+  launchServicesPids,
+  nativeFailure,
+  relocationMatches,
+} from "./nativeWorker.ts";
+import { ComputerUseError, type ElementTarget } from "./protocol.ts";
 
 it.each([
   ["left click", { kind: "click", button: "left", count: 1 }, ["press", "focus"], "press"],
@@ -12,7 +18,24 @@ it.each([
   ["click without press", { kind: "click", button: "left", count: 1 }, ["focus"], undefined],
   ["listed action", { kind: "perform", action: "raise" }, ["raise", "focus"], "raise"],
   ["unlisted action", { kind: "perform", action: "raise" }, ["focus"], undefined],
-  ["wheel scroll", { kind: "scroll", dx: 0, dy: 120 }, ["scroll_down_by_page"], undefined],
+  [
+    "wheel scroll down",
+    { kind: "scroll", dx: 0, dy: 120 },
+    ["scroll_down_by_page"],
+    "scroll_down_by_page",
+  ],
+  [
+    "wheel scroll left",
+    { kind: "scroll", dx: -300, dy: 20 },
+    ["scroll_left_by_page"],
+    "scroll_left_by_page",
+  ],
+  [
+    "wheel scroll without page actions",
+    { kind: "scroll", dx: 0, dy: -120 },
+    ["scroll_down_by_page"],
+    undefined,
+  ],
   ["hover", { kind: "move" }, ["press"], undefined],
 ] as const)(
   "runs %s in the background only through an advertised action",
@@ -118,4 +141,42 @@ it.each([
     detail: { stage: "request", reason: "unknown" },
   });
   expect(result.stderr).not.toContain("private-invalid-input");
+});
+
+const field: ElementTarget = {
+  ref: 3,
+  role: "text_field",
+  name: "To",
+  value: "a@b",
+  enabled: true,
+  editable: true,
+  actions: [],
+  bounds: { x: 10, y: 10, width: 200, height: 20 },
+  description: null,
+  states: [],
+  depth: 1,
+  path: [0, 2],
+  stableId: null,
+};
+const row: ElementTarget = {
+  ...field,
+  role: "row",
+  name: "Inbox",
+  value: "3 unread",
+  editable: false,
+};
+
+it("keeps a text field's identity while its value changes, but not a row's", () => {
+  expect(identityMatches({ ...field, value: "a@b.com" }, field)).toBe(true);
+  expect(identityMatches({ ...row, value: "4 unread" }, row)).toBe(false);
+  expect(identityMatches({ ...field, bounds: { ...field.bounds!, y: 40 } }, field)).toBe(false);
+});
+
+it("relocates a named element that moved, never an unnamed one", () => {
+  // Named elements may shift when content is inserted above them.
+  expect(relocationMatches({ ...row, bounds: { ...row.bounds!, y: 90 } }, row)).toBe(true);
+  const unnamed = { ...row, name: null };
+  expect(relocationMatches({ ...unnamed, bounds: { ...row.bounds!, y: 90 } }, unnamed)).toBe(false);
+  expect(relocationMatches(unnamed, unnamed)).toBe(true);
+  expect(relocationMatches({ ...row, name: "Drafts" }, row)).toBe(false);
 });

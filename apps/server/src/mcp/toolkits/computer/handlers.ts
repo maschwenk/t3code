@@ -20,10 +20,4 @@ export const layer = ComputerToolkit.toLayer({
       yield* caller;
       return yield* (yield* ComputerUse.ComputerUse).status;
     }),
-  computer_action: (input) =>
-    Effect.gen(function* () {
-      const id = yield* caller;
-      yield* (yield* ComputerUse.ComputerUse).act(id, input);
-      return { completed: true };
-    }),
 });

@@ -19,6 +19,30 @@ export const ComputerAction = Schema.Union([
     kind: Schema.Literal("perform"),
     action: Schema.String.check(Schema.isMaxLength(128)),
   }),
+  // A key or shortcut such as "Return", "Escape", "Down" or "cmd+shift+t".
+  Schema.Struct({
+    kind: Schema.Literal("key"),
+    key: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(64)),
+    repeat: Schema.optionalKey(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 50 }))),
+  }),
+  // A menu bar command by titles, such as ["File", "New Window"].
+  Schema.Struct({
+    kind: Schema.Literal("menu"),
+    path: Schema.Array(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(200))).check(
+      Schema.isMinLength(1),
+      Schema.isMaxLength(6),
+    ),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("wait"),
+    ms: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 5000 })),
+  }),
+]);
+/** Actions that need no element target. A key may optionally focus one first. */
+export const ELEMENTLESS_ACTIONS: ReadonlySet<ComputerAction["kind"]> = new Set([
+  "key",
+  "menu",
+  "wait",
 ]);
 export type ComputerAction = typeof ComputerAction.Type;
 
@@ -37,6 +61,13 @@ export const ComputerElement = Schema.Struct({
   editable: Schema.Boolean,
   actions: Schema.Array(Schema.String),
   bounds: Schema.NullOr(Bounds),
+  description: Schema.NullOr(Schema.String),
+  /** Notable states: focused, selected, checked, mixed, expanded, collapsed, offscreen. */
+  states: Schema.Array(Schema.String),
+  /** Nesting among returned elements; anonymous containers are not counted. */
+  depth: Schema.Int,
+  /** Names of the nearest named ancestors, outermost first, for query results. */
+  context: Schema.optionalKey(Schema.Array(Schema.String)),
 });
 
 const ElementTarget = Schema.Struct({
@@ -46,19 +77,33 @@ const ElementTarget = Schema.Struct({
 });
 export type ElementTarget = typeof ElementTarget.Type;
 
+export const SnapshotOptions = Schema.Struct({
+  /** Case-insensitive words that must all appear in an element's name, value or description. */
+  query: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(200))),
+  roles: Schema.optionalKey(Schema.Array(Schema.String.check(Schema.isMaxLength(64)))),
+  /** Walk only this element's subtree. */
+  root: Schema.optionalKey(ElementTarget),
+  offset: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 100_000 })),
+  limit: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 1000 })),
+  includeOffscreen: Schema.Boolean,
+});
+export type SnapshotOptions = typeof SnapshotOptions.Type;
+
 export const WorkerRequest = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal("snapshot"),
     app: Schema.String,
     includeImage: Schema.Boolean,
+    options: SnapshotOptions,
   }),
   Schema.Struct({
     kind: Schema.Literal("action"),
     app: Schema.String,
     pid: Schema.Int,
-    target: ElementTarget,
+    target: Schema.NullOr(ElementTarget),
     action: ComputerAction,
   }),
+  Schema.Struct({ kind: Schema.Literal("open"), app: Schema.String, activate: Schema.Boolean }),
 ]);
 export type WorkerRequest = typeof WorkerRequest.Type;
 
@@ -66,6 +111,13 @@ export const NativeSnapshot = Schema.Struct({
   app: Schema.String,
   pid: Schema.Int,
   truncated: Schema.Boolean,
+  /** Pass as offset to read the elements after this page. */
+  nextOffset: Schema.optionalKey(Schema.Int),
+  /** Elements skipped because they lie outside their window or scroll area. */
+  offscreen: Schema.Int,
+  /** Top-level menu bar titles, for menu actions. */
+  menus: Schema.optionalKey(Schema.Array(Schema.String)),
+  frontmost: Schema.Boolean,
   elements: Schema.Array(ElementTarget),
   image: Schema.optionalKey(
     Schema.Struct({
@@ -104,7 +156,14 @@ export const FailureDetail = Schema.Struct({
 });
 
 export const WorkerResponse = Schema.Union([
-  Schema.Struct({ ok: Schema.Literal(true), snapshot: Schema.optionalKey(NativeSnapshot) }),
+  Schema.Struct({
+    ok: Schema.Literal(true),
+    snapshot: Schema.optionalKey(NativeSnapshot),
+    /** How an action was delivered. */
+    via: Schema.optionalKey(
+      Schema.Literals(["accessibility", "keyboard_event", "menu", "pointer", "launch_services"]),
+    ),
+  }),
   Schema.Struct({
     ok: Schema.Literal(false),
     code: Schema.Literals([
@@ -115,9 +174,12 @@ export const WorkerResponse = Schema.Union([
       "unsupported_action",
       "capture_requires_foreground",
       "input_requires_foreground",
+      "menu_not_found",
       "failed",
     ]),
     detail: Schema.optionalKey(FailureDetail),
+    /** Menu titles available where a menu path stopped matching. */
+    available: Schema.optionalKey(Schema.Array(Schema.String)),
   }),
 ]);
 export type WorkerResponse = typeof WorkerResponse.Type;
@@ -137,10 +199,13 @@ export class ComputerUseError extends Schema.TaggedError<ComputerUseError>()("Co
     "unsupported_action",
     "capture_requires_foreground",
     "input_requires_foreground",
+    "menu_not_found",
+    "invalid_key",
     "failed",
   ]),
   cause: Schema.optional(Schema.Defect()),
   detail: Schema.optionalKey(FailureDetail),
+  available: Schema.optionalKey(Schema.Array(Schema.String)),
 }) {
   override get message(): string {
     switch (this.code) {
@@ -151,11 +216,11 @@ export class ComputerUseError extends Schema.TaggedError<ComputerUseError>()("Co
       case "capture_denied":
         return "Screen capture is off. Ask the user to enable it in Settings > Integrations, or request a text-only snapshot.";
       case "snapshot_expired":
-        return "Take a fresh computer_snapshot before acting. Snapshots expire after two minutes and are consumed by an action.";
+        return "Take a fresh computer_snapshot before acting. Snapshots expire after two minutes and are replaced by the snapshot an action returns.";
       case "invalid_ref":
-        return "That element was not present in the snapshot. Take a fresh computer_snapshot.";
+        return "That ref was not in the snapshot, or this action needs a ref. Use a ref from the latest snapshot.";
       case "invalid_input":
-        return "Invalid computer snapshot request. Supply an app name and an optional includeImage boolean.";
+        return "Invalid computer-use request. Check the tool's parameters.";
       case "permissions":
         if (this.detail?.reason === "screen_recording_permission")
           return "The native accessibility library requires macOS Screen & System Audio Recording permission even for text-only snapshots. Ask the user to grant it to the T3 host on that machine. T3's separate screenshot setting remains off unless enabled.";
@@ -165,13 +230,17 @@ export class ComputerUseError extends Schema.TaggedError<ComputerUseError>()("Co
       case "target_changed":
         return "The app or element changed. Take a fresh computer_snapshot before acting.";
       case "app_not_running":
-        return "That app is not running on the environment machine. Ask the user to open it, then take a fresh computer_snapshot.";
+        return "That app is not running on the environment machine. Open it with computer_open.";
       case "unsupported_action":
         return "This element does not support that accessibility action. Use an action listed in a fresh snapshot.";
       case "capture_requires_foreground":
-        return "Bring the target app to the foreground on the environment machine before capturing it, or use includeImage=false.";
+        return "The app has no visible window to capture. Open or unminimize one, or use includeImage=false.";
       case "input_requires_foreground":
-        return "This action needs real pointer input, which only works while the target app is in front. Use press, type, or an action listed for the element instead; those run in the background. Otherwise ask the user to bring the app forward, then take a fresh snapshot.";
+        return "This action needs real pointer input, which only works while the target app is in front and nothing covers the target. Prefer press, type, key, menu, or an action listed for the element; those run in the background. Otherwise use computer_open with activate=true only if the user is not working on that machine, then take a fresh snapshot.";
+      case "menu_not_found":
+        return `No enabled menu item matched that path.${this.available?.length ? ` Available here: ${this.available.join(", ")}.` : ""}`;
+      case "invalid_key":
+        return "Unknown key. Use names like Return, Tab, Escape, Space, Delete, Up, Down, Left, Right, Home, End, PageUp, PageDown, F1-F12, or a character, optionally with cmd+, shift+, option+ or ctrl+ (for example cmd+shift+t). Use type for text.";
       case "unavailable":
         return "Native computer use is currently supported on macOS environments only.";
       default:

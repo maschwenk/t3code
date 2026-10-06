@@ -25,8 +25,13 @@ const snapshot: NativeSnapshot = {
       path: [0, 0],
       stableId: "seven",
       bounds: { x: 0, y: 0, width: 30, height: 30 },
+      description: null,
+      states: [],
+      depth: 1,
     },
   ],
+  offscreen: 0,
+  frontmost: false,
 };
 // Only the OS boundary is substituted. Authorization, settings writes, receipt
 // ownership, expiry and one-shot mutation behavior run through real services.
@@ -84,10 +89,24 @@ it.effect("keeps refs within the issuing provider session and consumes writes ex
       app: "Calculator",
       includeImage: false,
     });
-    const action = { snapshotId: shot.snapshotId, ref: 1, action: { kind: "press" as const } };
+    const press = { ref: 1, action: { kind: "press" as const } };
+    const action = { snapshotId: shot.snapshotId, steps: [press] };
     expect(yield* code(computer.act("claude-work", action))).toBe("snapshot_expired");
-    expect(yield* code(computer.act("claude-personal", { ...action, ref: 9 }))).toBe("invalid_ref");
-    yield* computer.act("claude-personal", action);
+    // One unknown ref rejects the whole batch before anything runs.
+    expect(
+      yield* code(
+        computer.act("claude-personal", { ...action, steps: [press, { ...press, ref: 9 }] }),
+      ),
+    ).toBe("invalid_ref");
+    expect(
+      yield* code(
+        computer.act("claude-personal", { ...action, steps: [{ action: { kind: "press" } }] }),
+      ),
+    ).toBe("invalid_ref");
+    const result = yield* computer.act("claude-personal", action);
+    expect(result.completed).toEqual(["accessibility"]);
+    // The action returns a fresh observation; the one it acted on is spent.
+    expect(result.snapshot?.snapshotId).not.toBe(shot.snapshotId);
     expect(yield* code(computer.act("claude-personal", action))).toBe("snapshot_expired");
     expect(calls.filter((call) => call.kind === "action")).toHaveLength(1);
   }).pipe(Effect.provide(setup(calls)));
@@ -100,7 +119,10 @@ it.effect("checks live settings before an existing session can act", () => {
     const settings = yield* ServerSettings.ServerSettingsService;
     const shot = yield* computer.snapshot("a", { app: "Calculator", includeImage: false });
     yield* settings.updateSettings({ computerUseAllowedApps: [] });
-    const action = { snapshotId: shot.snapshotId, ref: 1, action: { kind: "press" as const } };
+    const action = {
+      snapshotId: shot.snapshotId,
+      steps: [{ ref: 1, action: { kind: "press" as const } }],
+    };
     expect(yield* code(computer.act("a", action))).toBe("app_denied");
     yield* settings.updateSettings({
       computerUseAllowedApps: ["Calculator"],
@@ -119,19 +141,30 @@ it.effect("expires snapshots and invalidates all observations after an uncertain
     yield* TestClock.adjust("121 seconds");
     expect(
       yield* code(
-        computer.act("a", { snapshotId: old.snapshotId, ref: 1, action: { kind: "press" } }),
+        computer.act("a", {
+          snapshotId: old.snapshotId,
+          steps: [{ ref: 1, action: { kind: "press" } }],
+        }),
       ),
     ).toBe("snapshot_expired");
     const first = yield* computer.snapshot("a", { app: "Calculator", includeImage: false });
     const second = yield* computer.snapshot("b", { app: "Calculator", includeImage: false });
+    const failed = yield* computer.act("a", {
+      snapshotId: first.snapshotId,
+      steps: [
+        { ref: 1, action: { kind: "press" } },
+        { ref: 1, action: { kind: "press" } },
+      ],
+    });
+    // The batch stops at the uncertain step and never replays or continues it.
+    expect(failed.error?.code).toBe("failed");
+    expect(failed.completed).toEqual([]);
     expect(
       yield* code(
-        computer.act("a", { snapshotId: first.snapshotId, ref: 1, action: { kind: "press" } }),
-      ),
-    ).toBe("failed");
-    expect(
-      yield* code(
-        computer.act("b", { snapshotId: second.snapshotId, ref: 1, action: { kind: "press" } }),
+        computer.act("b", {
+          snapshotId: second.snapshotId,
+          steps: [{ ref: 1, action: { kind: "press" } }],
+        }),
       ),
     ).toBe("snapshot_expired");
     expect(calls.filter((call) => call.kind === "action")).toHaveLength(1);

@@ -2,8 +2,13 @@
 import type { Element } from "@crowecawcaw/xa11y";
 import * as Schema from "effect/Schema";
 import * as NodeChildProcess from "node:child_process";
+import * as NodeFs from "node:fs/promises";
+import * as NodeOs from "node:os";
+import * as NodePath from "node:path";
 import * as NodeTimersPromises from "node:timers/promises";
 import * as NodeUtil from "node:util";
+import { isShortcut, menuModifierMask, modifierKeyCode, parseKeyChord } from "./keys.ts";
+import { loadMacNative, type MacNative, type MenuItem } from "./macNative.ts";
 import { pointerTarget } from "./pointerTarget.ts";
 import {
   type ComputerAction,
@@ -13,32 +18,75 @@ import {
   type WorkerResponse,
   type FailureStage,
 } from "./protocol.ts";
+import {
+  childClip,
+  isAnonymousContainer,
+  isOffscreen,
+  matchesQuery,
+  queryTerms,
+} from "./snapshotTree.ts";
 
 // Loaded only in a short-lived child. Native accessibility can block or crash;
 // it must never load inside the server or Electron's main process.
 const decodeRequest = Schema.decodeUnknownSync(Schema.fromJsonString(WorkerRequest));
 const execFile = NodeUtil.promisify(NodeChildProcess.execFile);
-const MAX_NODES = 400;
-const MAX_TEXT = 20_000;
+type Xa11y = typeof import("@crowecawcaw/xa11y");
+type App = import("@crowecawcaw/xa11y").App;
+type Rect = { x: number; y: number; width: number; height: number };
+
+const MAX_TEXT = 24_000;
+const MAX_VISITED = 6_000;
+const MAX_DEPTH = 48;
+// The driver kills the worker at 12 s; leave room for capture and the reply.
+const WALK_BUDGET_MS = 6_500;
+const MAX_IMAGE_SIDE = 1600;
+
 const secure = (element: Element) =>
   /password|secure/i.test(`${element.role} ${String(element.raw.ax_subrole ?? "")}`);
-const identityMatches = (element: Element, target: ElementTarget) =>
-  element.role === target.role &&
-  element.name === target.name &&
-  (element.value?.slice(0, 1000) ?? null) === target.value &&
-  element.bounds?.x === target.bounds?.x &&
-  element.bounds?.y === target.bounds?.y &&
-  element.bounds?.width === target.bounds?.width &&
-  element.bounds?.height === target.bounds?.height &&
-  (target.stableId === null || element.stableId === target.stableId);
+const clippedValue = (element: { readonly value: string | null }) =>
+  element.value?.slice(0, 1000) ?? null;
+const sameBounds = (a: Rect | null, b: Rect | null) =>
+  a === b ||
+  (!!a && !!b && a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height);
+
+type Identity = Pick<Element, "role" | "name" | "value" | "stableId" | "bounds">;
+/**
+ * Whether a live element is the one a snapshot described. Text inputs keep
+ * their identity while their value changes, so a batch can type and then
+ * press Return in the same field.
+ */
+export function identityMatches(element: Identity, target: ElementTarget): boolean {
+  return (
+    element.role === target.role &&
+    element.name === target.name &&
+    (target.stableId === null || element.stableId === target.stableId) &&
+    sameBounds(element.bounds, target.bounds) &&
+    (target.editable || clippedValue(element) === target.value)
+  );
+}
 
 /**
- * The accessibility action that performs `action` without synthesized pointer
- * input. Accessibility actions reach background apps without focusing them or
- * moving the user's mouse. Undefined means only real pointer input can do it.
+ * Whether a live element can stand in for a target whose tree position moved,
+ * for example after a row was inserted above it. Layout may shift, so bounds
+ * are only required for unnamed elements; the caller also requires uniqueness.
  */
+export function relocationMatches(element: Identity, target: ElementTarget): boolean {
+  return (
+    element.role === target.role &&
+    element.name === target.name &&
+    (target.stableId === null || element.stableId === target.stableId) &&
+    (target.name !== null ||
+      target.stableId !== null ||
+      sameBounds(element.bounds, target.bounds)) &&
+    (target.editable || clippedValue(element) === target.value)
+  );
+}
+
+/** The accessibility action that performs `action` without synthesized pointer
+ * input. Accessibility actions reach background apps without focusing them or
+ * moving the user's mouse. Undefined means only real pointer input can do it. */
 export function backgroundAction(
-  action: Exclude<ComputerAction, { kind: "type" }>,
+  action: Exclude<ComputerAction, { kind: "type" | "key" | "menu" | "wait" }>,
   available: readonly string[],
 ): string | undefined {
   const name =
@@ -50,9 +98,21 @@ export function backgroundAction(
           ? action.button === "left"
             ? "press"
             : "show_menu"
-          : undefined;
+          : action.kind === "scroll"
+            ? scrollPageAction(action.dx, action.dy)
+            : undefined;
   return name !== undefined && available.includes(name) ? name : undefined;
 }
+
+/** Positive dy scrolls down, positive dx scrolls right. */
+export const scrollPageAction = (dx: number, dy: number) =>
+  Math.abs(dy) >= Math.abs(dx)
+    ? dy > 0
+      ? "scroll_down_by_page"
+      : "scroll_up_by_page"
+    : dx > 0
+      ? "scroll_right_by_page"
+      : "scroll_left_by_page";
 
 /**
  * Returns pids of running GUI apps whose LaunchServices name is `name`, taken
@@ -71,19 +131,17 @@ export function launchServicesPids(listing: string, name: string): number[] {
     .map((match) => match.pid);
 }
 
-// xa11y's App.byName reads accessibility attributes from every windowed app,
-// so each unresponsive app on the machine stalls it for a full AX messaging
-// timeout (a minute in practice). LaunchServices names apps without
-// contacting them; attaching by pid then only talks to the target.
-async function appByName(
-  App: typeof import("@crowecawcaw/xa11y").App,
-  name: string,
-): Promise<import("@crowecawcaw/xa11y").App | undefined> {
-  const { stdout } = await execFile("/usr/bin/lsappinfo", ["list"], {
-    timeout: 3_000,
-    maxBuffer: 8 * 1024 * 1024,
-  });
-  for (const pid of launchServicesPids(stdout, name)) {
+const lsappinfo = (args: string[]) =>
+  execFile("/usr/bin/lsappinfo", args, { timeout: 3_000, maxBuffer: 8 * 1024 * 1024 }).then(
+    (result) => result.stdout,
+  );
+
+// xa11y's App.byName and App.foreground read accessibility attributes from
+// every windowed app, so each unresponsive app on the machine stalls them for
+// a full AX messaging timeout (a minute in practice). LaunchServices names
+// apps without contacting them; attaching by pid then only talks to the target.
+async function appByName(App: Xa11y["App"], name: string): Promise<App | undefined> {
+  for (const pid of launchServicesPids(await lsappinfo(["list"]), name)) {
     const app = await App.byPid(pid, { timeout: 0 }).catch((cause: unknown) => {
       // The process exited or has no accessibility bridge; permission errors propagate.
       if (cause instanceof Error && cause.name === "SelectorNotMatchedError") return undefined;
@@ -92,6 +150,440 @@ async function appByName(
     if (app?.name === name) return app;
   }
   return undefined;
+}
+
+async function frontmostPid(): Promise<number | undefined> {
+  const asn = (await lsappinfo(["front"])).trim();
+  if (!asn.startsWith("ASN:")) return undefined;
+  const pid = /"pid"=(\d+)/.exec(await lsappinfo(["info", "-only", "pid", asn]))?.[1];
+  return pid === undefined ? undefined : Number(pid);
+}
+
+type Resolved = { readonly element: Element; readonly window: Element | undefined };
+/** Finds a snapshot's element again: by tree path first, then by unique identity in its window. */
+async function resolve(app: App, target: ElementTarget): Promise<Resolved | undefined> {
+  let element = app.asElement();
+  let window: Element | undefined;
+  let found = true;
+  for (const index of target.path) {
+    if (secure(element)) return undefined;
+    const child = (await element.children())[index];
+    if (!child) {
+      found = false;
+      break;
+    }
+    element = child;
+    if (element.role === "window") window ??= element;
+  }
+  if (found && identityMatches(element, target)) return { element, window };
+  const windows = (await app.children()).filter((item) => item.role === "window");
+  const home = windows[target.path[0] ?? -1];
+  const scopes = home ? [home] : windows;
+  const matches: Resolved[] = [];
+  let visited = 0;
+  for (const scope of scopes) {
+    const queue: Element[] = [scope];
+    while (queue.length && visited < 3_000 && matches.length < 2) {
+      const next = queue.shift()!;
+      visited++;
+      if (secure(next) || (next.pid !== null && next.pid !== app.pid)) continue;
+      if (relocationMatches(next, target)) matches.push({ element: next, window: scope });
+      queue.push(...(await next.children()));
+    }
+  }
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
+const elementStates = (element: Element) =>
+  [
+    element.focused && "focused",
+    element.selected && "selected",
+    element.checked === "on" && "checked",
+    element.checked === "off" && "unchecked",
+    element.checked === "mixed" && "mixed",
+    element.expanded === true && "expanded",
+    element.expanded === false && "collapsed",
+  ].filter((state): state is string => typeof state === "string");
+
+async function takeSnapshot(
+  native: MacNative,
+  app: App & { pid: number },
+  request: Extract<WorkerRequest, { kind: "snapshot" }>,
+): Promise<WorkerResponse> {
+  const { options } = request;
+  const terms = queryTerms(options.query);
+  const roles = options.roles?.length ? new Set(options.roles) : undefined;
+  const filtering = terms.length > 0 || roles !== undefined;
+  let start = app.asElement();
+  let startClip: Rect | null = null;
+  let window: Element | undefined;
+  if (options.root) {
+    const resolved = await resolve(app, options.root);
+    if (!resolved) return { ok: false, code: "target_changed" };
+    start = resolved.element;
+    window = resolved.window;
+    startClip = window?.bounds ?? null;
+  }
+  const startPath = [...(options.root?.path ?? [])];
+  const elements: ElementTarget[] = [];
+  const started = performance.now();
+  let textSize = 0;
+  let visited = 0;
+  let matched = 0;
+  let offscreen = 0;
+  let truncated = false;
+  let more = false;
+  const visit = async (
+    element: Element,
+    path: number[],
+    depth: number,
+    walkDepth: number,
+    clip: Rect | null,
+    context: readonly string[],
+  ): Promise<void> => {
+    if (more || truncated) return;
+    if (
+      visited >= MAX_VISITED ||
+      walkDepth > MAX_DEPTH ||
+      performance.now() - started > WALK_BUDGET_MS
+    ) {
+      truncated = true;
+      return;
+    }
+    visited++;
+    if (element.pid !== null && element.pid !== app.pid) return;
+    // Never return password values, names, or descendants to the agent.
+    if (secure(element)) return;
+    const bounds = element.bounds;
+    const hidden = isOffscreen(bounds, clip);
+    if (hidden && !options.includeOffscreen) {
+      offscreen++;
+      return;
+    }
+    const name = element.name;
+    const value = clippedValue(element);
+    const description = element.description?.slice(0, 500) ?? null;
+    const anonymous =
+      element.role !== "application" &&
+      isAnonymousContainer({
+        role: element.role,
+        name,
+        value,
+        description,
+        actions: element.actions,
+      });
+    const wanted =
+      !anonymous &&
+      element.role !== "application" &&
+      (!filtering ||
+        ((roles === undefined || roles.has(element.role)) &&
+          matchesQuery(terms, { name, value, description })));
+    if (wanted && matched++ >= options.offset) {
+      if (elements.length >= options.limit) {
+        more = true;
+        return;
+      }
+      textSize += (name?.length ?? 0) + (value?.length ?? 0) + (description?.length ?? 0);
+      if (textSize > MAX_TEXT) {
+        truncated = true;
+        return;
+      }
+      elements.push({
+        ref: elements.length + 1,
+        role: element.role,
+        name,
+        value,
+        description,
+        enabled: element.enabled,
+        editable: element.editable,
+        actions: element.actions,
+        states: hidden ? [...elementStates(element), "offscreen"] : elementStates(element),
+        depth: filtering ? 0 : depth,
+        path,
+        stableId: element.stableId,
+        bounds,
+        ...(filtering && context.length ? { context: context.slice(-2) } : {}),
+      });
+    }
+    const nextClip = childClip(String(element.raw.ax_role ?? ""), bounds, clip);
+    const nextContext =
+      name && element.role !== "static_text" && element.role !== "application"
+        ? [...context, name.slice(0, 60)]
+        : context;
+    const children = await element.children();
+    for (const [index, child] of children.entries()) {
+      if (more || truncated) break;
+      await visit(
+        child,
+        [...path, index],
+        wanted || (!filtering && !anonymous) ? depth + 1 : depth,
+        walkDepth + 1,
+        nextClip,
+        nextContext,
+      );
+    }
+  };
+  await visit(start, startPath, 0, 0, startClip, []);
+  const menus = options.root
+    ? undefined
+    : native
+        .menuBar(app.pid)
+        .flatMap((item) => (item.title && item.title !== "Apple" ? [item.title] : []));
+  let image: NativeSnapshot["image"];
+  if (request.includeImage) {
+    const captured = await captureWindow(native, app, window);
+    if ("ok" in captured) return captured;
+    image = captured;
+  }
+  return {
+    ok: true,
+    snapshot: {
+      app: app.name,
+      pid: app.pid,
+      elements,
+      truncated,
+      offscreen,
+      frontmost: (await frontmostPid()) === app.pid,
+      ...(more ? { nextOffset: options.offset + elements.length } : {}),
+      ...(menus?.length ? { menus } : {}),
+      ...(image ? { image } : {}),
+    },
+  };
+}
+
+/** PNG dimensions from its IHDR chunk. */
+const pngSize = (png: Buffer) => ({ width: png.readUInt32BE(16), height: png.readUInt32BE(20) });
+
+/**
+ * Captures one window by its window-server id. This works while the window is
+ * behind other apps' windows and never includes them.
+ */
+async function captureWindow(
+  native: MacNative,
+  app: App & { pid: number },
+  window: Element | undefined,
+): Promise<NonNullable<NativeSnapshot["image"]> | WorkerResponse> {
+  if (!native.canCaptureScreen())
+    return {
+      ok: false,
+      code: "permissions",
+      detail: { stage: "capture", reason: "screen_recording_permission" },
+    };
+  const target =
+    window?.bounds ?? (await app.children()).find((item) => item.role === "window")?.bounds ?? null;
+  const windows = native.windows(app.pid).filter((item) => item.layer === 0);
+  const match =
+    (target &&
+      windows.find(
+        (item) =>
+          Math.abs(item.bounds.x - target.x) < 2 &&
+          Math.abs(item.bounds.y - target.y) < 2 &&
+          Math.abs(item.bounds.width - target.width) < 2,
+      )) ||
+    windows.find((item) => item.bounds.width >= 100 && item.bounds.height >= 100);
+  if (!match) return { ok: false, code: "capture_requires_foreground" };
+  const file = NodePath.join(NodeOs.tmpdir(), `t3-computer-${process.pid}-${match.id}.png`);
+  try {
+    await execFile("/usr/sbin/screencapture", ["-x", "-o", "-t", "png", `-l${match.id}`, file], {
+      timeout: 5_000,
+    });
+    let png = await NodeFs.readFile(file);
+    let size = pngSize(png);
+    if (Math.max(size.width, size.height) > MAX_IMAGE_SIDE) {
+      // Retina captures are twice the window's point size; models need far less.
+      await execFile("/usr/bin/sips", ["-Z", String(MAX_IMAGE_SIDE), file], { timeout: 5_000 });
+      png = await NodeFs.readFile(file);
+      size = pngSize(png);
+    }
+    if (png.length > 8 * 1024 * 1024) return { ok: false, code: "failed" };
+    return { data: png.toString("base64"), mimeType: "image/png", ...size };
+  } finally {
+    await NodeFs.rm(file, { force: true });
+  }
+}
+
+const menuTitle = (title: string | null) =>
+  (title ?? "")
+    .trim()
+    .replace(/(\.\.\.|…)$/, "")
+    .trim()
+    .toLowerCase();
+
+function pressMenuPath(native: MacNative, pid: number, path: readonly string[]): WorkerResponse {
+  let items = native.menuBar(pid);
+  for (const [index, title] of path.entries()) {
+    const item = items.find((candidate) => menuTitle(candidate.title) === menuTitle(title));
+    if (!item || (index === path.length - 1 && !item.enabled))
+      return {
+        ok: false,
+        code: "menu_not_found",
+        available: items
+          .flatMap((candidate) =>
+            candidate.title && candidate.enabled ? [candidate.title.slice(0, 80)] : [],
+          )
+          .slice(0, 40),
+      };
+    if (index === path.length - 1)
+      return item.press() ? { ok: true, via: "menu" } : { ok: false, code: "failed" };
+    items = item.children();
+  }
+  return { ok: false, code: "menu_not_found" };
+}
+
+/** The enabled menu item whose key equivalent is `character` with `mask`. */
+function menuShortcut(native: MacNative, pid: number, character: string, mask: number) {
+  const search = (items: MenuItem[], depth: number): MenuItem | undefined => {
+    for (const item of items) {
+      if (item.enabled && item.shortcut?.character === character && item.shortcut.mask === mask)
+        return item;
+      if (depth < 2) {
+        const found = search(item.children(), depth + 1);
+        if (found) return found;
+      }
+    }
+    return undefined;
+  };
+  return search(native.menuBar(pid), 0);
+}
+
+async function pressKey(
+  native: MacNative,
+  pid: number,
+  action: Extract<ComputerAction, { kind: "key" }>,
+): Promise<WorkerResponse> {
+  const chord = parseKeyChord(action.key);
+  if (!chord) return { ok: false, code: "unsupported_action" };
+  // Background AppKit apps ignore posted command shortcuts, but their menu
+  // items still run through accessibility. Shortcuts with no menu item fall
+  // through to key events, which web and Electron content does handle.
+  if (isShortcut(chord) && chord.character && (await frontmostPid()) !== pid) {
+    const item = menuShortcut(native, pid, chord.character, menuModifierMask(chord));
+    if (item) {
+      for (let index = 0; index < (action.repeat ?? 1); index++)
+        if (!item.press()) return { ok: false, code: "failed" };
+      return { ok: true, via: "menu" };
+    }
+  }
+  let flags = 0;
+  for (const modifier of chord.modifiers) {
+    flags |= parseKeyChord(`${modifier}+a`)!.flags;
+    native.postKey(pid, modifierKeyCode(modifier), true, flags);
+  }
+  for (let index = 0; index < (action.repeat ?? 1); index++) {
+    native.postKey(pid, chord.keyCode, true, chord.flags);
+    native.postKey(pid, chord.keyCode, false, chord.flags);
+    await NodeTimersPromises.setTimeout(8);
+  }
+  for (const modifier of chord.modifiers.toReversed()) {
+    flags &= ~parseKeyChord(`${modifier}+a`)!.flags;
+    native.postKey(pid, modifierKeyCode(modifier), false, flags);
+  }
+  return { ok: true, via: "keyboard_event" };
+}
+
+async function act(
+  xa11y: Xa11y,
+  native: MacNative,
+  app: App & { pid: number },
+  request: Extract<WorkerRequest, { kind: "action" }>,
+): Promise<WorkerResponse> {
+  const { action } = request;
+  if (action.kind === "wait") return { ok: true };
+  if (action.kind === "menu") return pressMenuPath(native, app.pid, action.path);
+  let resolved: Resolved | undefined;
+  if (request.target) {
+    resolved = await resolve(app, request.target);
+    if (
+      !resolved ||
+      secure(resolved.element) ||
+      !resolved.element.enabled ||
+      (resolved.element.pid !== null && resolved.element.pid !== app.pid)
+    )
+      return { ok: false, code: "target_changed" };
+  }
+  if (action.kind === "key") {
+    // Key events go to the app's focused element; focus the target first.
+    if (resolved && !resolved.element.focused) {
+      await resolved.element.focus().catch(() => undefined);
+      await NodeTimersPromises.setTimeout(40);
+    }
+    return pressKey(native, app.pid, action);
+  }
+  if (!resolved) return { ok: false, code: "target_changed" };
+  const { element, window } = resolved;
+  if (action.kind === "type") {
+    if (!element.editable) return { ok: false, code: "unsupported_action" };
+    if (action.replace) await element.setValue(action.text);
+    else await element.typeText(action.text);
+    return { ok: true, via: "accessibility" };
+  }
+  const background = backgroundAction(action, element.actions);
+  if (background) {
+    await element.performAction(background);
+    return { ok: true, via: "accessibility" };
+  }
+  if (action.kind === "scroll") {
+    // Scroll views usually own the page actions; walk up from the element.
+    const name = scrollPageAction(action.dx, action.dy);
+    let ancestor = await element.parent();
+    for (let level = 0; ancestor && level < 8; level++) {
+      if (ancestor.actions.includes(name)) {
+        await ancestor.performAction(name);
+        return { ok: true, via: "accessibility" };
+      }
+      ancestor = await ancestor.parent();
+    }
+  }
+  if (action.kind === "press" || action.kind === "perform")
+    return { ok: false, code: "unsupported_action" };
+  // Only synthesized pointer input remains. It moves the user's real cursor and
+  // lands on whatever window is on top, so it runs only while the app is in
+  // front and its own element is the topmost one at that point.
+  const point = pointerTarget(element.bounds, window?.bounds ?? null);
+  const onTarget = async () =>
+    point !== undefined && (await frontmostPid()) === app.pid && native.pidAt(point) === app.pid;
+  if (!point || !(await onTarget())) return { ok: false, code: "input_requires_foreground" };
+  // The small lead lets a human see the target before the operation happens.
+  const input = xa11y.inputSim();
+  await input.moveTo(point);
+  await NodeTimersPromises.setTimeout(160);
+  if (!(await onTarget())) return { ok: false, code: "input_requires_foreground" };
+  switch (action.kind) {
+    case "move":
+      break;
+    case "click":
+      await input.click(point, { button: action.button, count: action.count });
+      break;
+    case "scroll":
+      await input.scroll(point, action.dx, action.dy);
+      break;
+  }
+  return { ok: true, via: "pointer" };
+}
+
+async function openApp(
+  App: Xa11y["App"],
+  request: Extract<WorkerRequest, { kind: "open" }>,
+): Promise<WorkerResponse> {
+  // -g asks LaunchServices not to bring the app forward. Some apps still
+  // activate themselves when they finish launching.
+  const launched = await execFile(
+    "/usr/bin/open",
+    request.activate ? ["-a", request.app] : ["-g", "-a", request.app],
+    { timeout: 10_000 },
+  ).then(
+    () => true,
+    () => false,
+  );
+  if (!launched) return { ok: false, code: "app_not_running" };
+  for (let attempt = 0; attempt < 40; attempt++) {
+    const app = await appByName(App, request.app);
+    // A launching app is listed before its first window exists.
+    if (app && (attempt >= 16 || (await app.children()).length > 0))
+      return { ok: true, via: "launch_services" };
+    await NodeTimersPromises.setTimeout(250);
+  }
+  return { ok: false, code: "app_not_running" };
 }
 
 async function execute(
@@ -103,7 +595,13 @@ async function execute(
   stage("load");
   // xa11y is CommonJS. Node's ESM interop only detects `App` and `Element` as
   // named exports, so `inputSim` and `screenshot` exist only on the default export.
-  const { App, screenshot, inputSim } = (await import("@crowecawcaw/xa11y")).default;
+  const xa11y = (await import("@crowecawcaw/xa11y")).default;
+  const { App } = xa11y;
+  if (request.kind === "open") {
+    stage("app_lookup");
+    return openApp(App, request);
+  }
+  const native = await loadMacNative();
   stage("app_lookup");
   const app =
     request.kind === "snapshot"
@@ -111,125 +609,13 @@ async function execute(
       : await App.byPid(request.pid, { timeout: 0 });
   if (!app) return { ok: false, code: "app_not_running" };
   if (app.name !== request.app || app.pid === null) return { ok: false, code: "target_changed" };
-
+  const attached = app as App & { pid: number };
   if (request.kind === "action") {
     stage("action");
-    let element = app.asElement();
-    let activeWindow: Element | undefined;
-    for (const index of request.target.path) {
-      if (secure(element)) return { ok: false, code: "target_changed" };
-      const child = (await element.children())[index];
-      if (!child) return { ok: false, code: "target_changed" };
-      element = child;
-      if (element.role === "window" && element.active) activeWindow = element;
-    }
-    if (
-      !identityMatches(element, request.target) ||
-      secure(element) ||
-      !element.enabled ||
-      (element.pid !== null && element.pid !== app.pid)
-    )
-      return { ok: false, code: "target_changed" };
-    if (request.action.kind === "type") {
-      if (!element.editable) return { ok: false, code: "unsupported_action" };
-      if (request.action.replace) await element.setValue(request.action.text);
-      else await element.typeText(request.action.text);
-      return { ok: true };
-    }
-    const background = backgroundAction(request.action, element.actions);
-    if (background) {
-      await element.performAction(background);
-      return { ok: true };
-    }
-    if (request.action.kind === "press" || request.action.kind === "perform")
-      return { ok: false, code: "unsupported_action" };
-    // Only synthesized pointer input remains. It moves the user's real cursor and
-    // lands on whatever window is on top, so it runs only while the app is in front.
-    const point = pointerTarget(element.bounds, activeWindow?.bounds ?? null);
-    if (!point || (await App.foreground({ timeout: 0 })).pid !== app.pid)
-      return { ok: false, code: "input_requires_foreground" };
-    // The small lead lets a human see the target before the operation happens.
-    const input = inputSim();
-    await input.moveTo(point);
-    await NodeTimersPromises.setTimeout(160);
-    if ((await App.foreground({ timeout: 0 })).pid !== app.pid)
-      return { ok: false, code: "input_requires_foreground" };
-    switch (request.action.kind) {
-      case "move":
-        break;
-      case "click":
-        await input.click(point, { button: request.action.button, count: request.action.count });
-        break;
-      case "scroll":
-        await input.scroll(point, request.action.dx, request.action.dy);
-        break;
-    }
-    return { ok: true };
+    return act(xa11y, native, attached, request);
   }
-
   stage("element_tree");
-  const elements: ElementTarget[] = [];
-  let textSize = 0;
-  let truncated = false;
-  const visit = async (element: Element, path: number[], depth: number): Promise<void> => {
-    if (elements.length >= MAX_NODES || textSize >= MAX_TEXT || depth > 8) {
-      truncated = true;
-      return;
-    }
-    if (element.pid !== null && element.pid !== app.pid) return;
-    // Never return password values, names, or descendants to the agent.
-    if (secure(element)) return;
-    const value = element.value?.slice(0, 1000) ?? null;
-    const name = element.name;
-    textSize += (name?.length ?? 0) + (value?.length ?? 0);
-    if (textSize > MAX_TEXT) {
-      truncated = true;
-      return;
-    }
-    elements.push({
-      ref: elements.length + 1,
-      role: element.role,
-      name,
-      value,
-      enabled: element.enabled,
-      editable: element.editable,
-      actions: element.actions,
-      path,
-      stableId: element.stableId,
-      bounds: element.bounds,
-    });
-    const children = await element.children();
-    for (const [index, child] of children.entries()) {
-      if (elements.length >= MAX_NODES || textSize >= MAX_TEXT) {
-        truncated = true;
-        break;
-      }
-      await visit(child, [...path, index], depth + 1);
-    }
-  };
-  await visit(app.asElement(), [], 0);
-  let image: NativeSnapshot["image"];
-  if (request.includeImage) {
-    stage("capture");
-    const foreground = await App.foreground({ timeout: 0 });
-    if (foreground.pid !== app.pid) return { ok: false, code: "capture_requires_foreground" };
-    const windows = await app.children();
-    const window = windows.find((item) => item.active) ?? windows.find((item) => item.focused);
-    if (!window?.bounds) return { ok: false, code: "capture_requires_foreground" };
-    const shot = await screenshot({ element: window });
-    const png = shot.toPng();
-    if (png.length > 8 * 1024 * 1024) return { ok: false, code: "failed" };
-    image = {
-      data: png.toString("base64"),
-      mimeType: "image/png",
-      width: shot.width,
-      height: shot.height,
-    };
-  }
-  return {
-    ok: true,
-    snapshot: { app: app.name, pid: app.pid, elements, truncated, ...(image ? { image } : {}) },
-  };
+  return takeSnapshot(native, attached, request);
 }
 
 export function nativeFailure(cause: unknown, stage?: FailureStage): WorkerResponse {
