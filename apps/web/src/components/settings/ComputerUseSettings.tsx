@@ -66,6 +66,22 @@ export function ComputerUseSettings() {
           />
         }
       />
+      <SettingsRow
+        {...searchableSetting("computer-pointer-takeover")}
+        serverScoped
+        settingKeys={["enableComputerPointerTakeover"]}
+        description="Hovering, double-clicking, dragging and clicking inside canvases need the real pointer. When you have not touched the mouse or keyboard for a few seconds, agents may bring the app forward for that one gesture, then put your pointer and front app back. If you are active, the agent waits and asks instead."
+        control={
+          <ScopedSwitch
+            settingKeys={["enableComputerPointerTakeover"]}
+            checked={settings.enableComputerPointerTakeover}
+            aria-label="Let agents briefly take over the pointer when you're idle"
+            onCheckedChange={(checked) =>
+              updateSettings({ enableComputerPointerTakeover: Boolean(checked) })
+            }
+          />
+        }
+      />
     </SettingsSection>
   );
 }

@@ -1,11 +1,12 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Loaded only by the isolated native worker.
 /**
  * Direct macOS calls that xa11y does not expose: events posted to one process,
- * the window server's window list, the menu bar, and the system-wide hit test.
+ * the window server's window list, the menu bar, the system-wide hit test, and
+ * what pointer takeover needs (idle time, pointer location, app activation).
  *
  * Mouse events posted to a process are not used: AppKit, WebKit and Chromium
  * all ignore them for background windows, so background clicks go through
- * accessibility actions instead.
+ * accessibility actions, and pointer-only input briefly brings the app forward.
  *
  * CF references cross ffi-rs as BigInt. Short strings and numbers are tagged
  * pointers with the high bit set, which a JS number cannot represent. The
@@ -13,6 +14,7 @@
  * individually.
  */
 type Ffi = typeof import("ffi-rs");
+type FfiParams = Parameters<Ffi["load"]>[0];
 type Rect = { x: number; y: number; width: number; height: number };
 
 export type NativeWindow = { readonly id: number; readonly layer: number; readonly bounds: Rect };
@@ -41,8 +43,8 @@ export async function loadMacNative() {
   const call = <R>(
     library: keyof typeof LIBRARIES,
     funcName: string,
-    retType: number,
-    paramsType: number[],
+    retType: FfiParams["retType"],
+    paramsType: FfiParams["paramsType"],
     paramsValue: unknown[],
   ) => ffi.load({ library, funcName, retType, paramsType, paramsValue }) as unknown as R;
   const Ref = T.BigInt;
@@ -72,6 +74,24 @@ export async function loadMacNative() {
   const out = () => ffi.createPointer({ paramsType: [Ref], paramsValue: [0n] });
   const read = (pointer: ReturnType<typeof out>) =>
     ffi.restorePointer({ retType: [Ref], paramsValue: pointer })[0] as unknown as bigint;
+  // CGPoint is two doubles, passed and returned by value. ffi-rs's types omit
+  // the struct tag its runtime reads.
+  const CGPoint = {
+    x: T.Double,
+    y: T.Double,
+    ffiTypeTag: ffi.FFITypeTag.StackStruct,
+  } as unknown as FfiParams["retType"];
+  const cfTrue = () => {
+    // RTLD_DEFAULT; kCFBooleanTrue is a data symbol holding the CFBooleanRef.
+    const symbol = call<ReturnType<typeof out>[number]>(
+      "c",
+      "dlsym",
+      T.External,
+      [Ref, T.String],
+      [-2n, "kCFBooleanTrue"],
+    );
+    return ffi.restorePointer({ retType: [Ref], paramsValue: [symbol] })[0] as unknown as bigint;
+  };
   const toNumber = (ref: bigint) => {
     if (typeId(ref) !== TYPE.number) return null;
     const value = ffi.createPointer({ paramsType: [T.Double], paramsValue: [0] });
@@ -245,6 +265,47 @@ export async function loadMacNative() {
     /** Whether this process may capture other apps' windows (Screen Recording). */
     canCaptureScreen: () =>
       call<boolean>("cg", "CGPreflightScreenCaptureAccess", T.Boolean, [], []),
+    /** Seconds since the last input event of any type in this login session. */
+    idleSeconds: () =>
+      call<number>(
+        "cg",
+        "CGEventSourceSecondsSinceLastEventType",
+        T.Double,
+        // kCGEventSourceStateCombinedSessionState, kCGAnyInputEventType
+        [T.I32, T.U32],
+        [0, 0xffff_ffff],
+      ),
+    /** The pointer's location in global logical points. */
+    pointer(): { x: number; y: number } {
+      const event = call<bigint>("cg", "CGEventCreate", Ref, [Ref], [0n]);
+      const point = call<{ x: number; y: number }>(
+        "cg",
+        "CGEventGetLocation",
+        CGPoint,
+        [Ref],
+        [event],
+      );
+      release(event);
+      return { x: point.x, y: point.y };
+    },
+    /** Moves the pointer without generating mouse events, then lets the mouse drive it again. */
+    warp(point: { x: number; y: number }) {
+      call("cg", "CGWarpMouseCursorPosition", T.I32, [CGPoint], [{ x: point.x, y: point.y }]);
+      call("cg", "CGAssociateMouseAndMouseCursorPosition", T.I32, [T.I32], [1]);
+    },
+    /** Asks `pid` to become the active app. True when the request was accepted. */
+    activate: (pid: number) =>
+      call<number>(
+        "ax",
+        "AXUIElementSetAttributeValue",
+        T.I32,
+        [Ref, Ref, Ref],
+        [
+          call<bigint>("ax", "AXUIElementCreateApplication", Ref, [T.I32], [pid]),
+          cfString("AXFrontmost"),
+          cfTrue(),
+        ],
+      ) === 0,
     /** Top-level menu bar items of `pid`. xa11y's tree omits the menu bar. */
     menuBar(pid: number): MenuItem[] {
       const app = call<bigint>("ax", "AXUIElementCreateApplication", Ref, [T.I32], [pid]);

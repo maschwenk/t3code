@@ -36,13 +36,23 @@ stays where you left it.
 
 When the environment runs in the T3 desktop app, an agent cursor shows where each action happens.
 
-Some input still needs the real pointer: hovering, double-clicking, exact wheel scrolling, and
-clicking things that offer no accessibility action, such as a canvas. macOS apps ignore synthetic
-pointer events in background windows, so these work only while the target app is in front and
-nothing covers the target, and they move your mouse. Agents are told to avoid them and to bring an
-app forward only when you are not using the machine. In a background Mac app, a shortcut runs the
-matching menu command; shortcuts that act on a text selection, such as Select All, may do nothing
-until the app is in front.
+Some input still needs the real pointer: hovering, double-clicking, dragging, exact wheel
+scrolling, and clicking things that offer no accessibility action. For canvases, games and custom
+controls without usable controls, agents can also click, hover or drag at a position in the app's
+window image, which requires **Allow computer screen captures**. macOS apps ignore synthetic
+pointer events in background windows, so agents use these only when nothing else works:
+
+- If the app is already in front and nothing covers the target, the gesture runs right away.
+- Otherwise, with **Let agents briefly take over the pointer when you're idle** on (the default),
+  and you have not touched the mouse or keyboard for about three seconds, the agent brings the app
+  forward for that one gesture, then puts your pointer back and returns the app you were using to
+  the front. If you move the mouse or type while this happens, the agent stops before acting, or
+  leaves your pointer where you put it.
+- If you are active, or the setting is off, the step stops and the agent switches to another
+  approach or asks you.
+
+In a background Mac app, a shortcut runs the matching menu command; shortcuts that act on a text
+selection, such as Select All, may do nothing until the app is in front.
 
 Turn off Agent computer access to block further calls and stop the remaining steps of one in
 progress, or remove an app from the allowlist to revoke access to it. These grants apply to agents
@@ -65,8 +75,8 @@ remain running and its desktop session unlocked: while the screen is locked, app
 
 ## Current limits
 
-macOS is supported; Windows and Linux are not enabled. Apps must expose usable accessibility
-controls. Free-coordinate clicking, dragging, live desktop video, and phone takeover are not
-implemented. Key names follow the US keyboard layout; agents enter text with typing, which works
-with any layout. Native mobile settings for these grants are not yet available; configure them
-from web or desktop settings.
+macOS is supported; Windows and Linux are not enabled. Apps without usable accessibility controls
+need screen captures, and pointer gestures in them briefly take over the pointer as described
+above. Live desktop video and phone takeover are not implemented. Key names follow the US keyboard
+layout; agents enter text with typing, which works with any layout. Native mobile settings for
+these grants are not yet available; configure them from web or desktop settings.

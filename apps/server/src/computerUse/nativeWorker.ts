@@ -9,7 +9,8 @@ import * as NodeTimersPromises from "node:timers/promises";
 import * as NodeUtil from "node:util";
 import { isShortcut, menuModifierMask, modifierKeyCode, parseKeyChord } from "./keys.ts";
 import { loadMacNative, type MacNative, type MenuItem } from "./macNative.ts";
-import { pointerTarget } from "./pointerTarget.ts";
+import { pointerTarget, sameWindowBounds } from "./pointerTarget.ts";
+import { deliverPointer, type Desktop } from "./takeover.ts";
 import {
   type ComputerAction,
   type NativeSnapshot,
@@ -33,6 +34,7 @@ const execFile = NodeUtil.promisify(NodeChildProcess.execFile);
 type Xa11y = typeof import("@crowecawcaw/xa11y");
 type App = import("@crowecawcaw/xa11y").App;
 type Rect = { x: number; y: number; width: number; height: number };
+type Point = { x: number; y: number };
 
 const MAX_TEXT = 24_000;
 const MAX_VISITED = 6_000;
@@ -86,7 +88,7 @@ export function relocationMatches(element: Identity, target: ElementTarget): boo
  * input. Accessibility actions reach background apps without focusing them or
  * moving the user's mouse. Undefined means only real pointer input can do it. */
 export function backgroundAction(
-  action: Exclude<ComputerAction, { kind: "type" | "key" | "menu" | "wait" }>,
+  action: Extract<ComputerAction, { kind: "press" | "move" | "click" | "scroll" | "perform" }>,
   available: readonly string[],
 ): string | undefined {
   const name =
@@ -397,7 +399,12 @@ async function captureWindow(
       size = pngSize(png);
     }
     if (png.length > 8 * 1024 * 1024) return { ok: false, code: "failed" };
-    return { data: png.toString("base64"), mimeType: "image/png", ...size };
+    return {
+      data: png.toString("base64"),
+      mimeType: "image/png",
+      ...size,
+      window: { id: match.id, bounds: match.bounds },
+    };
   } finally {
     await NodeFs.rm(file, { force: true });
   }
@@ -518,6 +525,103 @@ async function pressKey(
   return { ok: true, via: "keyboard_event" };
 }
 
+const within = (point: Point, rect: Rect) =>
+  point.x >= rect.x &&
+  point.y >= rect.y &&
+  point.x < rect.x + rect.width &&
+  point.y < rect.y + rect.height;
+const asPoint = (tuple: readonly [number, number] | undefined): Point | undefined =>
+  tuple && { x: tuple[0], y: tuple[1] };
+
+/**
+ * Runs real pointer input at `points`, which must all land on the app: as is
+ * when the app is in front, or by briefly bringing it forward while the user
+ * is idle (see deliverPointer).
+ */
+async function runPointer(
+  xa11y: Xa11y,
+  native: MacNative,
+  request: Extract<WorkerRequest, { kind: "action" }>,
+  points: readonly Point[],
+  window: Element | undefined,
+  gesture: (input: ReturnType<Xa11y["inputSim"]>) => Promise<void>,
+): Promise<WorkerResponse> {
+  const input = xa11y.inputSim();
+  const desktop: Desktop = {
+    frontmost: frontmostPid,
+    activate: native.activate,
+    raise: async () => {
+      if (window?.actions.includes("raise"))
+        await window.performAction("raise").catch(() => undefined);
+    },
+    owner: (point) => native.pidAt([point.x, point.y]),
+    idleSeconds: native.idleSeconds,
+    pointer: native.pointer,
+    warp: native.warp,
+    moveTo: (point) => input.moveTo([point.x, point.y]),
+    sleep: (ms) => NodeTimersPromises.setTimeout(ms),
+    now: () => performance.now(),
+  };
+  const outcome = await deliverPointer(
+    desktop,
+    { pid: request.pid, points, takeover: request.takeover },
+    () => gesture(input),
+  );
+  return outcome.ok ? { ok: true, via: outcome.via } : { ok: false, code: outcome.code };
+}
+
+/** click_at, move_at and drag: pointer gestures between capture pixels and elements. */
+async function pointerGesture(
+  xa11y: Xa11y,
+  native: MacNative,
+  app: App & { pid: number },
+  request: Extract<WorkerRequest, { kind: "action" }>,
+  source: Resolved | undefined,
+): Promise<WorkerResponse> {
+  const { action, screen } = request;
+  if (action.kind !== "click_at" && action.kind !== "move_at" && action.kind !== "drag")
+    return { ok: false, code: "unsupported_action" };
+  let window = source?.window;
+  if (screen) {
+    // Capture pixels are only meaningful while the window has not moved or resized.
+    const live = native.windows(app.pid).find((item) => item.id === screen.window.id);
+    if (!live || !sameWindowBounds(live.bounds, screen.window.bounds))
+      return { ok: false, code: "target_changed" };
+    for (const point of [screen.from, screen.to])
+      if (point && !within(point, live.bounds)) return { ok: false, code: "target_changed" };
+    window ??= (await app.children()).find(
+      (item) =>
+        item.role === "window" && !!item.bounds && sameWindowBounds(item.bounds, live.bounds),
+    );
+  }
+  if (action.kind !== "drag") {
+    const at = screen?.to;
+    if (!at) return { ok: false, code: "unsupported_action" };
+    return runPointer(xa11y, native, request, [at], window, async (input) => {
+      if (action.kind === "click_at")
+        await input.click([at.x, at.y], { button: action.button, count: action.count });
+    });
+  }
+  const from = source
+    ? asPoint(pointerTarget(source.element.bounds, source.window?.bounds ?? null))
+    : screen?.from;
+  let to = screen?.to;
+  if (request.drop) {
+    const drop = await resolve(app, request.drop);
+    if (
+      !drop ||
+      secure(drop.element) ||
+      (drop.element.pid !== null && drop.element.pid !== app.pid)
+    )
+      return { ok: false, code: "target_changed" };
+    to = asPoint(pointerTarget(drop.element.bounds, drop.window?.bounds ?? null));
+  }
+  if (!from || !to) return { ok: false, code: "input_requires_foreground" };
+  return runPointer(xa11y, native, request, [from, to], window, (input) =>
+    input.drag([from.x, from.y], [to.x, to.y], { duration: 400 }),
+  );
+}
+
 async function act(
   xa11y: Xa11y,
   native: MacNative,
@@ -546,6 +650,8 @@ async function act(
     }
     return pressKey(native, app.pid, action);
   }
+  if (action.kind === "click_at" || action.kind === "move_at" || action.kind === "drag")
+    return pointerGesture(xa11y, native, app, request, resolved);
   if (!resolved) return { ok: false, code: "target_changed" };
   const { element, window } = resolved;
   if (action.kind === "type") {
@@ -574,28 +680,22 @@ async function act(
   if (action.kind === "press" || action.kind === "perform")
     return { ok: false, code: "unsupported_action" };
   // Only synthesized pointer input remains. It moves the user's real cursor and
-  // lands on whatever window is on top, so it runs only while the app is in
-  // front and its own element is the topmost one at that point.
+  // lands on whatever window is on top, so it runs only where the app's own
+  // element is the topmost one at that point.
   const point = pointerTarget(element.bounds, window?.bounds ?? null);
-  const onTarget = async () =>
-    point !== undefined && (await frontmostPid()) === app.pid && native.pidAt(point) === app.pid;
-  if (!point || !(await onTarget())) return { ok: false, code: "input_requires_foreground" };
-  // The small lead lets a human see the target before the operation happens.
-  const input = xa11y.inputSim();
-  await input.moveTo(point);
-  await NodeTimersPromises.setTimeout(160);
-  if (!(await onTarget())) return { ok: false, code: "input_requires_foreground" };
-  switch (action.kind) {
-    case "move":
-      break;
-    case "click":
-      await input.click(point, { button: action.button, count: action.count });
-      break;
-    case "scroll":
-      await input.scroll(point, action.dx, action.dy);
-      break;
-  }
-  return { ok: true, via: "pointer" };
+  if (!point) return { ok: false, code: "input_requires_foreground" };
+  return runPointer(
+    xa11y,
+    native,
+    request,
+    [{ x: point[0], y: point[1] }],
+    window,
+    async (input) => {
+      if (action.kind === "click")
+        await input.click(point, { button: action.button, count: action.count });
+      else if (action.kind === "scroll") await input.scroll(point, action.dx, action.dy);
+    },
+  );
 }
 
 async function openApp(

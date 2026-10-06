@@ -16,10 +16,14 @@ const MAX_TRACKED = 32;
 
 // xa11y's snake_case roles, as snapshots report them.
 const MENU_ROLES = new Set(["menu_button", "pop_up_button", "menu_bar_item", "combo_box"]);
+// The area highlighted around a coordinate target.
+const POINT_BOX = 24;
 /** The feedback the agent cursor plays for an action. */
-export const cursorCue = (action: ComputerAction, role: string) => {
+export const cursorCue = (action: ComputerAction, role: string | null) => {
   switch (action.kind) {
     case "move":
+    case "move_at":
+    case "drag":
     case "wait":
       return "point";
     case "type":
@@ -28,6 +32,7 @@ export const cursorCue = (action: ComputerAction, role: string) => {
     case "menu":
       return "menu";
     case "click":
+    case "click_at":
       if (action.button === "right") return "rightClick";
       return action.count === 2 ? "doubleClick" : "click";
     case "scroll":
@@ -40,10 +45,10 @@ export const cursorCue = (action: ComputerAction, role: string) => {
       for (const direction of ["Up", "Down", "Left", "Right"] as const)
         if (name.includes(`scroll_${direction.toLowerCase()}`))
           return `scroll${direction}` as const;
-      return MENU_ROLES.has(role) ? "menu" : "click";
+      return role && MENU_ROLES.has(role) ? "menu" : "click";
     }
     case "press":
-      return MENU_ROLES.has(role) ? "menu" : "click";
+      return role && MENU_ROLES.has(role) ? "menu" : "click";
   }
 };
 
@@ -144,14 +149,25 @@ export const make = Effect.gen(function* () {
     });
 
   return {
-    /** Glides to an action's target and waits for it to land, so the user sees where the agent acts first. */
-    point: (caller: string, action: ComputerAction, target: ElementTarget) =>
+    /**
+     * Glides to an action's target element or screen point and waits for it
+     * to land, so the user sees where the agent acts first.
+     */
+    point: (caller: string, action: ComputerAction, target: ElementTarget | Point) =>
       Effect.gen(function* () {
-        if (!hasArea(target.bounds)) return;
-        const bounds = target.bounds;
+        const bounds =
+          "ref" in target
+            ? target.bounds
+            : {
+                x: target.x - POINT_BOX / 2,
+                y: target.y - POINT_BOX / 2,
+                width: POINT_BOX,
+                height: POINT_BOX,
+              };
+        if (!hasArea(bounds)) return;
         const center = { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 };
         const durationMs = yield* send(caller, center, {
-          cue: cursorCue(action, target.role),
+          cue: cursorCue(action, "ref" in target ? target.role : null),
           bounds,
         });
         if (durationMs !== undefined) yield* Effect.sleep(durationMs + 60);

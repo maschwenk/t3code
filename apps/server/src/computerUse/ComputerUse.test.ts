@@ -49,6 +49,48 @@ it("targets steps by exact name only when the name picks one element", () => {
   expect(ComputerUse.resolveStepTarget(elements, { name: "9" })).toBeUndefined();
   expect(ComputerUse.resolveStepTarget(elements, { ref: 12, name: "7" })?.ref).toBe(12);
 });
+
+it("plans coordinate steps and drags only from a capture and one source", () => {
+  const seven = snapshot.elements[0]!;
+  const elements = [seven, { ...seven, ref: 2, name: "8", stableId: "eight" }];
+  const capture = {
+    window: { id: 5, bounds: { x: 100, y: 50, width: 400, height: 300 } },
+    width: 800,
+    height: 600,
+  };
+  const click = { kind: "click_at", x: 400, y: 300, button: "left", count: 2 } as const;
+  expect(ComputerUse.planStep(elements, capture, { action: click })).toMatchObject({
+    target: null,
+    screen: { window: capture.window, to: { x: 300, y: 200 } },
+  });
+  expect(ComputerUse.planStep(elements, undefined, { action: click })).toBe("invalid_point");
+  expect(ComputerUse.planStep(elements, capture, { action: { ...click, x: 800 } })).toBe(
+    "invalid_point",
+  );
+  expect(ComputerUse.planStep(elements, capture, { ref: 1, action: click })).toBe("invalid_input");
+
+  const drag = (to: object, from?: object) =>
+    ({ kind: "drag", to, ...(from ? { from } : {}) }) as never;
+  expect(
+    ComputerUse.planStep(elements, undefined, { ref: 1, action: drag({ name: "8" }) }),
+  ).toMatchObject({
+    target: { ref: 1 },
+    drop: { ref: 2 },
+  });
+  expect(
+    ComputerUse.planStep(elements, capture, { action: drag({ x: 0, y: 0 }, { x: 798, y: 2 }) }),
+  ).toMatchObject({ screen: { from: { x: 499, y: 51 }, to: { x: 100, y: 50 } } });
+  expect(ComputerUse.planStep(elements, capture, { action: drag({ ref: 2 }) })).toBe("invalid_ref");
+  expect(
+    ComputerUse.planStep(elements, capture, { ref: 1, action: drag({ ref: 2 }, { x: 1, y: 1 }) }),
+  ).toBe("invalid_input");
+  expect(ComputerUse.planStep(elements, capture, { ref: 1, action: drag({ ref: 9 }) })).toBe(
+    "invalid_ref",
+  );
+  expect(ComputerUse.planStep(elements, undefined, { ref: 1, action: drag({ x: 1, y: 1 }) })).toBe(
+    "invalid_point",
+  );
+});
 const setup = (calls: WorkerRequest[], enabled = true, failAction = false) =>
   ComputerUse.layer.pipe(
     Layer.provide(
@@ -75,6 +117,81 @@ const setup = (calls: WorkerRequest[], enabled = true, failAction = false) =>
   );
 const code = <A>(effect: Effect.Effect<A, ComputerUseError>) =>
   effect.pipe(Effect.match({ onSuccess: () => "success", onFailure: (error) => error.code }));
+
+it.effect("aims coordinate steps at the latest capture, even after text-only snapshots", () => {
+  const calls: WorkerRequest[] = [];
+  const window = { id: 77, bounds: { x: 200, y: 100, width: 300, height: 200 } };
+  const layer = ComputerUse.layer.pipe(
+    Layer.provide(
+      Layer.succeed(Driver.Driver, {
+        execute: (request) =>
+          Effect.sync(() => {
+            calls.push(request);
+            if (request.kind !== "snapshot") return { ok: true as const, via: "takeover" as const };
+            return {
+              ok: true as const,
+              snapshot: request.includeImage
+                ? {
+                    ...snapshot,
+                    image: {
+                      data: "",
+                      mimeType: "image/png" as const,
+                      width: 600,
+                      height: 400,
+                      window,
+                    },
+                  }
+                : snapshot,
+            };
+          }),
+      }),
+    ),
+    Layer.provide(DesktopTelemetryReceiver.layerTest()),
+    Layer.provideMerge(
+      ServerSettings.layerTest({
+        enableAgentComputerAccess: true,
+        enableComputerScreenCapture: true,
+        computerUseAllowedApps: ["Calculator"],
+      }),
+    ),
+    Layer.provide(NodeServices.layer),
+  );
+  return Effect.gen(function* () {
+    const computer = yield* ComputerUse.ComputerUse;
+    const settings = yield* ServerSettings.ServerSettingsService;
+    const click = {
+      kind: "click_at" as const,
+      x: 300,
+      y: 200,
+      button: "left" as const,
+      count: 1 as const,
+    };
+    const textOnly = yield* computer.snapshot("a", { app: "Calculator", includeImage: false });
+    expect(
+      yield* code(
+        computer.act("a", { snapshotId: textOnly.snapshotId, steps: [{ action: click }] }),
+      ),
+    ).toBe("invalid_point");
+    yield* computer.snapshot("a", { app: "Calculator", includeImage: true });
+    const later = yield* computer.snapshot("a", { app: "Calculator", includeImage: false });
+    const first = yield* computer.act("a", {
+      snapshotId: later.snapshotId,
+      steps: [{ action: click }],
+    });
+    expect(first.completed).toEqual(["takeover"]);
+    yield* settings.updateSettings({ enableComputerPointerTakeover: false });
+    // The snapshot an action returns keeps the capture too.
+    yield* computer.act("a", {
+      snapshotId: first.snapshot!.snapshotId,
+      steps: [{ action: click }],
+    });
+    const actions = calls.filter((call) => call.kind === "action");
+    expect(actions.map((call) => [call.screen, call.takeover])).toEqual([
+      [{ window, to: { x: 350, y: 200 } }, true],
+      [{ window, to: { x: 350, y: 200 } }, false],
+    ]);
+  }).pipe(Effect.provide(layer));
+});
 
 it.effect("blocks native work until enabled, including screen capture's separate grant", () => {
   const calls: WorkerRequest[] = [];

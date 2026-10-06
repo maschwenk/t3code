@@ -83,6 +83,7 @@ const layerTest = (calls: WorkerRequest[]) =>
                                 mimeType: "image/png" as const,
                                 width: 1,
                                 height: 1,
+                                window: { id: 7, bounds: { x: 0, y: 0, width: 30, height: 30 } },
                               },
                             }
                           : {}),

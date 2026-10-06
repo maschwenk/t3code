@@ -639,6 +639,13 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["screenshots screen recording computer use"],
   },
   {
+    id: "computer-pointer-takeover",
+    title: "Let agents briefly take over the pointer when you're idle",
+    to: "/settings/integrations",
+    scope: "environment",
+    searchTerms: ["mouse cursor focus foreground drag double click canvas idle computer use"],
+  },
+  {
     id: "device-hosts",
     title: "Device hosts",
     to: "/settings/integrations",

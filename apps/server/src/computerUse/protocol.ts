@@ -5,6 +5,20 @@ const ScrollDelta = Schema.Number.check(
   Schema.isFinite(),
   Schema.isBetween({ minimum: -2000, maximum: 2000 }),
 );
+const PixelCoordinate = Schema.Number.check(
+  Schema.isFinite(),
+  Schema.isBetween({ minimum: 0, maximum: 100_000 }),
+);
+/** A pixel in the latest window capture of the app (includeImage=true). */
+const ImagePoint = Schema.Struct({ x: PixelCoordinate, y: PixelCoordinate });
+/** An element of the same snapshot, by ref or exact name (plus role when names repeat). */
+const ElementRef = Schema.Union([
+  Schema.Struct({ ref: Schema.Int }),
+  Schema.Struct({
+    name: Schema.String.check(Schema.isMaxLength(500)),
+    role: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(64))),
+  }),
+]);
 export const ComputerAction = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("press") }),
   Schema.Struct({ kind: Schema.Literal("move") }),
@@ -37,12 +51,35 @@ export const ComputerAction = Schema.Union([
     kind: Schema.Literal("wait"),
     ms: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 5000 })),
   }),
+  // Pointer input at a pixel of the latest window capture, for content
+  // without usable accessibility controls (canvases, games, custom views).
+  Schema.Struct({
+    kind: Schema.Literal("click_at"),
+    ...ImagePoint.fields,
+    button: Schema.Literals(["left", "right"]),
+    count: Schema.Literals([1, 2]),
+  }),
+  Schema.Struct({ kind: Schema.Literal("move_at"), ...ImagePoint.fields }),
+  // Drags from the step's element, or from a capture pixel, to an element or a capture pixel.
+  Schema.Struct({
+    kind: Schema.Literal("drag"),
+    from: Schema.optionalKey(ImagePoint),
+    to: Schema.Union([ImagePoint, ElementRef]),
+  }),
 ]);
-/** Actions that need no element target. A key may optionally focus one first. */
+/** Actions that need no element target. A key may optionally focus one first. Drag needs one
+ * unless it starts from a capture pixel. */
 export const ELEMENTLESS_ACTIONS: ReadonlySet<ComputerAction["kind"]> = new Set([
   "key",
   "menu",
   "wait",
+  "click_at",
+  "move_at",
+]);
+/** Actions positioned by capture pixels, which never take an element target. */
+export const COORDINATE_ACTIONS: ReadonlySet<ComputerAction["kind"]> = new Set([
+  "click_at",
+  "move_at",
 ]);
 export type ComputerAction = typeof ComputerAction.Type;
 
@@ -52,6 +89,11 @@ const Bounds = Schema.Struct({
   width: Schema.Number,
   height: Schema.Number,
 });
+/** The window an image shows, in the screen's logical points. */
+export const CaptureWindow = Schema.Struct({ id: Schema.Int, bounds: Bounds });
+export type CaptureWindow = typeof CaptureWindow.Type;
+const ScreenPoint = Schema.Struct({ x: Schema.Number, y: Schema.Number });
+export type ScreenPoint = typeof ScreenPoint.Type;
 export const ComputerElement = Schema.Struct({
   ref: Schema.Int,
   role: Schema.String,
@@ -102,6 +144,18 @@ export const WorkerRequest = Schema.Union([
     pid: Schema.Int,
     target: Schema.NullOr(ElementTarget),
     action: ComputerAction,
+    /** Where an element drag drops. */
+    drop: Schema.optionalKey(ElementTarget),
+    /** Capture pixels mapped to screen points: `to` is where click_at, move_at or a drag ends. */
+    screen: Schema.optionalKey(
+      Schema.Struct({
+        window: CaptureWindow,
+        from: Schema.optionalKey(ScreenPoint),
+        to: Schema.optionalKey(ScreenPoint),
+      }),
+    ),
+    /** Whether pointer input may briefly bring a background app forward while the user is idle. */
+    takeover: Schema.Boolean,
   }),
   Schema.Struct({ kind: Schema.Literal("open"), app: Schema.String, activate: Schema.Boolean }),
 ]);
@@ -125,6 +179,8 @@ export const NativeSnapshot = Schema.Struct({
       mimeType: Schema.Literal("image/png"),
       width: Schema.Int,
       height: Schema.Int,
+      /** The captured window, so capture pixels can be mapped back to the screen. */
+      window: CaptureWindow,
     }),
   ),
 });
@@ -161,7 +217,14 @@ export const WorkerResponse = Schema.Union([
     snapshot: Schema.optionalKey(NativeSnapshot),
     /** How an action was delivered. */
     via: Schema.optionalKey(
-      Schema.Literals(["accessibility", "keyboard_event", "menu", "pointer", "launch_services"]),
+      Schema.Literals([
+        "accessibility",
+        "keyboard_event",
+        "menu",
+        "pointer",
+        "takeover",
+        "launch_services",
+      ]),
     ),
   }),
   Schema.Struct({
@@ -174,6 +237,7 @@ export const WorkerResponse = Schema.Union([
       "unsupported_action",
       "capture_requires_foreground",
       "input_requires_foreground",
+      "user_active",
       "menu_not_found",
       "failed",
     ]),
@@ -199,6 +263,8 @@ export class ComputerUseError extends Schema.TaggedError<ComputerUseError>()("Co
     "unsupported_action",
     "capture_requires_foreground",
     "input_requires_foreground",
+    "user_active",
+    "invalid_point",
     "menu_not_found",
     "invalid_key",
     "failed",
@@ -228,7 +294,7 @@ export class ComputerUseError extends Schema.TaggedError<ComputerUseError>()("Co
           return "macOS has not granted Accessibility permission to the process running the T3 native helper. Ask the user to grant it to the T3 host on that machine.";
         return "The environment needs operating-system Accessibility or Screen Recording permission. Ask the user to grant it on that machine.";
       case "target_changed":
-        return "The app or element changed. Take a fresh computer_snapshot before acting.";
+        return "The app, element or captured window changed. Take a fresh computer_snapshot before acting (with includeImage=true for click_at, move_at or drag coordinates).";
       case "app_not_running":
         return "That app is not running on the environment machine. Open it with computer_open.";
       case "unsupported_action":
@@ -236,7 +302,11 @@ export class ComputerUseError extends Schema.TaggedError<ComputerUseError>()("Co
       case "capture_requires_foreground":
         return "The app has no visible window to capture. Open or unminimize one, or use includeImage=false.";
       case "input_requires_foreground":
-        return "This action needs real pointer input, which only works while the target app is in front and nothing covers the target. Prefer press, type, key, menu, or an action listed for the element; those run in the background. Otherwise use computer_open with activate=true only if the user is not working on that machine, then take a fresh snapshot.";
+        return "This action needs real pointer input, and the target was not reachable: the app is in the background and pointer takeover is off, or another window still covers the target. Prefer press, type, key, menu, or an action listed for the element; those run in the background. Otherwise ask the user to bring the app forward or turn on pointer takeover in Settings > Integrations > Computer use, then take a fresh snapshot.";
+      case "user_active":
+        return "The user is using this machine right now, so the agent did not take over the pointer. Prefer press, type, key, menu, or an action listed for the element; those run in the background. Otherwise ask the user to leave the mouse and keyboard alone for a few seconds, or to bring the app forward, and retry later.";
+      case "invalid_point":
+        return "click_at, move_at and drag coordinates are pixels of the app's latest window image and must lie inside it. Take computer_snapshot with includeImage=true and read coordinates from that image.";
       case "menu_not_found":
         return `No enabled menu item matched that path.${this.available?.length ? ` Available here: ${this.available.join(", ")}.` : ""}`;
       case "invalid_key":

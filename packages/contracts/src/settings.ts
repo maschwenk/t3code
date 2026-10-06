@@ -1253,6 +1253,10 @@ export const ServerSettings = Schema.Struct({
   enableComputerScreenCapture: Schema.Boolean.pipe(
     Schema.withDecodingDefault(Effect.succeed(false)),
   ),
+  /** Whether pointer-only computer-use input may briefly bring a background app forward while the user is idle. */
+  enableComputerPointerTakeover: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(true)),
+  ),
   computerUseAllowedApps: Schema.Array(
     Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(200)),
   )
@@ -1649,6 +1653,7 @@ export const ServerSettingsPatch = Schema.Struct({
   enableAgentBrowserAccess: Schema.optionalKey(Schema.Boolean),
   enableAgentComputerAccess: Schema.optionalKey(Schema.Boolean),
   enableComputerScreenCapture: Schema.optionalKey(Schema.Boolean),
+  enableComputerPointerTakeover: Schema.optionalKey(Schema.Boolean),
   computerUseAllowedApps: Schema.optionalKey(
     Schema.Array(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(200))).check(
       Schema.isMaxLength(64),
