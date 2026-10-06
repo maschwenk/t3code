@@ -43,7 +43,27 @@ export type SnapshotInput = {
   readonly limit?: number | undefined;
   readonly includeOffscreen?: boolean | undefined;
 };
-export type ActionStep = { readonly ref?: number | undefined; readonly action: ComputerAction };
+/** Targets an element by ref, or by exact name (and role) from the latest snapshot. */
+export type ActionStep = {
+  readonly ref?: number | undefined;
+  readonly name?: string | undefined;
+  readonly role?: string | undefined;
+  readonly action: ComputerAction;
+};
+
+/** The one snapshot element a step names; undefined when absent or ambiguous. */
+export function resolveStepTarget(
+  elements: readonly ElementTarget[],
+  step: Pick<ActionStep, "ref" | "name" | "role">,
+): ElementTarget | undefined {
+  if (step.ref !== undefined) return elements.find((element) => element.ref === step.ref);
+  if (step.name === undefined) return undefined;
+  const matches = elements.filter(
+    (element) =>
+      element.name === step.name && (step.role === undefined || element.role === step.role),
+  );
+  return matches.length === 1 ? matches[0] : undefined;
+}
 export type Observation = NativeSnapshot & { readonly snapshotId: string };
 export type ActResult = {
   readonly total: number;
@@ -210,11 +230,9 @@ const make = Effect.gen(function* () {
         // Every step is checked against the snapshot before any of them runs.
         const steps: { action: ComputerAction; target: ElementTarget | null }[] = [];
         for (const step of input.steps) {
-          const target =
-            step.ref === undefined
-              ? undefined
-              : receipt.snapshot.elements.find((element) => element.ref === step.ref);
-          if (step.ref !== undefined && !target) return yield* fail("invalid_ref");
+          const target = resolveStepTarget(receipt.snapshot.elements, step);
+          if ((step.ref !== undefined || step.name !== undefined) && !target)
+            return yield* fail("invalid_ref");
           if (!target && !ELEMENTLESS_ACTIONS.has(step.action.kind))
             return yield* fail("invalid_ref");
           if (step.action.kind === "key" && !parseKeyChord(step.action.key))

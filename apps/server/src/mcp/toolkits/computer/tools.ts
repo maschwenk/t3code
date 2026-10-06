@@ -54,6 +54,7 @@ export const ComputerSnapshotTool = Tool.make("computer_snapshot", {
 export const ComputerActionTool = Tool.make("computer_action", {
   description: [
     "Run 1-20 steps in order against your latest computer_snapshot, then get the app's fresh snapshot (same query/roles/root) and a new snapshotId in the same response. Plan several steps per call when you can predict them, for example pressing 4, +, 4, = or typing into a field then pressing Return. Each step re-finds its element and the batch stops at the first step that fails or whose element changed; later steps do not run, and the response says which step stopped and why.",
+    'Target each step with ref, or with the element\'s exact name (plus role when names repeat), for example {name:"7", role:"button", action:{kind:"press"}}. Names avoid mixing up refs with numeric labels; a name must match exactly one element of your latest snapshot.',
     'Steps run in the background: the app stays where it is, the user\'s mouse does not move, and the user can keep working. press activates a control; a left single click on an element listing press does the same, and a right single click on one listing show_menu opens its menu; type inserts text (replace=true replaces the value); perform invokes any action listed for the element (raise, expand, increment, scroll_to_visible, ...); key sends a key or shortcut such as Return, Escape, Tab, Down, cmd+n or cmd+shift+t to the app\'s focused element (give a ref to focus that element first; repeat presses it again); menu runs a menu bar command by titles, such as ["File", "New Window"]; scroll pages the nearest scroll view (positive dy scrolls down); wait pauses up to 5000 ms for the app to react.',
     "In a background AppKit app, a cmd shortcut runs its menu item; commands that act on a text selection (copy, select all) may need menu or type instead. Hover (move), double-click, exact wheel scrolling and clicks on elements without press need real pointer input: they only work while the app is in front and nothing covers the target, and they move the shared cursor.",
     "Never blindly retry a failed step: read the returned snapshot first. Get user approval before purchases, sending messages, destructive changes, or permission changes.",
@@ -61,7 +62,12 @@ export const ComputerActionTool = Tool.make("computer_action", {
   parameters: Schema.Struct({
     snapshotId: Schema.String,
     steps: Schema.Array(
-      Schema.Struct({ ref: Schema.optionalKey(Schema.Int), action: ComputerAction }),
+      Schema.Struct({
+        ref: Schema.optionalKey(Schema.Int),
+        name: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(500))),
+        role: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(64))),
+        action: ComputerAction,
+      }),
     ).check(Schema.isMinLength(1), Schema.isMaxLength(ComputerUse.MAX_BATCH_STEPS)),
     includeImage: Schema.optionalKey(Schema.Boolean),
   }),

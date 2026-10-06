@@ -35,6 +35,20 @@ const snapshot: NativeSnapshot = {
 };
 // Only the OS boundary is substituted. Authorization, settings writes, receipt
 // ownership, expiry and one-shot mutation behavior run through real services.
+
+it("targets steps by exact name only when the name picks one element", () => {
+  const seven = snapshot.elements[0]!;
+  const elements = [
+    seven,
+    { ...seven, ref: 11, name: "1", stableId: "one" },
+    { ...seven, ref: 12, role: "static_text", name: "1", actions: [], stableId: null },
+  ];
+  expect(ComputerUse.resolveStepTarget(elements, { name: "7" })?.ref).toBe(1);
+  expect(ComputerUse.resolveStepTarget(elements, { name: "1" })).toBeUndefined();
+  expect(ComputerUse.resolveStepTarget(elements, { name: "1", role: "button" })?.ref).toBe(11);
+  expect(ComputerUse.resolveStepTarget(elements, { name: "9" })).toBeUndefined();
+  expect(ComputerUse.resolveStepTarget(elements, { ref: 12, name: "7" })?.ref).toBe(12);
+});
 const setup = (calls: WorkerRequest[], enabled = true, failAction = false) =>
   ComputerUse.layer.pipe(
     Layer.provide(

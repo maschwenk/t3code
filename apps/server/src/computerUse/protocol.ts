@@ -218,7 +218,7 @@ export class ComputerUseError extends Schema.TaggedError<ComputerUseError>()("Co
       case "snapshot_expired":
         return "Take a fresh computer_snapshot before acting. Snapshots expire after two minutes and are replaced by the snapshot an action returns.";
       case "invalid_ref":
-        return "That ref was not in the snapshot, or this action needs a ref. Use a ref from the latest snapshot.";
+        return "That ref was not in the snapshot, a name matched no element or several (add role, or use a ref), or this action needs a target. Use the latest snapshot.";
       case "invalid_input":
         return "Invalid computer-use request. Check the tool's parameters.";
       case "permissions":

@@ -13,7 +13,7 @@ export function ComputerUseSettings() {
         {...searchableSetting("agent-computer-access")}
         serverScoped
         settingKeys={["enableAgentComputerAccess"]}
-        description="Let agents inspect and operate allowed macOS apps on this environment's machine, including when you connect remotely. Moves the visible system cursor while operating the foreground app. Requires macOS Accessibility permission. Turning this off blocks the next tool call."
+        description="Let agents inspect and operate allowed macOS apps on this environment's machine, including when you connect remotely. Agents work in the background with their own cursor, so your mouse and focus stay with you. Requires macOS Accessibility permission. Turning this off blocks the next tool call."
         control={
           <ScopedSwitch
             settingKeys={["enableAgentComputerAccess"]}
