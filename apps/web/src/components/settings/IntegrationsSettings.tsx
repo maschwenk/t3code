@@ -1,3 +1,4 @@
+import { ComputerUseSettings } from "./ComputerUseSettings";
 import { DeviceHostUpdates } from "../device/DeviceHostUpdates";
 import { DeviceToolVersions } from "../device/DeviceToolVersions";
 import { useScopedSettings, useUpdateScopedSettings } from "./useScopedSettings";
@@ -1463,6 +1464,7 @@ export function IntegrationsSettingsPanel() {
           previewDefaults
         )}
       </SettingsSection>
+      <ComputerUseSettings />
       <DeviceIntegrationSettings />
     </SettingsPageContainer>
   );

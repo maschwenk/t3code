@@ -618,6 +618,27 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["allow disable enable open drive preview tools sessions project override"],
   },
   {
+    id: "agent-computer-access",
+    title: "Agent computer access",
+    to: "/settings/integrations",
+    scope: "environment",
+    searchTerms: ["native macOS accessibility remote control claude computer use"],
+  },
+  {
+    id: "computer-allowed-apps",
+    title: "Allowed computer apps",
+    to: "/settings/integrations",
+    scope: "environment",
+    searchTerms: ["native macOS allowlist computer use"],
+  },
+  {
+    id: "computer-screen-capture",
+    title: "Allow computer screen captures",
+    to: "/settings/integrations",
+    scope: "environment",
+    searchTerms: ["screenshots screen recording computer use"],
+  },
+  {
     id: "device-hosts",
     title: "Device hosts",
     to: "/settings/integrations",
