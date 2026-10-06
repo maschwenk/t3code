@@ -305,7 +305,7 @@ export const ScheduledTaskUpsertInput = Schema.Struct({
   interactionMode: ProviderInteractionMode,
   createdBy: Schema.optional(OrchestrationV2Actor),
   creationSource: Schema.optional(OrchestrationV2CreationSource),
-  /** Omit or null for no end time. Saves replace the whole definition, so edits resend it. */
+  /** Null for no end. Omitted keeps the saved value, so older clients' edits preserve it. */
   endsAt: Schema.optional(Schema.NullOr(ScheduledTaskEndsAt)),
   maxRuns: Schema.optional(Schema.NullOr(ScheduledTaskMaxRuns)),
 });

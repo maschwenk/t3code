@@ -1133,12 +1133,17 @@ export const layer = Layer.effect(
                 return { token, secret, secretChanged };
               })
             : { token: null, secret: null, secretChanged: true };
+        // Clients that predate end conditions omit both fields; their edits
+        // must not turn "for the next 12 hours" into a schedule with no end.
+        const endsAt = input.endsAt === undefined ? (existingTask?.endsAt ?? null) : input.endsAt;
+        const maxRuns =
+          input.maxRuns === undefined ? (existingTask?.maxRuns ?? null) : input.maxRuns;
         const scheduleUnchanged =
           existingTask !== null &&
           existingTask.enabled === input.enabled &&
           isSameSchedule(existingTask.schedule, schedule) &&
-          (existingTask.endsAt ?? null) === (input.endsAt ?? null) &&
-          (existingTask.maxRuns ?? null) === (input.maxRuns ?? null);
+          (existingTask.endsAt ?? null) === endsAt &&
+          (existingTask.maxRuns ?? null) === maxRuns;
         const task: ScheduledTask = {
           id,
           title: input.title,
@@ -1161,8 +1166,8 @@ export const layer = Layer.effect(
                 {
                   enabled: input.enabled,
                   schedule,
-                  endsAt: input.endsAt ?? null,
-                  maxRuns: input.maxRuns ?? null,
+                  endsAt,
+                  maxRuns,
                   runCount: existingTask?.runCount ?? 0,
                 },
                 now,
@@ -1171,8 +1176,8 @@ export const layer = Layer.effect(
           lastRunStatus: existingTask?.lastRunStatus ?? "never",
           lastRunError: existingTask?.lastRunError ?? null,
           runCount: existingTask?.runCount ?? 0,
-          endsAt: input.endsAt ?? null,
-          maxRuns: input.maxRuns ?? null,
+          endsAt,
+          maxRuns,
         };
         yield* saveTask(task, input.requireExisting === true, webhook);
         yield* notifyChanged;

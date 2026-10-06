@@ -108,6 +108,45 @@ it.effect("posts a thread-bound schedule into its thread until the end time, the
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
 
+it.effect("keeps end conditions when an older client edits without them", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(START);
+    const sends = yield* Ref.make<ReadonlyArray<string>>([]);
+    yield* Effect.gen(function* () {
+      const service = yield* ScheduledTaskService.ScheduledTaskService;
+      const base = {
+        title: "Watch deploys",
+        prompt: "Check #deploys.",
+        enabled: true,
+        schedule: { type: "interval", everyMs: 900_000 },
+        projectId: "project-old-client",
+        threadId: "thread-old-client",
+        workspaceStrategy: { type: "root" },
+        modelSelection: { instanceId: "claudeAgent", model: "claude-sonnet-4-5" },
+        runtimeMode: "full-access",
+        interactionMode: "default",
+      };
+      const endsAt = DateTime.formatIso(DateTime.makeUnsafe(START + 12 * 60 * 60_000));
+      const created = yield* service.upsert(
+        yield* decodeUpsertInput({ ...base, endsAt, maxRuns: 40 }),
+      );
+      // A client that predates end conditions resends the task without them.
+      const renamed = yield* service.upsert(
+        yield* decodeUpsertInput({ ...base, id: created.task.id, title: "Renamed" }),
+      );
+      assert.equal(renamed.task.endsAt, endsAt);
+      assert.equal(renamed.task.maxRuns, 40);
+      const cleared = yield* service.upsert(
+        yield* decodeUpsertInput({ ...base, id: created.task.id, endsAt: null, maxRuns: null }),
+      );
+      assert.isNull(cleared.task.endsAt);
+      assert.isNull(cleared.task.maxRuns);
+    }).pipe(
+      Effect.provide(ScheduledTaskService.layer.pipe(Layer.provide(layerRecordingSends(sends)))),
+    );
+  }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
 it.effect("stops after its run budget", () =>
   Effect.gen(function* () {
     yield* TestClock.setTime(START);
