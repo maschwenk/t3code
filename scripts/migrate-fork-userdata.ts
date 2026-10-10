@@ -8,8 +8,9 @@
  *   node scripts/migrate-fork-userdata.ts [--from <t3 home>] [--to <t3 home>]
  *
  * `--from` defaults to the main checkout's `.t3`, `--to` to `~/.t3`. Refuses to
- * run while something holds the source database open, and renames the existing
- * destination userdata aside instead of deleting it.
+ * run while something holds the source database open, renames the existing
+ * destination userdata aside instead of deleting it, and skips server logs.
+ * Claude config directories are outside the T3 home and are not touched.
  */
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
@@ -72,11 +73,18 @@ if (NodeFS.existsSync(destinationUserdata)) {
   console.log(`[fork-migrate] Moved the existing ${destinationUserdata} to ${backup}`);
 }
 
-const copy = NodeChildProcess.spawnSync("ditto", [sourceUserdata, destinationUserdata], {
-  stdio: "inherit",
-});
-if (copy.status !== 0) throw new Error(`ditto exited with ${copy.status ?? "signal"}.`);
-console.log(`[fork-migrate] Copied ${sourceUserdata} to ${destinationUserdata}`);
+// Everything the app needs lives in userdata: settings and provider
+// instances (settings.json), client and desktop settings, keybindings,
+// themes, the thread database, attachments, browser extensions, and the
+// mode-0600 secrets, which are raw bytes rather than app-bound ciphertext.
+// Server logs are the one large directory nothing reads back.
+const copy = NodeChildProcess.spawnSync(
+  "rsync",
+  ["-a", "--exclude", "logs/", `${sourceUserdata}/`, `${destinationUserdata}/`],
+  { stdio: "inherit" },
+);
+if (copy.status !== 0) throw new Error(`rsync exited with ${copy.status ?? "signal"}.`);
+console.log(`[fork-migrate] Copied ${sourceUserdata} to ${destinationUserdata} (without logs)`);
 
 // Downloaded tool binaries (headless Chrome) are large and re-fetchable; carry
 // them over only when the destination has none.
@@ -88,6 +96,27 @@ if (NodeFS.existsSync(sourceTools) && !NodeFS.existsSync(destinationTools)) {
   });
   if (copyTools.status === 0)
     console.log(`[fork-migrate] Copied ${sourceTools} to ${destinationTools}`);
+}
+
+// Provider instances point at Claude config directories by path, outside the
+// T3 home. Show them so a missing one is obvious before the first launch.
+const settingsPath = NodePath.join(destinationUserdata, "settings.json");
+if (NodeFS.existsSync(settingsPath)) {
+  const settings = JSON.parse(NodeFS.readFileSync(settingsPath, "utf8")) as {
+    providerInstances?: Record<string, { driver?: string; config?: { homePath?: string } }>;
+  };
+  for (const [id, instance] of Object.entries(settings.providerInstances ?? {})) {
+    const homePath = instance.config?.homePath?.trim();
+    if (!homePath) {
+      console.log(`[fork-migrate] provider ${id} (${instance.driver ?? "?"}): default config dir`);
+      continue;
+    }
+    const resolved = homePath.startsWith("~/")
+      ? NodePath.join(NodeOS.homedir(), homePath.slice(2))
+      : homePath;
+    const status = NodeFS.existsSync(resolved) ? "ok" : "MISSING";
+    console.log(`[fork-migrate] provider ${id} (${instance.driver ?? "?"}): ${resolved} ${status}`);
+  }
 }
 
 console.log(`[fork-migrate] Done. The source at ${sourceUserdata} was left in place.`);

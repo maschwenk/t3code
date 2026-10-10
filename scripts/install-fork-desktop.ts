@@ -24,7 +24,7 @@ const PRODUCT_NAME = "T3 Code (Fork)";
 const BUNDLE_ID = "com.t3tools.t3code.fork";
 const APPLICATIONS_DIR = "/Applications";
 
-if (process.platform !== "darwin") {
+if (NodeOS.platform() !== "darwin") {
   throw new Error("install-fork-desktop.ts only supports macOS.");
 }
 
