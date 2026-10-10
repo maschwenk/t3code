@@ -142,16 +142,21 @@ const lsappinfo = (args: string[]) =>
 // every windowed app, so each unresponsive app on the machine stalls them for
 // a full AX messaging timeout (a minute in practice). LaunchServices names
 // apps without contacting them; attaching by pid then only talks to the target.
+// Some apps run a windowless helper under the same name (Wispr Flow's Swift
+// accessibility agent), so a match with windows wins over the first match.
 async function appByName(App: Xa11y["App"], name: string): Promise<App | undefined> {
+  let first: App | undefined;
   for (const pid of launchServicesPids(await lsappinfo(["list"]), name)) {
     const app = await App.byPid(pid, { timeout: 0 }).catch((cause: unknown) => {
       // The process exited or has no accessibility bridge; permission errors propagate.
       if (cause instanceof Error && cause.name === "SelectorNotMatchedError") return undefined;
       throw cause;
     });
-    if (app?.name === name) return app;
+    if (app?.name !== name) continue;
+    if ((await app.children()).some((child) => child.role === "window")) return app;
+    first ??= app;
   }
-  return undefined;
+  return first;
 }
 
 async function frontmostPid(): Promise<number | undefined> {
@@ -211,6 +216,7 @@ async function takeSnapshot(
   native: MacNative,
   app: App & { pid: number },
   request: Extract<WorkerRequest, { kind: "snapshot" }>,
+  stage: (value: FailureStage) => void,
 ): Promise<WorkerResponse> {
   const { options } = request;
   const terms = queryTerms(options.query);
@@ -332,8 +338,10 @@ async function takeSnapshot(
   const menus = options.root
     ? undefined
     : agentMenuBar(native.menuBar(app.pid)).flatMap((item) => (item.title ? [item.title] : []));
+  const frontmost = (await frontmostPid()) === app.pid;
   let image: NativeSnapshot["image"];
   if (request.includeImage) {
+    stage("capture");
     const captured = await captureWindow(native, app, window);
     if ("ok" in captured) return captured;
     image = captured;
@@ -346,7 +354,7 @@ async function takeSnapshot(
       elements,
       truncated,
       offscreen,
-      frontmost: (await frontmostPid()) === app.pid,
+      frontmost,
       ...(more ? { nextOffset: options.offset + elements.length } : {}),
       ...(menus?.length ? { menus } : {}),
       ...(image ? { image } : {}),
@@ -788,7 +796,34 @@ async function execute(
     return act(xa11y, native, attached, request);
   }
   stage("element_tree");
-  return takeSnapshot(native, attached, request);
+  return takeSnapshot(native, attached, request, stage);
+}
+
+/**
+ * Why a helper command such as screencapture failed, with its stderr on one
+ * line, paths replaced and truncated. Only these commands' own output is
+ * relayed; native accessibility errors can carry app text.
+ */
+function commandFailure(cause: unknown) {
+  if (
+    !(cause instanceof Error) ||
+    !("cmd" in cause) ||
+    !("stderr" in cause) ||
+    typeof cause.stderr !== "string"
+  )
+    return undefined;
+  const output = cause.stderr
+    .replace(/\S*\/\S*/g, "<path>")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 160);
+  return {
+    reason:
+      "killed" in cause && cause.killed === true
+        ? ("timeout" as const)
+        : ("command_failed" as const),
+    ...(output ? { output } : {}),
+  };
 }
 
 export function nativeFailure(cause: unknown, stage?: FailureStage): WorkerResponse {
@@ -830,6 +865,7 @@ export function nativeFailure(cause: unknown, stage?: FailureStage): WorkerRespo
                             /^(XA11yError|PlatformError|SelectorNotMatchedError)$/.test(cause.name)
                           ? ("native_error" as const)
                           : ("unknown" as const),
+            ...commandFailure(cause),
           },
         }
       : {}),

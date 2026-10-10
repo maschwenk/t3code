@@ -1,6 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off -- This tests real CLI isolation without constructing an Effect runtime.
 import * as NodeChildProcess from "node:child_process";
 import * as NodeURL from "node:url";
+import * as NodeUtil from "node:util";
 import { expect, it } from "@effect/vitest";
 import {
   agentMenuBar,
@@ -108,6 +109,45 @@ it.each(["PermissionDeniedError", "AccessibilityNotEnabledError"])(
 it("does not pass unknown native failures or application text to the agent", () => {
   expect(nativeFailure(new Error("private app text"))).toEqual({ ok: false, code: "failed" });
   expect(nativeFailure("private app text")).toEqual({ ok: false, code: "failed" });
+});
+
+const failedCommand = (script: string, timeout = 5_000) =>
+  NodeUtil.promisify(NodeChildProcess.execFile)(process.execPath, ["-e", script], {
+    timeout,
+  }).then(
+    () => {
+      throw new Error("Expected the command to fail");
+    },
+    (cause: unknown) => cause,
+  );
+
+it("reports what a failed screen capture printed, without file paths, instead of unknown", async () => {
+  const cause = await failedCommand(
+    `process.stderr.write("could not create image from window\\n/Users/max/T/t3-computer-1-2.png\\n"); process.exit(1)`,
+  );
+  const response = nativeFailure(cause, "capture");
+  expect(response).toEqual({
+    ok: false,
+    code: "failed",
+    detail: {
+      stage: "capture",
+      reason: "command_failed",
+      output: "could not create image from window <path>",
+    },
+  });
+  if (response.ok) throw new Error("Expected capture failure");
+  const message = new ComputerUseError(response).message;
+  expect(message).toContain("(capture: command_failed: could not create image from window <path>)");
+  expect(message).not.toContain("/Users/max");
+});
+
+it("reports a helper command killed at its deadline as a timeout", async () => {
+  const cause = await failedCommand("setTimeout(() => {}, 10_000)", 50);
+  expect(nativeFailure(cause, "capture")).toEqual({
+    ok: false,
+    code: "failed",
+    detail: { stage: "capture", reason: "timeout" },
+  });
 });
 
 it.each(["XA11Y_PERMISSION_DENIED", "XA11Y_ACCESSIBILITY_NOT_ENABLED"])(
