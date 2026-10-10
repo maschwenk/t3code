@@ -11,7 +11,8 @@
  *   node scripts/install-fork-desktop.ts [--no-launch] [--skip-build]
  *                                        [--identity <codesign name>|none]
  *
- * macOS only. When an "Apple Development" identity is in the keychain the app
+ * macOS only (it relies on ditto, codesign, open, and security). When an
+ * "Apple Development" identity is in the keychain the app
  * is signed with it so Keychain and TCC grants survive rebuilds; ad-hoc signed
  * builds re-prompt after every install because their signature changes.
  */
@@ -23,10 +24,6 @@ import * as NodePath from "node:path";
 const PRODUCT_NAME = "T3 Code (Fork)";
 const BUNDLE_ID = "com.t3tools.t3code.fork";
 const APPLICATIONS_DIR = "/Applications";
-
-if (NodeOS.platform() !== "darwin") {
-  throw new Error("install-fork-desktop.ts only supports macOS.");
-}
 
 const repoRoot = NodePath.dirname(import.meta.dirname);
 const args = process.argv.slice(2);
