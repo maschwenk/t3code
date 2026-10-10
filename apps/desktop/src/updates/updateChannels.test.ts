@@ -1,12 +1,23 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { isNightlyDesktopVersion, resolveDefaultDesktopUpdateChannel } from "./updateChannels.ts";
+import {
+  isForkDesktopVersion,
+  isNightlyDesktopVersion,
+  resolveDefaultDesktopUpdateChannel,
+} from "./updateChannels.ts";
 
 describe("updateChannels", () => {
   it("keeps preview builds branded as nightly but on the latest update channel", () => {
     expect(isNightlyDesktopVersion("0.0.41-preview.20260911.7")).toBe(true);
     expect(resolveDefaultDesktopUpdateChannel("0.0.41-preview.20260911.7")).toBe("latest");
     expect(resolveDefaultDesktopUpdateChannel("0.0.41-nightly.20260911.7")).toBe("nightly");
+  });
+
+  it("keeps fork builds off both update channels", () => {
+    expect(isForkDesktopVersion("0.0.45-fork.20261010.5a7784a0c1d2")).toBe(true);
+    expect(isNightlyDesktopVersion("0.0.45-fork.20261010.5a7784a0c1d2")).toBe(false);
+    expect(resolveDefaultDesktopUpdateChannel("0.0.45-fork.20261010.5a7784a0c1d2")).toBe("latest");
+    expect(isForkDesktopVersion("0.0.45")).toBe(false);
   });
 
   it("only matches the first prerelease identifier", () => {
