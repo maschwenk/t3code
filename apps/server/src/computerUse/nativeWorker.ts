@@ -211,6 +211,7 @@ async function takeSnapshot(
   native: MacNative,
   app: App & { pid: number },
   request: Extract<WorkerRequest, { kind: "snapshot" }>,
+  stage: (value: FailureStage) => void,
 ): Promise<WorkerResponse> {
   const { options } = request;
   const terms = queryTerms(options.query);
@@ -235,6 +236,8 @@ async function takeSnapshot(
   let offscreen = 0;
   let truncated = false;
   let more = false;
+  let sawWindow = false;
+  let sawWebContent = false;
   const visit = async (
     element: Element,
     path: number[],
@@ -259,6 +262,8 @@ async function takeSnapshot(
     if (walkDepth > 0 && element.role === "application") return;
     // Never return password values, names, or descendants to the agent.
     if (secure(element)) return;
+    if (element.role === "web_area") sawWebContent = true;
+    else if (element.raw.ax_role === "AXWindow") sawWindow = true;
     const bounds = element.bounds;
     const hidden = isOffscreen(bounds, clip);
     if (hidden && !options.includeOffscreen) {
@@ -329,11 +334,32 @@ async function takeSnapshot(
     }
   };
   await visit(start, startPath, 0, 0, startClip, []);
+  // An Electron window can lack web content in its tree until an assistive
+  // app asks for it. Ask, then walk again while Chromium fills it in. Apps
+  // that already show web content are never asked.
+  if (
+    !options.root &&
+    !truncated &&
+    !more &&
+    sawWindow &&
+    !sawWebContent &&
+    native.enableManualAccessibility(app.pid)
+  ) {
+    for (let retry = 0; retry < 8; retry++) {
+      await NodeTimersPromises.setTimeout(250);
+      elements.length = 0;
+      textSize = visited = matched = offscreen = 0;
+      await visit(start, startPath, 0, 0, startClip, []);
+      if (sawWebContent || truncated || more) break;
+    }
+  }
   const menus = options.root
     ? undefined
     : agentMenuBar(native.menuBar(app.pid)).flatMap((item) => (item.title ? [item.title] : []));
+  const frontmost = (await frontmostPid()) === app.pid;
   let image: NativeSnapshot["image"];
   if (request.includeImage) {
+    stage("capture");
     const captured = await captureWindow(native, app, window);
     if ("ok" in captured) return captured;
     image = captured;
@@ -346,7 +372,7 @@ async function takeSnapshot(
       elements,
       truncated,
       offscreen,
-      frontmost: (await frontmostPid()) === app.pid,
+      frontmost,
       ...(more ? { nextOffset: options.offset + elements.length } : {}),
       ...(menus?.length ? { menus } : {}),
       ...(image ? { image } : {}),
@@ -788,7 +814,34 @@ async function execute(
     return act(xa11y, native, attached, request);
   }
   stage("element_tree");
-  return takeSnapshot(native, attached, request);
+  return takeSnapshot(native, attached, request, stage);
+}
+
+/**
+ * Why a helper command such as screencapture failed, with its stderr on one
+ * line, paths replaced and truncated. Only these commands' own output is
+ * relayed; native accessibility errors can carry app text.
+ */
+function commandFailure(cause: unknown) {
+  if (
+    !(cause instanceof Error) ||
+    !("cmd" in cause) ||
+    !("stderr" in cause) ||
+    typeof cause.stderr !== "string"
+  )
+    return undefined;
+  const output = cause.stderr
+    .replace(/\S*\/\S*/g, "<path>")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 160);
+  return {
+    reason:
+      "killed" in cause && cause.killed === true
+        ? ("timeout" as const)
+        : ("command_failed" as const),
+    ...(output ? { output } : {}),
+  };
 }
 
 export function nativeFailure(cause: unknown, stage?: FailureStage): WorkerResponse {
@@ -830,6 +883,7 @@ export function nativeFailure(cause: unknown, stage?: FailureStage): WorkerRespo
                             /^(XA11yError|PlatformError|SelectorNotMatchedError)$/.test(cause.name)
                           ? ("native_error" as const)
                           : ("unknown" as const),
+            ...commandFailure(cause),
           },
         }
       : {}),

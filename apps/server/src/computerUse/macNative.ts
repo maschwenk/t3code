@@ -1,8 +1,9 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Loaded only by the isolated native worker.
 /**
  * Direct macOS calls that xa11y does not expose: events posted to one process,
- * the window server's window list, the menu bar, the system-wide hit test, and
- * what pointer takeover needs (idle time, pointer location, app activation).
+ * the window server's window list, the menu bar, Electron's accessibility
+ * switch, the system-wide hit test, and what pointer takeover needs (idle
+ * time, pointer location, app activation).
  *
  * Mouse events posted to a process are not used: AppKit, WebKit and Chromium
  * all ignore them for background windows, so background clicks go through
@@ -148,6 +149,16 @@ export async function loadMacNative() {
     );
     return error === 0 ? read(value) : 0n;
   };
+  const setTrue = (element: bigint, name: string) =>
+    call<number>(
+      "ax",
+      "AXUIElementSetAttributeValue",
+      T.I32,
+      [Ref, Ref, Ref],
+      [element, cfString(name), cfTrue()],
+    ) === 0;
+  const application = (pid: number) =>
+    call<bigint>("ax", "AXUIElementCreateApplication", Ref, [T.I32], [pid]);
   const release = (ref: bigint) => call("cf", "CFRelease", T.Void, [Ref], [ref]);
   const post = (pid: number, event: bigint) => {
     call("cg", "CGEventPostToPid", T.Void, [T.I32, Ref], [pid, event]);
@@ -321,21 +332,24 @@ export async function loadMacNative() {
       call("cg", "CGAssociateMouseAndMouseCursorPosition", T.I32, [T.I32], [1]);
     },
     /** Asks `pid` to become the active app. True when the request was accepted. */
-    activate: (pid: number) =>
-      call<number>(
-        "ax",
-        "AXUIElementSetAttributeValue",
-        T.I32,
-        [Ref, Ref, Ref],
-        [
-          call<bigint>("ax", "AXUIElementCreateApplication", Ref, [T.I32], [pid]),
-          cfString("AXFrontmost"),
-          cfTrue(),
-        ],
-      ) === 0,
+    activate: (pid: number) => setTrue(application(pid), "AXFrontmost"),
+    /**
+     * Asks an Electron app to build its web content tree, the way Electron
+     * documents for assistive apps. Other apps do not report
+     * AXManualAccessibility and are left alone. True when the app accepted;
+     * Chromium then builds the tree asynchronously. Electron still reports the
+     * attribute as false afterwards, so callers judge from the tree instead.
+     */
+    enableManualAccessibility(pid: number): boolean {
+      const app = application(pid);
+      return (
+        toBoolean(attribute(app, "AXManualAccessibility")) === false &&
+        setTrue(app, "AXManualAccessibility")
+      );
+    },
     /** Top-level menu bar items of `pid`. xa11y's tree omits the menu bar. */
     menuBar(pid: number): MenuItem[] {
-      const app = call<bigint>("ax", "AXUIElementCreateApplication", Ref, [T.I32], [pid]);
+      const app = application(pid);
       const bar = attribute(app, "AXMenuBar");
       return bar ? toArray(attribute(bar, "AXChildren")).map(menuItem) : [];
     },

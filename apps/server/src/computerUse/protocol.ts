@@ -210,7 +210,10 @@ export const FailureDetail = Schema.Struct({
     "unknown",
     "accessibility_permission",
     "screen_recording_permission",
+    "command_failed",
   ]),
+  /** What a failed helper command printed, on one line without paths. */
+  output: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(160))),
 });
 
 export const WorkerResponse = Schema.Union([
@@ -318,7 +321,7 @@ export class ComputerUseError extends Schema.TaggedError<ComputerUseError>()("Co
       case "unavailable":
         return "Native computer use is currently supported on macOS environments only.";
       default:
-        return `Computer use did not complete${this.detail ? ` (${this.detail.stage}: ${this.detail.reason})` : ""}. An action may already have happened; inspect a fresh snapshot before trying again.`;
+        return `Computer use did not complete${this.detail ? ` (${this.detail.stage}: ${this.detail.reason}${this.detail.output ? `: ${this.detail.output}` : ""})` : ""}. An action may already have happened; inspect a fresh snapshot before trying again.`;
     }
   }
 }
