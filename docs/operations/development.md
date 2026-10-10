@@ -171,6 +171,27 @@ DMGs default to the host architecture. Use `--arch` to choose another target and
 to retain packaging files for inspection. Run `vp run dist:desktop:artifact --help` for other
 options.
 
+### Running your own fork as the daily app
+
+Working on T3 Code from inside the dev runner breaks the app you are using. Instead,
+install a packaged build of your fork and keep the dev runner for worktrees:
+
+```sh
+vp run fork:install
+```
+
+This builds the current checkout as `T3 Code (Fork)` with its own bundle id and no update
+feed, signs it with an `Apple Development` identity when one is in the keychain, replaces
+`/Applications/T3 Code (Fork).app`, and relaunches it. It reads `~/.t3/userdata` like any
+installed build. To carry a dev server's data over once, quit that dev app and run:
+
+```sh
+vp run fork:migrate
+```
+
+Then iterate in linked worktrees, whose dev servers keep their own `.t3`, and rerun
+`fork:install` from `main` to pick up merged work.
+
 ### Linux AppImage prerequisites
 
 Build on Linux because the browser-secret helper links against the host's libsecret. Install

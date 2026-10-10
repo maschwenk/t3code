@@ -2594,15 +2594,24 @@ export function resolveDesktopUpdateChannel(version: string): "latest" | "nightl
   return /-nightly\.\d{8}\.\d+$/.test(version) ? "nightly" : "latest";
 }
 
+// Personal builds of a fork, cut by scripts/install-fork-desktop.ts. Mirrors
+// isForkDesktopVersion in apps/desktop/src/updates/updateChannels.ts.
+export function isDesktopForkVersion(version: string): boolean {
+  return /-fork\.\d{8}\.[0-9a-f]+$/.test(version);
+}
+
 // Pull request builds (`-pr.<n>.`) and the maintainers' preview train
 // (`-preview.<date>.<run>`) are downloaded by hand and never through an
 // updater. Building them without a publish config means electron-builder
 // emits no `latest*.yml`/`nightly*.yml` manifests or blockmaps for them and
 // the app ships without `app-update.yml`, so neither a stable nor a nightly
 // install can be pointed at one of these releases, and the build itself
-// reports that no update feed is configured instead of polling.
+// reports that no update feed is configured instead of polling. Fork builds
+// are installed by hand too, and must never be offered an upstream release.
 export function isDesktopPreviewVersion(version: string): boolean {
-  return /-pr\./.test(version) || /-preview\.\d{8}\.\d+$/.test(version);
+  return (
+    /-pr\./.test(version) || /-preview\.\d{8}\.\d+$/.test(version) || isDesktopForkVersion(version)
+  );
 }
 
 export function resolveDesktopWebAssetBrand(version: string): WebAssetBrand {
@@ -2643,9 +2652,16 @@ export function resolvePackageManagerUserAgent(packageManager: string): string {
 }
 
 export function resolveDesktopProductName(version: string): string {
+  if (isDesktopForkVersion(version)) return "T3 Code (Fork)";
   return resolveDesktopUpdateChannel(version) === "nightly"
     ? "T3 Code (Nightly)"
     : (desktopPackageJson.productName ?? "T3 Code");
+}
+
+// A fork build gets its own bundle id so macOS, TCC grants, and the Electron
+// single-instance lock treat it as a different app from a stable install.
+export function resolveDesktopAppId(version: string): string {
+  return isDesktopForkVersion(version) ? `${DESKTOP_APP_ID}.fork` : DESKTOP_APP_ID;
 }
 
 export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
@@ -2668,7 +2684,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   arch?: typeof BuildArch.Type,
 ) {
   const buildConfig: Record<string, unknown> = {
-    appId: DESKTOP_APP_ID,
+    appId: resolveDesktopAppId(version),
     productName: resolveDesktopProductName(version),
     artifactName: "T3-Code-${version}-${arch}.${ext}",
     electronLanguages: [...DESKTOP_ELECTRON_LANGUAGES],

@@ -51,7 +51,9 @@ import {
   resolveFffNativeDependencies,
   resolveBuildOptions,
   resolveDesktopBuildIconAssets,
+  resolveDesktopAppId,
   resolveDesktopProductName,
+  isDesktopPreviewVersion,
   resolveDesktopUpdateChannel,
   resolveDesktopWebAssetBrand,
   resolveResourceMonitorRustTargets,
@@ -266,6 +268,15 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
   it("switches desktop packaging product names to nightly for nightly builds", () => {
     assert.equal(resolveDesktopProductName("0.0.17"), "T3 Code (Alpha)");
     assert.equal(resolveDesktopProductName("0.0.17-nightly.20260413.42"), "T3 Code (Nightly)");
+  });
+
+  it("gives fork builds their own product name and bundle id and no update feed", () => {
+    const forkVersion = "0.0.45-fork.20261010.5a7784a0c1d2";
+    assert.equal(resolveDesktopProductName(forkVersion), "T3 Code (Fork)");
+    assert.equal(resolveDesktopAppId(forkVersion), "com.t3tools.t3code.fork");
+    assert.equal(resolveDesktopAppId("0.0.45"), "com.t3tools.t3code");
+    assert.isTrue(isDesktopPreviewVersion(forkVersion));
+    assert.isFalse(isDesktopPreviewVersion("0.0.45"));
   });
 
   it("switches desktop packaging icons to the nightly artwork for nightly versions", () => {
