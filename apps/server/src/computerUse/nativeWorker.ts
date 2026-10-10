@@ -142,16 +142,21 @@ const lsappinfo = (args: string[]) =>
 // every windowed app, so each unresponsive app on the machine stalls them for
 // a full AX messaging timeout (a minute in practice). LaunchServices names
 // apps without contacting them; attaching by pid then only talks to the target.
+// Some apps run a windowless helper under the same name (Wispr Flow's Swift
+// accessibility agent), so a match with windows wins over the first match.
 async function appByName(App: Xa11y["App"], name: string): Promise<App | undefined> {
+  let first: App | undefined;
   for (const pid of launchServicesPids(await lsappinfo(["list"]), name)) {
     const app = await App.byPid(pid, { timeout: 0 }).catch((cause: unknown) => {
       // The process exited or has no accessibility bridge; permission errors propagate.
       if (cause instanceof Error && cause.name === "SelectorNotMatchedError") return undefined;
       throw cause;
     });
-    if (app?.name === name) return app;
+    if (app?.name !== name) continue;
+    if ((await app.children()).some((child) => child.role === "window")) return app;
+    first ??= app;
   }
-  return undefined;
+  return first;
 }
 
 async function frontmostPid(): Promise<number | undefined> {
@@ -236,8 +241,6 @@ async function takeSnapshot(
   let offscreen = 0;
   let truncated = false;
   let more = false;
-  let sawWindow = false;
-  let sawWebContent = false;
   const visit = async (
     element: Element,
     path: number[],
@@ -262,8 +265,6 @@ async function takeSnapshot(
     if (walkDepth > 0 && element.role === "application") return;
     // Never return password values, names, or descendants to the agent.
     if (secure(element)) return;
-    if (element.role === "web_area") sawWebContent = true;
-    else if (element.raw.ax_role === "AXWindow") sawWindow = true;
     const bounds = element.bounds;
     const hidden = isOffscreen(bounds, clip);
     if (hidden && !options.includeOffscreen) {
@@ -334,25 +335,6 @@ async function takeSnapshot(
     }
   };
   await visit(start, startPath, 0, 0, startClip, []);
-  // An Electron window can lack web content in its tree until an assistive
-  // app asks for it. Ask, then walk again while Chromium fills it in. Apps
-  // that already show web content are never asked.
-  if (
-    !options.root &&
-    !truncated &&
-    !more &&
-    sawWindow &&
-    !sawWebContent &&
-    native.enableManualAccessibility(app.pid)
-  ) {
-    for (let retry = 0; retry < 8; retry++) {
-      await NodeTimersPromises.setTimeout(250);
-      elements.length = 0;
-      textSize = visited = matched = offscreen = 0;
-      await visit(start, startPath, 0, 0, startClip, []);
-      if (sawWebContent || truncated || more) break;
-    }
-  }
   const menus = options.root
     ? undefined
     : agentMenuBar(native.menuBar(app.pid)).flatMap((item) => (item.title ? [item.title] : []));
