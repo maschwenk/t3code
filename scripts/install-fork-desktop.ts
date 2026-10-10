@@ -84,10 +84,27 @@ const outputDir = NodePath.join(repoRoot, "release", "fork");
 if (!skipBuild) {
   const version = resolveForkVersion();
   NodeFS.rmSync(outputDir, { recursive: true, force: true });
-  // A configured update repository would stamp an update feed into the build.
+  // A configured update repository would stamp an update feed into the build,
+  // and a shell spawned by a running dev app carries that app's runner
+  // variables: T3CODE_DESKTOP_DEV=1 makes the desktop build launch Electron
+  // after packing and never return. Build from a clean slate; the artifact
+  // script reloads the repo's .env itself.
   const env = { ...process.env };
   delete env.T3CODE_DESKTOP_UPDATE_REPOSITORY;
   delete env.GITHUB_REPOSITORY;
+  delete env.ELECTRON_RUN_AS_NODE;
+  for (const key of Object.keys(env)) {
+    if (
+      key.startsWith("T3CODE_DESKTOP_") ||
+      key.startsWith("T3CODE_DEV_") ||
+      key.startsWith("VITE_") ||
+      key === "T3CODE_HOME" ||
+      key === "T3CODE_PORT" ||
+      key === "PORT"
+    ) {
+      delete env[key];
+    }
+  }
   console.log(`[fork-install] Building ${PRODUCT_NAME} ${version}`);
   run(
     process.execPath,
