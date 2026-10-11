@@ -1,4 +1,4 @@
-// @effect-diagnostics nodeBuiltinImport:off - standalone installer, kept dependency-free like setup-worktree.ts.
+// @effect-diagnostics nodeBuiltinImport:off globalDate:off globalConsole:off - Dependency-free host-side installer with no Effect runtime, like setup-worktree.ts.
 /**
  * Build this checkout as a personal "T3 Code (Fork)" desktop app and install
  * it into /Applications, replacing the previous fork build.

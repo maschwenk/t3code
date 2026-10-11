@@ -1,4 +1,4 @@
-// @effect-diagnostics nodeBuiltinImport:off - standalone one-shot tool, kept dependency-free like setup-worktree.ts.
+// @effect-diagnostics nodeBuiltinImport:off globalDate:off globalConsole:off - Dependency-free host-side cutover tool with no Effect runtime, like setup-worktree.ts.
 /**
  * Move a dev server's T3 home (its `.t3/userdata`) under `~/.t3`, where an
  * installed desktop build looks for it. One-time cutover from running the dev
