@@ -4,6 +4,56 @@ import T3Markdown
 
 @MainActor final class Composer: NSTextView {
   var submit: (() -> Void)?
+  var attach: (([URL], Bool) -> Void)?
+  var allowsAttachments = false
+  override func paste(_ sender: Any?) {
+    if !receiveAttachments(from: .general, preferText: true) { super.paste(sender) }
+  }
+  private func receiveAttachments(from pasteboard: NSPasteboard, preferText: Bool) -> Bool {
+    guard allowsAttachments else { return false }
+    if let urls = pasteboard.readObjects(
+      forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL], !urls.isEmpty
+    {
+      if preferText, !(pasteboard.string(forType: .string) ?? "").isEmpty,
+        !urls.contains(where: {
+          ["png", "jpg", "jpeg", "webp", "gif", "heic", "heif", "tiff", "tif"].contains(
+            $0.pathExtension.lowercased())
+        })
+      {
+        return false
+      }
+      attach?(urls, false)
+      return true
+    }
+    if let image = NSImage(pasteboard: pasteboard), let tiff = image.tiffRepresentation,
+      let bitmap = NSBitmapImageRep(data: tiff),
+      let png = bitmap.representation(using: .png, properties: [:])
+    {
+      let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+        "t3-paste-" + UUID().uuidString)
+      do {
+        try FileManager.default.createDirectory(
+          at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let file = directory.appendingPathComponent("Pasted image.png")
+        try png.write(to: file, options: .atomic)
+        attach?([file], true)
+        return true
+      } catch { NSSound.beep() }
+    }
+    return false
+  }
+  override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
+    if allowsAttachments
+      && sender.draggingPasteboard.availableType(from: [.fileURL, .png, .tiff]) != nil
+    {
+      return .copy
+    }
+    return super.draggingEntered(sender)
+  }
+  override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+    receiveAttachments(from: sender.draggingPasteboard, preferText: false)
+      || super.performDragOperation(sender)
+  }
   override func keyDown(with event: NSEvent) {
     if event.keyCode == 36 && event.modifierFlags.contains(.command) {
       submit?()
@@ -31,6 +81,8 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
   private let olderButton = NSButton(title: "Load earlier activity", target: nil, action: nil)
   private let modelControls: ComposerControls
   private let requestsPanel: RequestsPanel
+  private let attachmentTray: AttachmentTray
+  private let attachButton = NSButton(title: "Attach files…", target: nil, action: nil)
   private var sidebarItem: NSSplitViewItem?
   private var rows: [ConversationEntry] = []
   private var expandedWork: [String: Set<String>] = [:]
@@ -50,6 +102,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     sidebar = SidebarView(store: store)
     modelControls = ComposerControls(store: store)
     requestsPanel = RequestsPanel(store: store)
+    attachmentTray = AttachmentTray(store: store)
     let window = NSWindow(
       contentRect: NSRect(x: 0, y: 0, width: 1220, height: 840),
       styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
@@ -149,6 +202,17 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     composer.delegate = self
     composer.setAccessibilityLabel("Message")
     composer.submit = { [weak store] in store?.send() }
+    composer.attach = { [weak store] urls, temporary in
+      store?.addAttachments(urls, deleteSources: temporary)
+    }
+    composer.registerForDraggedTypes([.fileURL, .png, .tiff])
+    attachButton.target = self
+    attachButton.action = #selector(attachFiles)
+    attachButton.image = NSImage(
+      systemSymbolName: "paperclip", accessibilityDescription: "Attach files")
+    attachButton.imagePosition = .imageOnly
+    attachButton.bezelStyle = .inline
+    attachButton.setAccessibilityLabel("Attach files")
     composerScroll.heightAnchor.constraint(equalToConstant: 88).isActive = true
     sendButton.target = self
     sendButton.action = #selector(send)
@@ -166,9 +230,9 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     hint.font = .systemFont(ofSize: 11)
     hint.textColor = .secondaryLabelColor
     let spacer = NSView()
-    let bottom = NSStackView(views: [modelControls, spacer, stopButton, sendButton])
+    let bottom = NSStackView(views: [attachButton, modelControls, spacer, stopButton, sendButton])
     bottom.spacing = 6
-    let composerStack = NSStackView(views: [composerScroll, bottom])
+    let composerStack = NSStackView(views: [attachmentTray, composerScroll, bottom])
     composerStack.orientation = .vertical
     composerStack.alignment = .leading
     composerStack.spacing = 8
@@ -177,6 +241,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     composerSurface.addSubview(composerStack)
     pin(composerStack, to: composerSurface, inset: 10, top: 4)
     composerScroll.widthAnchor.constraint(equalTo: composerStack.widthAnchor).isActive = true
+    attachmentTray.widthAnchor.constraint(equalTo: composerStack.widthAnchor).isActive = true
     bottom.widthAnchor.constraint(equalTo: composerStack.widthAnchor).isActive = true
     let header = NSStackView(views: [
       subtitle, NSTextField(labelWithString: "/"), heading, NSView(),
@@ -231,6 +296,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     for (parent, title, action, key, modifiers) in [
       (chat, "New Thread", #selector(newThread), "n", NSEvent.ModifierFlags.command),
       (chat, "Choose Model…", #selector(chooseModel), "m", [.command, .shift]),
+      (chat, "Attach Files…", #selector(attachFiles), "a", [.command, .shift]),
       (view, "Toggle Sidebar", #selector(toggleSidebar), "b", [.command]),
     ] {
       let item = parent.addItem(withTitle: title, action: action, keyEquivalent: key)
@@ -249,6 +315,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
       return store.canEditThread && store.catalogReady
     }
     if menuItem.action == #selector(newThread) { return store.ready && store.selectedThread != nil }
+    if menuItem.action == #selector(attachFiles) { return store.canAttach }
     return true
   }
 
@@ -305,6 +372,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     if window?.isKeyWindow == true { store.markVisibleThreadRead() }
     modelControls.refresh()
     requestsPanel.refresh()
+    attachmentTray.refresh()
     stopButton.isHidden = selected?.activeRunID == nil
     stopButton.isEnabled = store.ready
     window?.contentView?.layoutSubtreeIfNeeded()
@@ -428,7 +496,9 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
           string: row.text,
           attributes: [.font: font, .foregroundColor: NSColor.labelColor]), codeBlocks: [])
     }
-    let height = max(65, MarkdownRenderer.height(of: markdown.text, width: width) + 45)
+    let height =
+      max(65, MarkdownRenderer.height(of: markdown.text, width: width) + 45)
+      + CGFloat(row.item["attachments"].array.count * 30)
     rendered[row.id] = (row, markdown, width, height)
     return (markdown, height)
   }
@@ -460,8 +530,9 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
       row.failed
       ? .systemRed : row.kind == "user_message" ? .controlAccentColor : .secondaryLabelColor
     let (markdown, height) = render(row)
+    let bodyHeight = height - 45 - CGFloat(row.item["attachments"].array.count * 30)
     let body = MessageTextView(
-      rendered: markdown, width: max(120, timeline.bounds.width - 36), height: height - 45)
+      rendered: markdown, width: max(120, timeline.bounds.width - 36), height: bodyHeight)
     let copy = ActionButton("") {
       NSPasteboard.general.clearContents()
       NSPasteboard.general.setString(row.text, forType: .string)
@@ -485,6 +556,23 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     stack.orientation = .vertical
     stack.alignment = .leading
     stack.spacing = 6
+    for attachment in row.item["attachments"].array {
+      let name = attachment["name"].string ?? "Attachment"
+      let download = ActionButton(name + " ↓") { [weak self] in self?.downloadAttachment(attachment)
+      }
+      download.bezelStyle = .inline
+      download.alignment = .left
+      download.font = .systemFont(ofSize: 12)
+      download.image = NSImage(
+        systemSymbolName: attachment["type"].string == "image" ? "photo" : "doc",
+        accessibilityDescription: nil)
+      download.imagePosition = .imageLeading
+      download.setAccessibilityLabel("Download " + name)
+      download.toolTip = ByteCountFormatter.string(
+        fromByteCount: Int64(attachment["sizeBytes"].int ?? 0), countStyle: .file)
+      download.heightAnchor.constraint(equalToConstant: 24).isActive = true
+      stack.addArrangedSubview(download)
+    }
     cell.addSubview(stack)
     stack.translatesAutoresizingMaskIntoConstraints = false
     NSLayoutConstraint.activate([
@@ -492,7 +580,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
       stack.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -12),
       stack.topAnchor.constraint(equalTo: cell.topAnchor, constant: 8),
       body.widthAnchor.constraint(equalTo: stack.widthAnchor),
-      body.heightAnchor.constraint(equalToConstant: max(20, height - 45)),
+      body.heightAnchor.constraint(equalToConstant: max(20, bodyHeight)),
       header.widthAnchor.constraint(equalTo: stack.widthAnchor),
     ])
     return cell
@@ -531,14 +619,45 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
   }
   private func updateComposerControls() {
     let sending = store.sending.contains(store.selectedID ?? "")
-    sendButton.isEnabled =
-      store.canEditThread
-      && !composer.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !sending
+    sendButton.isEnabled = store.sendBlockReason == nil
+    attachButton.isEnabled = store.canAttach
+    composer.allowsAttachments = store.canAttach
     sendButton.title = ""
-    sendButton.toolTip = sending ? "Sending…" : "Send message (⌘ Return)"
+    sendButton.toolTip = store.sendBlockReason ?? "Send message (⌘ Return)"
     sendButton.setAccessibilityLabel(sending ? "Sending message" : "Send message")
   }
   @objc private func send() { store.send() }
+  private func downloadAttachment(_ attachment: JSON) {
+    guard let window else { return }
+    let panel = NSSavePanel()
+    let environment = store.environmentKey
+    panel.nameFieldStringValue = attachment["name"].string ?? "Attachment"
+    panel.beginSheetModal(for: window) { [weak self] response in
+      guard response == .OK, let url = panel.url, let self, self.store.environmentKey == environment
+      else { return }
+      Task {
+        do { try await self.store.downloadAttachment(attachment, to: url) } catch {
+          self.store.error = error.localizedDescription
+          self.refresh()
+        }
+      }
+    }
+  }
+  @objc private func attachFiles() {
+    guard let window, store.canAttach else { return }
+    let panel = NSOpenPanel()
+    panel.canChooseDirectories = false
+    panel.allowsMultipleSelection = true
+    panel.prompt = "Attach"
+    let selected = store.selectedID
+    let environment = store.environmentKey
+    panel.beginSheetModal(for: window) { [weak self] response in
+      guard response == .OK, let self, self.store.selectedID == selected,
+        self.store.environmentKey == environment
+      else { return }
+      self.store.addAttachments(panel.urls)
+    }
+  }
   @objc private func stop() { store.stop() }
   @objc private func older() { store.loadOlder() }
   @objc private func newThread() { store.newThread() }

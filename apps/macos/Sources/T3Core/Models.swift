@@ -330,13 +330,16 @@ public struct ThreadState: Sendable {
 }
 
 public enum Commands {
-  public static func message(threadID: String, text: String, commandID: String, messageID: String)
+  public static func message(
+    threadID: String, text: String, commandID: String, messageID: String, attachments: [JSON] = []
+  )
     -> JSON
   {
     .object([
       "type": .string("message.dispatch"), "commandId": .string(commandID),
       "threadId": .string(threadID), "messageId": .string(messageID), "text": .string(text),
-      "createdBy": .string("user"), "creationSource": .string("web"), "attachments": .array([]),
+      "createdBy": .string("user"), "creationSource": .string("web"),
+      "attachments": .array(attachments),
       "dispatchMode": .object(["type": .string("start_immediately")]),
       "deliveryIntent": .string("auto"),
     ])

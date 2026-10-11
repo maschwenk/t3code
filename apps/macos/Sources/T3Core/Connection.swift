@@ -231,7 +231,7 @@ public actor RPCConnection {
           calls.removeValue(forKey: id)?.resume(returning: exit["value"])
           streams.removeValue(forKey: id)?.finish()
         } else {
-          let error = T3Error(Self.failureMessage(exit))
+          let error = T3Error(Self.failureMessage(exit), remoteCode: Self.failureCode(exit))
           calls.removeValue(forKey: id)?.resume(throwing: error)
           streams.removeValue(forKey: id)?.finish(throwing: error)
         }
@@ -258,6 +258,16 @@ public actor RPCConnection {
       if result != "Server rejected the request." { return result }
     }
     return "Server rejected the request."
+  }
+
+  public static func failureCode(_ value: JSON) -> String? {
+    if let tag = value["_tag"].string, tag.hasSuffix("Error") { return tag }
+    if case .object(let fields) = value {
+      for key in ["cause", "error", "failure", "defect", "reasons"] {
+        if let child = fields[key], let code = failureCode(child) { return code }
+      }
+    }
+    return value.array.lazy.compactMap(failureCode).first
   }
 
   public func close(error: any Error = CancellationError()) {

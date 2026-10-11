@@ -79,6 +79,7 @@ public struct ProviderEntry: Sendable, Equatable, Identifiable {
 public struct ProviderCatalog: Sendable, Equatable {
   public private(set) var providers: [ProviderEntry] = []
   public private(set) var planModeEnabled = false
+  public private(set) var attachmentPolicy = AttachmentPolicy()
   public init() {}
 
   public mutating func apply(_ event: JSON) throws {
@@ -86,6 +87,7 @@ public struct ProviderCatalog: Sendable, Equatable {
     case "snapshot":
       providers = try event["config"]["providers"].array.map(ProviderEntry.init)
       planModeEnabled = event["config"]["settings"]["planModeEnabled"].bool
+      attachmentPolicy = AttachmentPolicy(event["config"]["environment"]["capabilities"])
     case "providerStatuses":
       providers = try event["payload"]["providers"].array.map(ProviderEntry.init)
     case "settingsUpdated":

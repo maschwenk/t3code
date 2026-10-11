@@ -15,6 +15,17 @@ import T3Core
   var loadingHistory = false
   var sending: Set<String> = []
   var drafts: [String: String] = [:] { didSet { scheduleDraftSave() } }
+  private(set) var attachmentDrafts: [String: [DraftAttachment]] = [:] {
+    didSet { scheduleDraftSave() }
+  }
+  enum UploadState: Equatable {
+    case uploading(Int)
+    case ready
+    case failed(String)
+  }
+  private(set) var attachmentUploads: [String: UploadState] = [:]
+  private(set) var importingAttachments: Set<String> = []
+  private var uploadJobs: [String: (token: UUID, task: Task<Void, Never>)] = [:]
   var catalog = ProviderCatalog()
   private(set) var catalogReady = false
   var questionDrafts: [String: [String: QuestionDraft]] = [:] { didSet { scheduleDraftSave() } }
@@ -47,7 +58,7 @@ import T3Core
 
   func connect(_ settings: ConnectionSettings, selecting threadID: String? = nil) {
     if let current = self.settings, current.endpoint != settings.endpoint,
-      !drafts.isEmpty || !questionDrafts.isEmpty || !pending.isEmpty,
+      !drafts.isEmpty || !questionDrafts.isEmpty || !pending.isEmpty || !attachmentDrafts.isEmpty,
       !flushDrafts()
     {
       error = "Save the current drafts before switching servers."
@@ -63,6 +74,7 @@ import T3Core
       thread = nil
       selectedID = nil
       drafts = [:]
+      attachmentDrafts = [:]
       questionDrafts = [:]
       pending = [:]
       catalog = ProviderCatalog()
@@ -71,6 +83,7 @@ import T3Core
         drafts = saved.messages
         pending = saved.submissions
         questionDrafts = saved.questions
+        attachmentDrafts = saved.attachments ?? [:]
         draftEndpoint = settings.endpoint
         storageError = nil
       } catch {
@@ -107,6 +120,7 @@ import T3Core
                 ready = true
                 status = "Connected · \(settings.endpoint.host ?? "T3")"
                 error = nil
+                startAttachmentUploads()
                 if let selectedID,
                   shell.threads[selectedID] != nil || archives.threads[selectedID] != nil
                 {
@@ -172,6 +186,10 @@ import T3Core
     catalogReady = false
     commandsInFlight = []
     sending = []
+    for job in uploadJobs.values { job.task.cancel() }
+    uploadJobs = [:]
+    attachmentUploads = [:]
+    importingAttachments = []
   }
 
   func retry() { if let settings { connect(settings) } }
@@ -289,7 +307,13 @@ import T3Core
       threadID: current.id)
   }
 
-  func saveDraftsBeforeExit() -> Bool { flushDrafts() }
+  func saveDraftsBeforeExit() -> Bool {
+    guard importingAttachments.isEmpty else {
+      storageError = "Wait for the selected files to finish copying before quitting."
+      return false
+    }
+    return flushDrafts()
+  }
 
   private func scheduleDraftSave() {
     guard draftEndpoint != nil else { return }
@@ -308,7 +332,8 @@ import T3Core
       try draftRepository.save(
         SavedDrafts(
           messages: drafts.filter { !$0.value.isEmpty }, submissions: pending,
-          questions: questionDrafts), for: draftEndpoint)
+          questions: questionDrafts, attachments: attachmentDrafts.filter { !$0.value.isEmpty }),
+        for: draftEndpoint)
       storageError = nil
       return true
     } catch {
@@ -329,6 +354,7 @@ import T3Core
           guard self.generation == generation else { return }
           try catalog.apply(event)
           if event["type"].string == "snapshot" { catalogReady = true }
+          startAttachmentUploads()
           notify()
         }
         throw T3Error("Provider updates ended. Reconnect to refresh.")
@@ -590,16 +616,238 @@ import T3Core
     }
   }
 
-  func send() {
-    guard let id = selectedID, let connection, canEditThread,
-      let text = drafts[id], !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-      !sending.contains(id)
+  var selectedAttachments: [DraftAttachment] { selectedID.flatMap { attachmentDrafts[$0] } ?? [] }
+  var canAttach: Bool {
+    selectedThread?.archived == false && !importingAttachments.contains(selectedID ?? "")
+  }
+  var attachmentRepository: AttachmentRepository? {
+    settings.map { draftRepository.attachmentRepository(for: $0.endpoint) }
+  }
+  func downloadAttachment(_ attachment: JSON, to destination: URL) async throws {
+    guard let connection, let settings, ready else {
+      throw T3Error("Connect before downloading attachments.")
+    }
+    let issued = try await connection.call(
+      "assets.createUrl",
+      payload: .object([
+        "resource": .object([
+          "_tag": .string("attachment"), "attachmentId": attachment["id"],
+          "fileName": attachment["name"], "mimeType": attachment["mimeType"],
+        ])
+      ]))
+    let url = try AttachmentHTTP.signedURL(
+      issued.requiredString("relativeUrl"), endpoint: settings.endpoint, prefix: "/api/assets/")
+    try await AttachmentHTTP.download(url, to: destination)
+  }
+  var sendBlockReason: String? {
+    guard let id = selectedID, canEditThread else { return "Wait for the thread to connect." }
+    if sending.contains(id) { return "Sending…" }
+    if importingAttachments.contains(id) { return "Adding attachments…" }
+    let attachments = attachmentDrafts[id] ?? []
+    let text = drafts[id] ?? ""
+    if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && attachments.isEmpty {
+      return "Write a message or attach a file."
+    }
+    if pending[id]?.matches(text: text, attachments: attachments) == true { return nil }
+    do { try catalog.attachmentPolicy.validate(attachments) } catch {
+      return error.localizedDescription
+    }
+    for attachment in attachments where attachmentUploads[attachment.id] != .ready {
+      if case .failed(let reason) = attachmentUploads[attachment.id] { return reason }
+      return "Wait for attachments to finish uploading."
+    }
+    return nil
+  }
+
+  func addAttachments(_ urls: [URL], deleteSources: Bool = false) {
+    guard let id = selectedID, canAttach, let repository = attachmentRepository else { return }
+    let generation = generation
+    let remaining = max(0, 100 - (attachmentDrafts[id]?.count ?? 0))
+    importingAttachments.insert(id)
+    notify()
+    Task {
+      let result = await Task.detached {
+        var files: [DraftAttachment] = []
+        var errors: [String] =
+          urls.count > remaining ? ["You can attach up to 100 files per message."] : []
+        for url in urls.prefix(remaining) {
+          do { files.append(try repository.stage(url)) } catch {
+            errors.append(error.localizedDescription)
+          }
+        }
+        if deleteSources {
+          for url in urls {
+            try? FileManager.default.removeItem(at: url)
+            if url.deletingLastPathComponent().lastPathComponent.hasPrefix("t3-paste-") {
+              try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
+            }
+          }
+        }
+        return (files, errors)
+      }.value
+      guard self.generation == generation else {
+        result.0.forEach(repository.remove)
+        return
+      }
+      importingAttachments.remove(id)
+      var errors = result.1
+      for attachment in result.0 {
+        do {
+          try catalog.attachmentPolicy.validate(
+            (attachmentDrafts[id] ?? []) + [attachment], requireServer: catalogReady)
+          attachmentDrafts[id, default: []].append(attachment)
+        } catch {
+          repository.remove(attachment)
+          errors.append(error.localizedDescription)
+        }
+      }
+      if !errors.isEmpty { error = errors.joined(separator: "\n") }
+      if flushDrafts() { startAttachmentUploads() }
+      notify()
+    }
+  }
+
+  func removeAttachment(_ attachment: DraftAttachment) {
+    guard let id = selectedID, !sending.contains(id), let repository = attachmentRepository else {
+      return
+    }
+    uploadJobs.removeValue(forKey: attachment.id)?.task.cancel()
+    attachmentUploads.removeValue(forKey: attachment.id)
+    attachmentDrafts[id]?.removeAll { $0.id == attachment.id }
+    // An uncertain send still owns its exact bytes and remote IDs until resolved.
+    if !(pending[id]?.localAttachmentIDs ?? []).contains(attachment.id), flushDrafts() {
+      repository.remove(attachment)
+      if let uploadedID = attachment.uploadedID, let connection {
+        Task {
+          _ = try? await connection.call(
+            "attachments.delete", payload: .object(["attachmentId": .string(uploadedID)]))
+        }
+      }
+    }
+    startAttachmentUploads()
+    notify()
+  }
+
+  func retryAttachment(_ attachment: DraftAttachment) {
+    guard uploadJobs[attachment.id] == nil else { return }
+    attachmentUploads.removeValue(forKey: attachment.id)
+    startAttachmentUploads()
+    notify()
+  }
+
+  private func startAttachmentUploads() {
+    guard ready, catalogReady, catalog.attachmentPolicy.uploads,
+      let connection, let settings, let repository = attachmentRepository
     else { return }
+    let generation = generation
+    for (threadID, attachments) in attachmentDrafts.sorted(by: { $0.key < $1.key }) {
+      for attachment in attachments {
+        if (pending[threadID]?.localAttachmentIDs ?? []).contains(attachment.id) {
+          attachmentUploads[attachment.id] = .ready
+          continue
+        }
+        guard uploadJobs.count < 2 else { return }
+        guard attachmentUploads[attachment.id] == nil, uploadJobs[attachment.id] == nil else {
+          continue
+        }
+        do { try catalog.attachmentPolicy.validate([attachment]) } catch {
+          attachmentUploads[attachment.id] = .failed(error.localizedDescription)
+          continue
+        }
+        let token = UUID()
+        attachmentUploads[attachment.id] = .uploading(0)
+        let task = Task { [self] in
+          var mintedID: String?
+          defer {
+            if let mintedID {
+              Task {
+                _ = try? await connection.call(
+                  "attachments.delete", payload: .object(["attachmentId": .string(mintedID)]))
+              }
+            }
+            if self.generation == generation, uploadJobs[attachment.id]?.token == token {
+              uploadJobs.removeValue(forKey: attachment.id)
+              startAttachmentUploads()
+              notify()
+            }
+          }
+          do {
+            var uploadedID = attachment.uploadedID
+            if let previous = uploadedID {
+              do {
+                _ = try await connection.call(
+                  "assets.createUrl",
+                  payload: .object([
+                    "resource": .object([
+                      "_tag": .string("attachment"), "attachmentId": .string(previous),
+                    ])
+                  ]))
+              } catch {
+                guard (error as? T3Error)?.remoteCode == "AssetAttachmentNotFoundError" else {
+                  throw error
+                }
+                uploadedID = nil
+              }
+            }
+            if uploadedID == nil {
+              try Task.checkCancellation()
+              let issued = try await connection.call(
+                "attachments.createUploadUrl", payload: attachment.uploadInput)
+              mintedID = try issued.requiredString("attachmentId")
+              try Task.checkCancellation()
+              let url = try AttachmentHTTP.signedURL(
+                issued.requiredString("relativeUrl"), endpoint: settings.endpoint,
+                prefix: "/api/attachments/upload/")
+              try await AttachmentHTTP.upload(
+                attachment, from: repository.file(attachment), to: url
+              ) { [weak self] progress in
+                Task { @MainActor in
+                  guard let self, self.generation == generation,
+                    self.uploadJobs[attachment.id]?.token == token
+                  else { return }
+                  let value = Int(progress * 20) * 5
+                  if self.attachmentUploads[attachment.id] != .uploading(value) {
+                    self.attachmentUploads[attachment.id] = .uploading(value)
+                    self.notify()
+                  }
+                }
+              }
+              uploadedID = mintedID
+            }
+            try Task.checkCancellation()
+            guard self.generation == generation, uploadJobs[attachment.id]?.token == token,
+              let index = attachmentDrafts[threadID]?.firstIndex(where: { $0.id == attachment.id })
+            else { return }
+            attachmentDrafts[threadID]?[index].uploadedID = uploadedID
+            mintedID = nil
+            attachmentUploads[attachment.id] = .ready
+            _ = flushDrafts()
+          } catch {
+            guard self.generation == generation, uploadJobs[attachment.id]?.token == token else {
+              return
+            }
+            attachmentUploads[attachment.id] = .failed(
+              "\(attachment.name): " + error.localizedDescription)
+          }
+        }
+        uploadJobs[attachment.id] = (token, task)
+      }
+    }
+  }
+
+  func send() {
+    guard let id = selectedID, let connection, sendBlockReason == nil else { return }
+    let text = drafts[id] ?? ""
+    let attachments = attachmentDrafts[id] ?? []
     let command =
-      pending[id].flatMap { $0.text == text ? $0 : nil } ?? PendingSubmission(text: text)
+      pending[id].flatMap { $0.matches(text: text, attachments: attachments) ? $0 : nil }
+      ?? PendingSubmission(
+        text: text, attachments: attachments.compactMap(\.wire),
+        localAttachmentIDs: attachments.map(\.id))
     pending[id] = command
     guard flushDrafts() else { return }
     let generation = generation
+    let repository = attachmentRepository
     sending.insert(id)
     error = nil
     notify()
@@ -614,15 +862,22 @@ import T3Core
         _ = try await connection.call(
           "orchestration.dispatchCommand",
           payload: Commands.message(
-            threadID: id, text: text, commandID: command.command, messageID: command.message))
+            threadID: id, text: command.text, commandID: command.command,
+            messageID: command.message, attachments: command.attachments ?? []))
         guard self.generation == generation else { return }
         if drafts[id] == text { drafts[id] = "" }
+        let sentIDs = Set(command.localAttachmentIDs ?? [])
+        attachmentDrafts[id]?.removeAll { sentIDs.contains($0.id) }
+        for id in sentIDs { attachmentUploads.removeValue(forKey: id) }
         pending.removeValue(forKey: id)
+        if flushDrafts() {
+          for attachment in attachments { repository?.remove(attachment) }
+        }
       } catch {
         guard self.generation == generation else { return }
         self.error =
           error.localizedDescription
-          + " Your draft is preserved. Retrying unchanged text reuses the same command."
+          + " Your draft is preserved. Retrying the unchanged message reuses the same command."
       }
     }
   }

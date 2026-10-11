@@ -71,9 +71,11 @@ public enum JSON: Codable, Sendable, Equatable {
 public struct T3Error: LocalizedError, Sendable {
   public let message: String
   public let authentication: Bool
-  public init(_ message: String, authentication: Bool = false) {
+  public let remoteCode: String?
+  public init(_ message: String, authentication: Bool = false, remoteCode: String? = nil) {
     self.message = message
     self.authentication = authentication
+    self.remoteCode = remoteCode
   }
   public var errorDescription: String? { message }
 }

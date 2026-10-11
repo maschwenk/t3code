@@ -5,33 +5,49 @@ public struct PendingSubmission: Codable, Sendable, Equatable {
   public let text: String
   public let command: String
   public let message: String
+  public let attachments: [JSON]?
+  public let localAttachmentIDs: [String]?
   public init(
-    text: String, command: String = UUID().uuidString, message: String = UUID().uuidString
+    text: String, command: String = UUID().uuidString, message: String = UUID().uuidString,
+    attachments: [JSON]? = nil, localAttachmentIDs: [String]? = nil
   ) {
     self.text = text
     self.command = command
     self.message = message
+    self.attachments = attachments
+    self.localAttachmentIDs = localAttachmentIDs
+  }
+  public func matches(text: String, attachments: [DraftAttachment]) -> Bool {
+    self.text == text && (localAttachmentIDs ?? []) == attachments.map(\.id)
   }
 }
 
 public struct SavedDrafts: Codable, Sendable, Equatable {
-  public var version = 1
+  public var version = 2
   public var messages: [String: String] = [:]
   public var submissions: [String: PendingSubmission] = [:]
   public var questions: [String: [String: QuestionDraft]] = [:]
+  public var attachments: [String: [DraftAttachment]]?
   public init(
     messages: [String: String] = [:], submissions: [String: PendingSubmission] = [:],
-    questions: [String: [String: QuestionDraft]] = [:]
+    questions: [String: [String: QuestionDraft]] = [:],
+    attachments: [String: [DraftAttachment]]? = nil
   ) {
     self.messages = messages
     self.submissions = submissions
     self.questions = questions
+    self.attachments = attachments
   }
 }
 
 public struct DraftRepository: Sendable {
   public let directory: URL
   public init(directory: URL) { self.directory = directory }
+
+  public func attachmentRepository(for endpoint: URL) -> AttachmentRepository {
+    AttachmentRepository(
+      directory: file(for: endpoint).deletingPathExtension().appendingPathComponent("Attachments"))
+  }
 
   public func file(for endpoint: URL) -> URL {
     var parts = URLComponents(url: endpoint, resolvingAgainstBaseURL: false)!
@@ -51,7 +67,9 @@ public struct DraftRepository: Sendable {
     let file = file(for: endpoint)
     guard FileManager.default.fileExists(atPath: file.path) else { return SavedDrafts() }
     let drafts = try JSONDecoder().decode(SavedDrafts.self, from: Data(contentsOf: file))
-    guard drafts.version == 1 else { throw T3Error("The saved drafts use a newer format.") }
+    guard (1...2).contains(drafts.version) else {
+      throw T3Error("The saved drafts use a newer format.")
+    }
     return drafts
   }
 

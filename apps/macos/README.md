@@ -25,7 +25,14 @@ replace a newer streaming revision. Commands, searches, file changes, and reason
 collapse into expandable work groups. Expanding preserves the full activity text;
 errors and pending questions or approvals stay outside collapsed groups.
 
-The integrated browser, interactive terminal, full diff views, attachments,
+Attach images or files with the paperclip or ⌘⇧A, or paste/drop into the message
+field. The attachment tray shows uploads, failures, retry, and removal. Drafts keep
+private local copies across restarts, and expired uploads are restored from those
+copies. HEIC/TIFF and oversized images are converted to JPEG; file and aggregate
+image limits follow the server contract. Attachment-only messages are supported.
+Received files can be downloaded from the conversation with a native save dialog.
+
+The integrated browser, interactive terminal, full diff views, inline image previews,
 provider setup, question attachments, and T3 Connect
 account/relay discovery remain in the existing app. Markdown supports native headings,
 lists, task lists, quotes, code blocks, tables, and selectable links. Copy-message

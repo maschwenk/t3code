@@ -60,6 +60,10 @@ enum ParitySmoke {
       "orchestration.dispatchCommand",
       payload: Commands.newThread(template: template, id: id, title: "Native parity verification"))
     print("Parity thread: \(id)")
+    if CommandLine.arguments.contains("--attachment-smoke") {
+      try await attachments(settings: settings, connection: connection, threadID: id)
+      return
+    }
     func dispatch(_ type: String, fields: [String: JSON]) async throws {
       var fields = fields
       fields["type"] = .string(type)
@@ -369,6 +373,87 @@ enum ParitySmoke {
       }
     }
     throw T3Error("Tool-output verification ended before completion.")
+  }
+
+  @MainActor private static func attachments(
+    settings: ConnectionSettings, connection: RPCConnection, threadID: String
+  ) async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "t3-attachment-smoke-" + UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let source = directory.appendingPathComponent("native-attachment.txt")
+    let content = Data("NATIVE_ATTACHMENT_BYTES_OK\n".utf8)
+    try content.write(to: source)
+    let image = directory.appendingPathComponent("native-image.png")
+    let imageBytes = Data(
+      base64Encoded:
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aJ1sAAAAASUVORK5CYII="
+    )!
+    try imageBytes.write(to: image)
+    let drafts = directory.appendingPathComponent("drafts")
+    let store = ClientStore(draftDirectory: drafts)
+    store.connect(settings, selecting: threadID)
+    try await waitForStore(store) { store.canEditThread && store.catalogReady }
+    store.rename(threadID, to: "Native attachment verification")
+    store.addAttachments([source, image])
+    try await waitForStore(store) {
+      store.selectedAttachments.count == 2
+        && store.selectedAttachments.allSatisfy { store.attachmentUploads[$0.id] == .ready }
+    }
+    let original = store.selectedAttachments
+    try await store.downloadAttachment(
+      original[0].wire!, to: directory.appendingPathComponent("download-before.txt"))
+    guard try Data(contentsOf: directory.appendingPathComponent("download-before.txt")) == content
+    else { throw T3Error("Uploaded bytes changed.") }
+    try FileManager.default.removeItem(at: source)
+    try FileManager.default.removeItem(at: image)
+    guard store.saveDraftsBeforeExit() else {
+      throw T3Error("Could not persist the attachment draft.")
+    }
+    store.disconnect()
+    _ = try await connection.call(
+      "attachments.delete", payload: .object(["attachmentId": .string(original[0].uploadedID!)]))
+    let restored = ClientStore(draftDirectory: drafts)
+    restored.connect(settings, selecting: threadID)
+    defer { restored.disconnect() }
+    try await waitForStore(restored) {
+      restored.canEditThread && restored.selectedAttachments.count == 2
+        && restored.selectedAttachments.allSatisfy { restored.attachmentUploads[$0.id] == .ready }
+    }
+    guard restored.selectedAttachments[0].uploadedID != original[0].uploadedID,
+      restored.selectedAttachments[1].uploadedID == original[1].uploadedID
+    else {
+      throw T3Error("Attachment recovery did not replace only the missing upload.")
+    }
+    restored.drafts[threadID] =
+      "This is an attachment delivery test. Reply exactly NATIVE_ATTACHMENT_DONE without opening the attached files or using any tools."
+    restored.send()
+    try await waitForStore(restored) {
+      !restored.sending.contains(threadID) && restored.selectedAttachments.isEmpty
+    }
+    try await waitForStore(restored) {
+      restored.thread?.rows.contains {
+        $0.kind == "assistant_message" && !$0.streaming
+          && $0.text.contains("NATIVE_ATTACHMENT_DONE")
+      } == true
+    }
+    guard let message = restored.thread?.rows.last(where: { $0.kind == "user_message" }),
+      message.item["attachments"].array.count == 2
+    else {
+      throw T3Error("The accepted message did not contain both attachments.")
+    }
+    for attachment in message.item["attachments"].array {
+      let destination = directory.appendingPathComponent("download-after")
+      try await restored.downloadAttachment(attachment, to: destination)
+      let expected = attachment["type"].string == "image" ? imageBytes : content
+      guard try Data(contentsOf: destination) == expected else {
+        throw T3Error("Claimed attachment bytes changed.")
+      }
+    }
+    print(
+      "Attachment upload/download, restart after source removal, expired-upload recovery, real send/reply and claimed bytes passed."
+    )
   }
 
   @MainActor private static func waitForStore(
