@@ -34,7 +34,18 @@ public struct AttachmentPolicy: Sendable, Equatable {
       min($0, Self.fileLimit)
     }
   }
-  public func validate(_ attachments: [DraftAttachment], requireServer: Bool = true) throws {
+  public func validate(
+    _ attachments: [DraftAttachment], requireServer: Bool = true, retained: [JSON] = []
+  ) throws {
+    let newCount = attachments.count
+    let attachments =
+      attachments
+      + retained.map {
+        DraftAttachment(
+          id: $0["id"].string ?? "", name: $0["name"].string ?? "Attachment",
+          mimeType: $0["mimeType"].string ?? "", sizeBytes: $0["sizeBytes"].int ?? 0,
+          type: $0["type"].string ?? "file")
+      }
     guard attachments.count <= 100 else {
       throw T3Error("You can attach up to 100 files per message.")
     }
@@ -44,17 +55,18 @@ public struct AttachmentPolicy: Sendable, Equatable {
     else {
       throw T3Error("Images can total up to 80 MiB per message. Send fewer or smaller images.")
     }
-    if requireServer, !attachments.isEmpty, !uploads {
+    if requireServer, newCount > 0, !uploads {
       throw T3Error("This server does not accept attachment uploads right now.")
     }
-    for attachment in attachments {
-      if requireServer, attachment.type == "file", fileBytes == nil {
+    for (index, attachment) in attachments.enumerated() {
+      let requiresUpload = requireServer && index < newCount
+      if requiresUpload, attachment.type == "file", fileBytes == nil {
         throw T3Error(
           "This server does not accept file attachments right now. Remove the files to send.")
       }
       let limit =
         attachment.type == "image"
-        ? Self.imageLimit : requireServer ? fileBytes ?? 0 : Self.fileLimit
+        ? Self.imageLimit : requiresUpload ? fileBytes ?? 0 : Self.fileLimit
       guard attachment.sizeBytes > 0, attachment.sizeBytes <= limit else {
         throw T3Error(
           "\(attachment.name) exceeds the attachment limit (\(ByteCountFormatter.string(fromByteCount: Int64(limit), countStyle: .file)))."

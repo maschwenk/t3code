@@ -4,6 +4,7 @@ import T3Markdown
 
 @MainActor final class Composer: NSTextView {
   var submit: (() -> Void)?
+  var editLatestQueued: (() -> Bool)?
   var attach: (([URL], Bool) -> Void)?
   var allowsAttachments = false
   override func paste(_ sender: Any?) {
@@ -55,7 +56,14 @@ import T3Markdown
       || super.performDragOperation(sender)
   }
   override func keyDown(with event: NSEvent) {
-    if event.keyCode == 36 && event.modifierFlags.contains(.command) {
+    if event.keyCode == 126 && event.modifierFlags.contains(.option), selectedRange().location == 0,
+      editLatestQueued?() == true
+    {
+      return
+    }
+    if event.keyCode == 36 && event.modifierFlags.contains(.command)
+      && !event.modifierFlags.contains(.shift)
+    {
       submit?()
     } else {
       super.keyDown(with: event)
@@ -83,6 +91,10 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
   private let requestsPanel: RequestsPanel
   private let attachmentTray: AttachmentTray
   private let attachmentPreviews = AttachmentPreviews()
+  private let queuePanel: QueuePanel
+  private let deliveryButton = NSPopUpButton(frame: .zero, pullsDown: true)
+  private var deliveryState = ""
+  private var renderedDraftID: String?
   private var attachmentConnectionState = ""
   private let attachButton = NSButton(title: "Attach files…", target: nil, action: nil)
   private var sidebarItem: NSSplitViewItem?
@@ -105,6 +117,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     modelControls = ComposerControls(store: store)
     requestsPanel = RequestsPanel(store: store)
     attachmentTray = AttachmentTray(store: store, previews: attachmentPreviews)
+    queuePanel = QueuePanel(store: store, previews: attachmentPreviews)
     let window = NSWindow(
       contentRect: NSRect(x: 0, y: 0, width: 1220, height: 840),
       styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
@@ -204,6 +217,13 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     composer.delegate = self
     composer.setAccessibilityLabel("Message")
     composer.submit = { [weak store] in store?.send() }
+    composer.editLatestQueued = { [weak store] in
+      guard let store, store.queuedEdit == nil, !store.queueBusy,
+        let message = store.execution.queued.last
+      else { return false }
+      store.editQueuedMessage(message)
+      return true
+    }
     composer.attach = { [weak store] urls, temporary in
       store?.addAttachments(urls, deleteSources: temporary)
     }
@@ -226,13 +246,19 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     sendButton.setAccessibilityLabel("Send message")
     sendButton.widthAnchor.constraint(equalToConstant: 32).isActive = true
     sendButton.heightAnchor.constraint(equalToConstant: 30).isActive = true
+    deliveryButton.controlSize = .small
+    deliveryButton.bezelStyle = .inline
+    deliveryButton.widthAnchor.constraint(equalToConstant: 24).isActive = true
+    deliveryButton.setAccessibilityLabel("Message delivery")
     stopButton.target = self
     stopButton.action = #selector(stop)
     let hint = NSTextField(labelWithString: "⌘ Return to send")
     hint.font = .systemFont(ofSize: 11)
     hint.textColor = .secondaryLabelColor
     let spacer = NSView()
-    let bottom = NSStackView(views: [attachButton, modelControls, spacer, stopButton, sendButton])
+    let bottom = NSStackView(views: [
+      attachButton, modelControls, spacer, stopButton, sendButton, deliveryButton,
+    ])
     bottom.spacing = 6
     let composerStack = NSStackView(views: [attachmentTray, composerScroll, bottom])
     composerStack.orientation = .vertical
@@ -258,7 +284,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     ])
     let footer = NSStackView(views: [status, NSView(), hint])
     let stack = NSStackView(views: [
-      olderButton, timelineScroll, errorLabel, requestsPanel, composerSurface, footer,
+      olderButton, timelineScroll, errorLabel, requestsPanel, queuePanel, composerSurface, footer,
     ])
     stack.orientation = .vertical
     stack.alignment = .leading
@@ -275,7 +301,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
       stack.widthAnchor.constraint(lessThanOrEqualTo: right.widthAnchor, constant: -32),
       preferredWidth,
     ])
-    for view in [timelineScroll, errorLabel, requestsPanel, composerSurface, footer] {
+    for view in [timelineScroll, errorLabel, requestsPanel, queuePanel, composerSurface, footer] {
       view.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
     }
     timelineScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 120).isActive = true
@@ -299,6 +325,8 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
       (chat, "New Thread", #selector(newThread), "n", NSEvent.ModifierFlags.command),
       (chat, "Choose Model…", #selector(chooseModel), "m", [.command, .shift]),
       (chat, "Attach Files…", #selector(attachFiles), "a", [.command, .shift]),
+      (chat, "Steer Next Queued Message", #selector(steerNextQueued), "\r", [.command, .shift]),
+      (chat, "Resume", #selector(resume), "", []),
       (view, "Toggle Sidebar", #selector(toggleSidebar), "b", [.command]),
     ] {
       let item = parent.addItem(withTitle: title, action: action, keyEquivalent: key)
@@ -318,6 +346,12 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     }
     if menuItem.action == #selector(newThread) { return store.ready && store.selectedThread != nil }
     if menuItem.action == #selector(attachFiles) { return store.canAttach }
+    if menuItem.action == #selector(steerNextQueued) {
+      return !store.queueBusy && store.execution.canSteer && !store.execution.queued.isEmpty
+    }
+    if menuItem.action == #selector(resume) {
+      return !store.queueBusy && (store.execution.isHeld || store.execution.resumableRunID != nil)
+    }
     return true
   }
 
@@ -367,17 +401,25 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     olderButton.isHidden = store.thread?.hasMore != true
     olderButton.isEnabled = store.ready && !store.loadingHistory
     olderButton.title = store.loadingHistory ? "Loading earlier activity…" : "Load earlier activity"
-    let draft = store.selectedID.flatMap { store.drafts[$0] } ?? ""
+    let draft = store.composerText
     if composer.string != draft { composer.string = draft }
+    if renderedDraftID != store.composerDraftID {
+      renderedDraftID = store.composerDraftID
+      window?.makeFirstResponder(composer)
+    }
     updateComposerControls()
-    composer.isEditable = selected?.archived != true
+    composer.isEditable =
+      selected?.archived != true
+      && !(store.queuedEdit != nil && store.sending.contains(store.selectedID ?? ""))
     if window?.isKeyWindow == true { store.markVisibleThreadRead() }
     modelControls.refresh()
     requestsPanel.refresh()
     attachmentPreviews.updateEnvironment(store.environmentKey)
     attachmentTray.refresh()
-    stopButton.isHidden = selected?.activeRunID == nil
-    stopButton.isEnabled = store.ready
+    queuePanel.refresh()
+    stopButton.isHidden = store.execution.activeRunID == nil && selected?.activeRunID == nil
+    stopButton.isEnabled =
+      store.canEditThread && !store.commandsInFlight.contains((store.selectedID ?? "") + ":stop")
     window?.contentView?.layoutSubtreeIfNeeded()
     updateRows(conversationEntries(), anchor: anchor)
     let connectionState = "\(store.environmentKey):\(store.ready)"
@@ -400,8 +442,12 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
   }
 
   private func conversationEntries() -> [ConversationEntry] {
-    ConversationTimeline.entries(
-      from: store.thread?.rows ?? [], activeRunID: store.selectedThread?.activeRunID,
+    let execution = store.execution
+    let visible = (store.thread?.rows ?? []).filter {
+      $0.inherited || !execution.hidesQueuedMessage($0.item)
+    }
+    return ConversationTimeline.entries(
+      from: visible, activeRunID: store.selectedThread?.activeRunID,
       expandedItemIDs: expandedWork[store.selectedID ?? ""] ?? [])
   }
 
@@ -623,7 +669,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
 
   func windowDidBecomeKey(_ notification: Notification) { store.markVisibleThreadRead() }
   func textDidChange(_ notification: Notification) {
-    if let id = store.selectedID { store.drafts[id] = composer.string }
+    store.composerText = composer.string
     updateComposerControls()
   }
   private func updateComposerControls() {
@@ -632,8 +678,39 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     attachButton.isEnabled = store.canAttach
     composer.allowsAttachments = store.canAttach
     sendButton.title = ""
-    sendButton.toolTip = store.sendBlockReason ?? "Send message (⌘ Return)"
-    sendButton.setAccessibilityLabel(sending ? "Sending message" : "Send message")
+    let label =
+      store.queuedEdit != nil
+      ? "Save queued message" : store.delivery == .auto ? "Send message" : store.delivery.title
+    sendButton.toolTip = store.sendBlockReason ?? label + " (⌘ Return)"
+    sendButton.setAccessibilityLabel(sending ? "Sending message" : label)
+    sendButton.image = NSImage(
+      systemSymbolName: store.queuedEdit == nil ? "arrow.up.circle.fill" : "checkmark.circle.fill",
+      accessibilityDescription: nil)
+    let execution = store.execution
+    let state =
+      "\(store.delivery):\(execution.canQueue):\(execution.canSteer):\(execution.canRestart):\(execution.steeringInterruptsTools):\(store.queuedEdit != nil):\(sending)"
+    if deliveryState != state {
+      deliveryState = state
+      deliveryButton.removeAllItems()
+      deliveryButton.addItem(withTitle: "")
+      deliveryButton.item(at: 0)?.image = NSImage(
+        systemSymbolName: "chevron.down", accessibilityDescription: nil)
+      deliveryButton.menu?.autoenablesItems = false
+      for mode in MessageDelivery.allCases {
+        let title =
+          mode == .steer && execution.steeringInterruptsTools
+          ? "Steer now (interrupts tools)" : mode.title
+        let item = ActionMenuItem(title) { [weak store] in store?.setDelivery(mode) }
+        deliveryButton.menu?.addItem(item)
+        item.state = store.delivery == mode ? .on : .off
+        item.isEnabled =
+          mode == .auto || mode == .queue && execution.canQueue
+          || mode == .steer && execution.canSteer || mode == .restart && execution.canRestart
+      }
+      deliveryButton.isHidden = store.queuedEdit != nil
+      deliveryButton.isEnabled = !sending
+      deliveryButton.toolTip = "Message delivery: " + store.delivery.title
+    }
   }
   @objc private func send() { store.send() }
   private func downloadAttachment(_ attachment: JSON) {
@@ -663,16 +740,20 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     panel.canChooseDirectories = false
     panel.allowsMultipleSelection = true
     panel.prompt = "Attach"
-    let selected = store.selectedID
+    let selected = store.composerDraftID
     let environment = store.environmentKey
     panel.beginSheetModal(for: window) { [weak self] response in
-      guard response == .OK, let self, self.store.selectedID == selected,
+      guard response == .OK, let self, self.store.composerDraftID == selected,
         self.store.environmentKey == environment
       else { return }
       self.store.addAttachments(panel.urls)
     }
   }
   @objc private func stop() { store.stop() }
+  @objc private func resume() { store.resume() }
+  @objc private func steerNextQueued() {
+    if let first = store.execution.queued.first { store.steerQueuedMessage(first.id) }
+  }
   @objc private func older() { store.loadOlder() }
   @objc private func newThread() { store.newThread() }
   @objc private func retry() { store.retry() }

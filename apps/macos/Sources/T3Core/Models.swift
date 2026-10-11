@@ -117,7 +117,12 @@ public struct TimelineRow: Sendable, Equatable, Identifiable {
     streaming = item["streaming"].bool || item["status"].string == "running"
     switch kind {
     case "user_message":
-      title = "You"
+      switch item["inputIntent"].string {
+      case "queued_turn": title = "You · queued"
+      case "steer": title = "You · steer"
+      case "promoted_queued_to_steer": title = "You · sent from queue as steer"
+      default: title = "You"
+      }
       text = try item.requiredString("text")
     case "assistant_message":
       title = "Assistant"
@@ -185,6 +190,7 @@ public struct ThreadState: Sendable {
   public private(set) var hasMore = false
   public private(set) var synchronized = false
   public private(set) var pendingRequests: [PendingRequest] = []
+  public private(set) var execution = ThreadExecution()
   private var requests: [String: JSON] = [:]
   private var requestItems: [String: JSON] = [:]
   private var indices: [String: Int] = [:]
@@ -221,6 +227,7 @@ public struct ThreadState: Sendable {
         }
       }
       rows = next.sorted { $0.position < $1.position }
+      execution = ThreadExecution(projection)
       requests = nextRequests
       requestItems = nextRequestItems
       for row in rows where !row.inherited {
@@ -237,7 +244,11 @@ public struct ThreadState: Sendable {
       let nextSequence = try value.requiredInt("sequence")
       guard nextSequence > sequence else { return false }
       let event = value["event"]
+      if let owner = event["threadId"].string, owner != id {
+        throw T3Error("Update belongs to another thread.")
+      }
       let type = try event.requiredString("type")
+      execution.apply(event)
       if type.hasPrefix("context-transfer.") || type == "checkpoint.rollback-requested"
         || type == "thread.provider-switched"
       {
@@ -331,18 +342,26 @@ public struct ThreadState: Sendable {
 
 public enum Commands {
   public static func message(
-    threadID: String, text: String, commandID: String, messageID: String, attachments: [JSON] = []
+    threadID: String, text: String, commandID: String, messageID: String, attachments: [JSON] = [],
+    delivery: MessageDelivery = .auto, continuationOf: String? = nil
   )
     -> JSON
   {
-    .object([
+    var fields: [String: JSON] = [
       "type": .string("message.dispatch"), "commandId": .string(commandID),
       "threadId": .string(threadID), "messageId": .string(messageID), "text": .string(text),
       "createdBy": .string("user"), "creationSource": .string("web"),
       "attachments": .array(attachments),
-      "dispatchMode": .object(["type": .string("start_immediately")]),
-      "deliveryIntent": .string("auto"),
-    ])
+      "dispatchMode": .object([
+        "type": .string(delivery == .queue ? "queue_after_active" : "start_immediately")
+      ]),
+    ]
+    if let continuationOf {
+      fields["manualContinuationOfRunId"] = .string(continuationOf)
+    } else if delivery != .queue {
+      fields["deliveryIntent"] = .string(delivery.rawValue)
+    }
+    return .object(fields)
   }
 
   public static func newThread(template: ThreadSummary, id: String, title: String = "New thread")

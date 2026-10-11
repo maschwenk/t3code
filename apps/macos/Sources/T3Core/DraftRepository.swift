@@ -7,36 +7,72 @@ public struct PendingSubmission: Codable, Sendable, Equatable {
   public let message: String
   public let attachments: [JSON]?
   public let localAttachmentIDs: [String]?
+  public let delivery: MessageDelivery?
+  public let queuedRunID: String?
+  public let retainedAttachmentIDs: [String]?
+  public let context: JSON?
+  public let continuationOf: String?
   public init(
     text: String, command: String = UUID().uuidString, message: String = UUID().uuidString,
-    attachments: [JSON]? = nil, localAttachmentIDs: [String]? = nil
+    attachments: [JSON]? = nil, localAttachmentIDs: [String]? = nil,
+    delivery: MessageDelivery? = nil, queuedRunID: String? = nil,
+    retainedAttachmentIDs: [String]? = nil, context: JSON? = nil, continuationOf: String? = nil
   ) {
     self.text = text
     self.command = command
     self.message = message
     self.attachments = attachments
     self.localAttachmentIDs = localAttachmentIDs
+    self.delivery = delivery
+    self.queuedRunID = queuedRunID
+    self.retainedAttachmentIDs = retainedAttachmentIDs
+    self.context = context
+    self.continuationOf = continuationOf
   }
-  public func matches(text: String, attachments: [DraftAttachment]) -> Bool {
+  public func matches(
+    text: String, attachments: [DraftAttachment], delivery: MessageDelivery = .auto,
+    edit: QueuedEdit? = nil
+  ) -> Bool {
     self.text == text && (localAttachmentIDs ?? []) == attachments.map(\.id)
+      && (self.delivery ?? .auto) == delivery && queuedRunID == edit?.runID
+      && (retainedAttachmentIDs ?? []) == (edit?.attachments.compactMap { $0["id"].string } ?? [])
+  }
+  public func payload(threadID: String) -> JSON {
+    guard let queuedRunID else {
+      return Commands.message(
+        threadID: threadID, text: text, commandID: command, messageID: message,
+        attachments: attachments ?? [], delivery: delivery ?? .auto, continuationOf: continuationOf)
+    }
+    var fields: [String: JSON] = [
+      "type": .string("queued-run.edit"), "commandId": .string(command),
+      "threadId": .string(threadID), "runId": .string(queuedRunID), "text": .string(text),
+      "attachments": .array(attachments ?? []),
+    ]
+    if let context, context != .null { fields["context"] = context }
+    return .object(fields)
   }
 }
 
 public struct SavedDrafts: Codable, Sendable, Equatable {
-  public var version = 2
+  public var version = 3
   public var messages: [String: String] = [:]
   public var submissions: [String: PendingSubmission] = [:]
   public var questions: [String: [String: QuestionDraft]] = [:]
   public var attachments: [String: [DraftAttachment]]?
+  public var queuedEdits: [String: QueuedEdit]?
+  public var deliveries: [String: MessageDelivery]?
   public init(
     messages: [String: String] = [:], submissions: [String: PendingSubmission] = [:],
     questions: [String: [String: QuestionDraft]] = [:],
-    attachments: [String: [DraftAttachment]]? = nil
+    attachments: [String: [DraftAttachment]]? = nil,
+    queuedEdits: [String: QueuedEdit]? = nil, deliveries: [String: MessageDelivery]? = nil
   ) {
     self.messages = messages
     self.submissions = submissions
     self.questions = questions
     self.attachments = attachments
+    self.queuedEdits = queuedEdits
+    self.deliveries = deliveries
   }
 }
 
@@ -67,7 +103,7 @@ public struct DraftRepository: Sendable {
     let file = file(for: endpoint)
     guard FileManager.default.fileExists(atPath: file.path) else { return SavedDrafts() }
     let drafts = try JSONDecoder().decode(SavedDrafts.self, from: Data(contentsOf: file))
-    guard (1...2).contains(drafts.version) else {
+    guard (1...3).contains(drafts.version) else {
       throw T3Error("The saved drafts use a newer format.")
     }
     return drafts

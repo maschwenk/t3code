@@ -20,6 +20,15 @@ enum ParitySmoke {
       Task { await connection.close() }
     }
     try await connection.open()
+    if let threadID = Arguments.value("--resume-queue-thread") {
+      let projection = try await connection.call(
+        "orchestration.getThreadProjection", payload: .object(["threadId": .string(threadID)]))
+      guard projection["thread"]["projectId"].string == project,
+        projection["thread"]["title"].string == "Native queue verification"
+      else { throw T3Error("Resume requires the isolated queue test thread.") }
+      try await queueSteering(settings: settings, connection: connection, threadID: threadID)
+      return
+    }
     if let threadID = Arguments.value("--resume-tool-thread") {
       let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
         "t3-tool-resume-" + UUID().uuidString)
@@ -62,6 +71,10 @@ enum ParitySmoke {
     print("Parity thread: \(id)")
     if CommandLine.arguments.contains("--attachment-smoke") {
       try await attachments(settings: settings, connection: connection, threadID: id)
+      return
+    }
+    if CommandLine.arguments.contains("--queue-smoke") {
+      try await queue(settings: settings, connection: connection, threadID: id)
       return
     }
     func dispatch(_ type: String, fields: [String: JSON]) async throws {
@@ -454,6 +467,265 @@ enum ParitySmoke {
     print(
       "Attachment upload/download, restart after source removal, expired-upload recovery, real send/reply and claimed bytes passed."
     )
+  }
+
+  @MainActor private static func queue(
+    settings: ConnectionSettings, connection: RPCConnection, threadID: String
+  ) async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "t3-queue-smoke-" + UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let draftDirectory = directory.appendingPathComponent("drafts")
+    let source = directory.appendingPathComponent("queue-first.txt")
+    let extra = directory.appendingPathComponent("queue-extra.txt")
+    try Data("First queued attachment\n".utf8).write(to: source)
+    try Data("Added while editing\n".utf8).write(to: extra)
+    var store = ClientStore(draftDirectory: draftDirectory)
+    defer { store.disconnect() }
+    do {
+      _ = try await connection.call(
+        "orchestration.dispatchCommand",
+        payload: .object([
+          "type": .string("thread.interaction-mode.set"), "commandId": .string(UUID().uuidString),
+          "threadId": .string(threadID), "interactionMode": .string("plan"),
+        ]))
+      store.connect(settings, selecting: threadID)
+      try await waitForStore(store) { store.canEditThread && store.catalogReady }
+      store.rename(threadID, to: "Native queue verification")
+      store.composerText =
+        "For a UI queue test, call request_user_input now with one question: Ready? Offer Continue and Stop. Wait for my answer. After Continue, or if I ask to continue after an interruption, reply exactly NATIVE_QUEUE_READY and finish without asking again. Do not inspect files or run commands."
+      store.send()
+      try await waitForStore(store) {
+        store.thread?.pendingRequests.contains { $0.isQuestion && $0.canRespond } == true
+      }
+      guard store.execution.canQueue else {
+        throw T3Error("The test provider did not advertise queued messages.")
+      }
+      store.setDelivery(.queue)
+      store.addAttachments([source])
+      try await waitForStore(store) {
+        store.selectedAttachments.count == 1
+          && store.selectedAttachments.allSatisfy { store.attachmentUploads[$0.id] == .ready }
+      }
+      store.composerText = "Reply exactly NATIVE_QUEUE_FIRST. Do not open attachments or use tools."
+      store.send()
+      try await waitForStore(store) {
+        !store.sending.contains(threadID) && store.execution.queued.count == 1
+      }
+      let first = store.execution.queued[0]
+      store.composerText = "Reply exactly NATIVE_QUEUE_REMOVE. Do not use tools."
+      store.send()
+      try await waitForStore(store) {
+        !store.sending.contains(threadID) && store.execution.queued.count == 2
+      }
+      let second = store.execution.queued[1]
+      store.composerText = "Separate normal draft must survive editing."
+      store.editQueuedMessage(first)
+      guard store.queuedEdit?.attachments.count == 1 else {
+        throw T3Error("Queued edit dropped the original attachment.")
+      }
+      let edited = "Reply exactly NATIVE_QUEUE_EDITED. Do not open attachments or use tools."
+      store.composerText = edited
+      store.addAttachments([extra])
+      try await waitForStore(store) {
+        store.selectedAttachments.count == 1
+          && store.selectedAttachments.allSatisfy { store.attachmentUploads[$0.id] == .ready }
+      }
+      store.cancelQueuedEdit()
+      store.editQueuedMessage(second)
+      let secondEdit = "Unsent edit of the second queued message."
+      store.composerText = secondEdit
+      store.cancelQueuedEdit()
+      guard store.savedQueuedEdits.count == 2,
+        store.composerText == "Separate normal draft must survive editing."
+      else { throw T3Error("Editing a second queued message lost an earlier draft.") }
+      store.reopenQueuedEdit(first.id)
+      guard store.saveDraftsBeforeExit() else { throw T3Error("Queued edit was not saved.") }
+      store.disconnect()
+      store = ClientStore(draftDirectory: draftDirectory)
+      store.connect(settings, selecting: threadID)
+      try await waitForStore(store) {
+        store.canEditThread && store.catalogReady && store.queuedEdit != nil
+          && store.selectedAttachments.allSatisfy { store.attachmentUploads[$0.id] == .ready }
+      }
+      guard store.composerText == edited,
+        store.drafts[threadID] == "Separate normal draft must survive editing.",
+        store.queuedEdit?.attachments.count == 1, store.selectedAttachments.count == 1,
+        store.savedQueuedEdits.first?.runID == second.id,
+        store.drafts["queued-edit:" + second.id] == secondEdit
+      else { throw T3Error("Queued edit and normal draft did not restore separately.") }
+      store.send()
+      try await waitForStore(store) {
+        !store.sending.contains(threadID) && store.queuedEdit == nil
+          && store.execution.queued.first?.text == edited
+      }
+      guard store.execution.queued[0].attachments.count == 2,
+        store.composerText == "Separate normal draft must survive editing."
+      else { throw T3Error("Saving the queued edit lost attachments or the normal draft.") }
+      store.reorderQueuedMessage(second.id, before: first.id)
+      try await waitForStore(store) {
+        !store.queueBusy && store.execution.queued.first?.id == second.id
+      }
+      store.reorderQueuedMessage(first.id, before: second.id)
+      try await waitForStore(store) {
+        !store.queueBusy && store.execution.queued.first?.id == first.id
+      }
+      store.cancelQueuedMessage(second.id)
+      try await waitForStore(store) { !store.queueBusy && store.execution.queued.count == 1 }
+      store.reopenQueuedEdit(second.id)
+      guard store.composerText == secondEdit,
+        store.sendBlockReason?.contains("started or was removed") == true
+      else { throw T3Error("The cancelled message's saved edit was lost or could be sent.") }
+      store.cancelQueuedEdit()
+      store.stop()
+      try await waitForStore(store) {
+        store.execution.activeRunID == nil && store.execution.isHeld
+          && store.execution.resumableRunID != nil
+      }
+      store.resume()
+      try await waitForStore(store) {
+        store.thread?.pendingRequests.contains { $0.isQuestion && $0.canRespond } == true
+          || store.thread?.rows.contains {
+            $0.kind == "assistant_message" && !$0.streaming
+              && $0.text.contains("NATIVE_QUEUE_EDITED")
+          } == true
+      }
+      if let request = store.thread?.pendingRequests.first(where: { $0.isQuestion && $0.canRespond }
+      ) {
+        var drafts: [String: QuestionDraft] = [:]
+        for question in request.questions {
+          guard let id = question["id"].string, let option = question["options"].array.first else {
+            continue
+          }
+          var draft = QuestionDraft()
+          draft.selected = [option["value"].string ?? option["label"].string ?? "Continue"]
+          drafts[id] = draft
+        }
+        store.questionDrafts[request.id] = drafts
+        store.respond(request)
+      }
+      try await waitForStore(store) {
+        store.execution.queued.isEmpty && store.execution.activeRunID == nil
+          && store.thread?.rows.contains {
+            $0.kind == "assistant_message" && !$0.streaming
+              && $0.text.contains("NATIVE_QUEUE_EDITED")
+          } == true
+      }
+      guard store.composerText == "Separate normal draft must survive editing." else {
+        throw T3Error("Resume overwrote the normal draft.")
+      }
+      print(
+        "PASS: real queued messages, multiple saved edits and attachments across restart, reorder, cancel, stop/hold, resume and provider reply; separate draft preserved."
+      )
+    } catch {
+      let projection = try? await connection.call(
+        "orchestration.getThreadProjection", payload: .object(["threadId": .string(threadID)]))
+      for run in projection?["runs"].array ?? [] {
+        let status = run["status"].string ?? ""
+        if status == "queued" || ["preparing", "starting", "running", "waiting"].contains(status) {
+          _ = try? await connection.call(
+            "orchestration.dispatchCommand",
+            payload: .object([
+              "type": .string(status == "queued" ? "queued-run.cancel" : "run.interrupt"),
+              "commandId": .string(UUID().uuidString), "threadId": .string(threadID),
+              "runId": run["id"],
+            ]))
+        }
+      }
+      throw error
+    }
+  }
+
+  @MainActor private static func queueSteering(
+    settings: ConnectionSettings, connection: RPCConnection, threadID: String
+  ) async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "t3-steer-smoke-" + UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let store = ClientStore(draftDirectory: directory)
+    store.connect(settings, selecting: threadID)
+    defer { store.disconnect() }
+    try await waitForStore(store) { store.canEditThread && store.catalogReady }
+    do {
+      for (mode, marker) in [
+        (MessageDelivery.queue, "NATIVE_PROMOTED"), (.steer, "NATIVE_DIRECT_STEER"),
+        (.restart, "NATIVE_RESTARTED"),
+      ] {
+        store.setDelivery(.auto)
+        store.composerText =
+          "This is a controlled steering test. Ask one request_user_input question: Ready? with Continue and Stop options, then wait. If a new user message arrives, follow it immediately and do not ask another question. Do not use other tools or inspect any files."
+        store.send()
+        try await waitForStore(store) {
+          store.thread?.pendingRequests.contains { $0.isQuestion && $0.canRespond } == true
+        }
+        if mode == .restart && !store.execution.canRestart {
+          store.stop()
+          try await waitForStore(store) { store.execution.activeRunID == nil }
+          print(
+            "Restart control correctly disabled: the real provider does not advertise interrupt/restart steering."
+          )
+          break
+        }
+        guard store.execution.canSteer else {
+          throw T3Error("The test provider did not expose a steerable turn.")
+        }
+        store.setDelivery(mode)
+        store.composerText =
+          "Stop waiting for the previous question. Reply exactly \(marker) and finish without using tools or asking questions."
+        store.send()
+        if mode == .queue {
+          try await waitForStore(store) {
+            !store.sending.contains(threadID) && store.execution.queued.count == 1
+          }
+          store.steerQueuedMessage(store.execution.queued[0].id)
+        }
+        try await waitForStore(store) {
+          !store.queueBusy && !store.sending.contains(threadID) && store.execution.queued.isEmpty
+        }
+        if mode != .restart,
+          let request = store.thread?.pendingRequests.first(where: {
+            $0.isQuestion && $0.canRespond
+          })
+        {
+          var drafts: [String: QuestionDraft] = [:]
+          for question in request.questions {
+            guard let id = question["id"].string, let option = question["options"].array.first
+            else { continue }
+            var draft = QuestionDraft()
+            draft.selected = [option["value"].string ?? option["label"].string ?? "Continue"]
+            drafts[id] = draft
+          }
+          store.questionDrafts[request.id] = drafts
+          store.respond(request)
+        }
+        try await waitForStore(store) {
+          !store.queueBusy && store.execution.queued.isEmpty && store.execution.activeRunID == nil
+            && store.thread?.rows.contains {
+              $0.kind == "assistant_message" && !$0.streaming && $0.text.contains(marker)
+            } == true
+        }
+        print("PASS: \(marker) through real provider.")
+      }
+    } catch {
+      if let run = store.execution.activeRunID {
+        _ = try? await connection.call(
+          "orchestration.dispatchCommand",
+          payload: .object([
+            "type": .string("run.interrupt"), "commandId": .string(UUID().uuidString),
+            "threadId": .string(threadID), "runId": .string(run), "holdQueue": .bool(true),
+          ]))
+      }
+      for queued in store.execution.queued {
+        _ = try? await connection.call(
+          "orchestration.dispatchCommand",
+          payload: .object([
+            "type": .string("queued-run.cancel"), "commandId": .string(UUID().uuidString),
+            "threadId": .string(threadID), "runId": .string(queued.id),
+          ]))
+      }
+      throw error
+    }
   }
 
   @MainActor private static func waitForStore(

@@ -32,10 +32,12 @@ import T3Core
 
   func refresh() {
     let attachments = store.selectedAttachments
-    let importing = store.importingAttachments.contains(store.selectedID ?? "")
+    let retained = store.queuedEdit?.attachments ?? []
+    let importing = store.importingAttachments.contains(store.composerDraftID ?? "")
     let sending = store.sending.contains(store.selectedID ?? "")
     let key =
-      store.environmentKey + (store.selectedID ?? "") + "\(importing):\(sending):"
+      store.environmentKey + (store.composerDraftID ?? "") + "\(importing):\(sending):"
+      + retained.compactMap { $0["id"].string }.joined(separator: "|")
       + attachments.map {
         "\($0.id):\(String(describing: store.attachmentUploads[$0.id]))"
       }.joined(separator: "|")
@@ -48,6 +50,42 @@ import T3Core
     func add(_ view: NSView) {
       rows.addArrangedSubview(view)
       view.widthAnchor.constraint(equalTo: rows.widthAnchor, constant: -14).isActive = true
+    }
+    let environment = store.environmentKey
+    let retainedItems = retained.map { attachment in
+      AttachmentPreviewItem(name: attachment["name"].string ?? "Attachment") { [weak store] in
+        guard let store, store.environmentKey == environment else {
+          throw T3Error("Reconnect to preview this file.")
+        }
+        return try store.attachmentPreviewRequest(attachment)
+      }
+    }
+    for (index, attachment) in retained.enumerated() {
+      let item = retainedItems[index]
+      let open = ActionButton(item.name) { [weak self] in
+        self?.previews.show(retainedItems, index: index, from: self?.window)
+      }
+      open.bezelStyle = .inline
+      open.cell?.lineBreakMode = .byTruncatingMiddle
+      open.setAccessibilityLabel("Preview queued attachment " + item.name)
+      open.toolTip = "Already attached to the queued message"
+      let remove = ActionButton("") { [weak store] in store?.removeQueuedAttachment(attachment) }
+      remove.image = NSImage(systemSymbolName: "xmark.circle", accessibilityDescription: nil)
+      remove.isBordered = false
+      remove.isEnabled = !sending
+      remove.setAccessibilityLabel("Remove queued attachment " + item.name)
+      let row = NSStackView(views: [open, NSView(), remove])
+      row.spacing = 8
+      row.heightAnchor.constraint(equalToConstant: 38).isActive = true
+      if attachment["type"].string == "image" {
+        let thumbnail = AttachmentThumbnail(item: item, cache: previews.cache) { [weak self] in
+          self?.previews.show(retainedItems, index: index, from: self?.window)
+        }
+        thumbnail.widthAnchor.constraint(equalToConstant: 36).isActive = true
+        thumbnail.heightAnchor.constraint(equalToConstant: 36).isActive = true
+        row.insertArrangedSubview(thumbnail, at: 0)
+      }
+      add(row)
     }
     let repository = store.attachmentRepository
     let items = attachments.map { attachment in
@@ -115,7 +153,8 @@ import T3Core
       add(row)
     }
     if importing { add(NSTextField(labelWithString: "Adding attachments…")) }
-    isHidden = attachments.isEmpty && !importing
-    trayHeight.constant = min(126, CGFloat(attachments.count * 42 + (importing ? 24 : 0)))
+    isHidden = attachments.isEmpty && retained.isEmpty && !importing
+    trayHeight.constant = min(
+      126, CGFloat((attachments.count + retained.count) * 42 + (importing ? 24 : 0)))
   }
 }
