@@ -344,6 +344,7 @@ import T3Core
   var selectedThread: ThreadSummary? {
     selectedID.flatMap { shell.threads[$0] ?? archives.threads[$0] }
   }
+  var environmentKey: String { settings?.endpoint.absoluteString ?? "disconnected" }
   var changingSettings: Bool { commandsInFlight.contains((selectedID ?? "") + ":settings") }
   var canEditThread: Bool {
     ready && thread?.synchronized == true && selectedThread?.archived == false && !changingSettings
@@ -368,6 +369,23 @@ import T3Core
     }
     performThreadCommand(
       "thread.model-selection.set", fields: ["modelSelection": selection], key: "settings")
+  }
+
+  func modelDisabledReason(_ choice: ModelChoice) -> String? {
+    guard catalogReady, canEditThread else {
+      return "Wait for the thread to connect and finish updating."
+    }
+    guard choice.provider.available else {
+      return choice.provider.unavailableReason ?? "This provider is unavailable."
+    }
+    guard let selectedThread else { return "Select a thread first." }
+    if choice.provider.id == selectedThread.model["instanceId"].string,
+      choice.model.id != selectedThread.model["model"].string,
+      !(thread?.rows.isEmpty ?? true), choice.provider.requiresNewThreadForModelChange
+    {
+      return "Start a new thread to change this provider’s model."
+    }
+    return nil
   }
 
   func setModelOption(_ optionID: String, value: JSON) {

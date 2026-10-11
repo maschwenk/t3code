@@ -36,10 +36,12 @@ import T3Core
   func controlTextDidChange(_ obj: Notification) { changed?(stringValue) }
 }
 
-@MainActor final class ComposerControls: NSStackView {
+@MainActor final class ComposerControls: NSStackView, NSPopoverDelegate {
   private let store: ClientStore
   private var fingerprint: String = ""
   private var previousCatalog = ProviderCatalog()
+  private var modelPopover: NSPopover?
+  private weak var previousResponder: NSResponder?
   init(store: ClientStore) {
     self.store = store
     super.init(frame: .zero)
@@ -51,6 +53,10 @@ import T3Core
   required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
   func refresh() {
+    if modelPopover?.isShown == true {
+      (modelPopover?.contentViewController as? ModelPicker)?.refresh()
+      return
+    }
     let selected = store.selectedThread
     let enabled = store.canEditThread && store.catalogReady
     let fingerprint =
@@ -146,40 +152,31 @@ import T3Core
     }
   }
 
-  private func showModels() {
-    guard let selected = store.selectedThread, let anchor = arrangedSubviews.first else { return }
-    let menu = NSMenu()
-    menu.autoenablesItems = false
-    for provider in store.catalog.providers {
-      let group = NSMenuItem(title: provider.name, action: nil, keyEquivalent: "")
-      let submenu = NSMenu()
-      submenu.autoenablesItems = false
-      for model in provider.models.sorted(by: { !$0.legacy && $1.legacy }) {
-        let item = ActionMenuItem(model.name + (model.legacy ? " (legacy)" : "")) { [weak store] in
-          let previous = selected.model["instanceId"].string == provider.id ? selected.model : nil
-          store?.setModel(
-            model.selection(
-              instanceID: provider.id, preserving: previous,
-              planModeEnabled: store?.catalog.planModeEnabled ?? false))
-        }
-        item.state =
-          selected.model["instanceId"].string == provider.id
-            && selected.model["model"].string == model.id ? .on : .off
-        item.isEnabled = provider.available
-        item.toolTip = provider.unavailableReason
-        submenu.addItem(item)
-      }
-      if submenu.items.isEmpty {
-        let item = NSMenuItem(
-          title: provider.unavailableReason ?? "No models available", action: nil, keyEquivalent: ""
-        )
-        item.isEnabled = false
-        submenu.addItem(item)
-      }
-      group.submenu = submenu
-      menu.addItem(group)
+  func showModels() {
+    if modelPopover?.isShown == true {
+      modelPopover?.performClose(nil)
+      return
     }
-    menu.popUp(positioning: nil, at: NSPoint(x: 0, y: anchor.bounds.height), in: anchor)
+    guard store.canEditThread, store.catalogReady, let anchor = arrangedSubviews.first else {
+      return
+    }
+    previousResponder = window?.firstResponder
+    let popover = NSPopover()
+    popover.behavior = .transient
+    popover.delegate = self
+    popover.contentViewController = ModelPicker(store: store) { [weak self] in
+      self?.modelPopover?.performClose(nil)
+    }
+    popover.contentSize = NSSize(width: 520, height: 350)
+    modelPopover = popover
+    popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .minY)
+  }
+
+  func popoverDidClose(_ notification: Notification) {
+    modelPopover = nil
+    fingerprint = ""
+    refresh()
+    if let previousResponder { window?.makeFirstResponder(previousResponder) }
   }
 
   static func modeLabel(_ mode: String) -> String {

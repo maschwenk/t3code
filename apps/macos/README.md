@@ -12,7 +12,11 @@ history with older pages, streamed text and activity, per-thread drafts, new thr
 using the selected thread's project/model, message submission, and stopping a run.
 New threads use the project's workspace root; they do not create a worktree.
 The composer discovers provider instances, models, and model options from the
-server. Runtime modes and enabled plan mode are editable there. Pending approvals
+server. The searchable model picker supports account tabs, device-local favorites
+scoped to the server, legacy models, and keyboard selection. Search matches model
+and account names together, across all account tabs. Open it with ⌘⇧M; use ↑/↓ and
+Return to choose a model, or Escape to close. ⌘B toggles the sidebar and ⌘N creates
+a thread. Runtime modes and enabled plan mode are editable there. Pending approvals
 and agent questions can be answered directly; resolved requests disappear when
 another client answers them. Questions support choices, multiple selections,
 custom answers, and dismissal when the server advertises it. Command and tool
@@ -21,8 +25,8 @@ replace a newer streaming revision. Commands, searches, file changes, and reason
 collapse into expandable work groups. Expanding preserves the full activity text;
 errors and pending questions or approvals stay outside collapsed groups.
 
-The integrated browser, interactive terminal, full diff views, attachments, model
-search, provider setup, question attachments, and T3 Connect
+The integrated browser, interactive terminal, full diff views, attachments,
+provider setup, question attachments, and T3 Connect
 account/relay discovery remain in the existing app. Markdown supports native headings,
 lists, task lists, quotes, code blocks, tables, and selectable links. Copy-message
 actions preserve the original Markdown; code blocks have a Copy code context action.

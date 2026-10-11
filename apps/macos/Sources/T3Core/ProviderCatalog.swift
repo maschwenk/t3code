@@ -5,12 +5,20 @@ public struct ProviderModel: Sendable, Equatable, Identifiable {
   public let name: String
   public let descriptors: [JSON]
   public let legacy: Bool
+  public let shortName: String?
+  public let subProvider: String?
+  public let custom: Bool
+  public let badge: String?
 
   public init(_ value: JSON) throws {
     id = try value.requiredString("slug")
     name = value["name"].string ?? id
     descriptors = value["capabilities"]["optionDescriptors"].array
     legacy = value["isLegacy"].bool
+    shortName = value["shortName"].string
+    subProvider = value["subProvider"].string
+    custom = value["isCustom"].bool
+    badge = value["badge"].string
   }
 
   public func selection(
@@ -45,6 +53,7 @@ public struct ProviderModel: Sendable, Equatable, Identifiable {
 public struct ProviderEntry: Sendable, Equatable, Identifiable {
   public let id: String
   public let name: String
+  public let driver: String
   public let models: [ProviderModel]
   public let available: Bool
   public let unavailableReason: String?
@@ -55,6 +64,7 @@ public struct ProviderEntry: Sendable, Equatable, Identifiable {
   public init(_ value: JSON) throws {
     id = try value.requiredString("instanceId")
     name = value["displayName"].string ?? id
+    driver = value["driver"].string ?? id
     models = try value["models"].array.map(ProviderModel.init)
     available =
       value["enabled"].bool && value["installed"].bool

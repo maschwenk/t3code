@@ -15,7 +15,7 @@ import T3Markdown
 
 @MainActor
 final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDelegate,
-  NSTextViewDelegate, NSWindowDelegate
+  NSTextViewDelegate, NSWindowDelegate, NSMenuItemValidation
 {
   let store: ClientStore
   private let sidebar: SidebarView
@@ -31,6 +31,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
   private let olderButton = NSButton(title: "Load earlier activity", target: nil, action: nil)
   private let modelControls: ComposerControls
   private let requestsPanel: RequestsPanel
+  private var sidebarItem: NSSplitViewItem?
   private var rows: [ConversationEntry] = []
   private var expandedWork: [String: Set<String>] = [:]
   private var rendered:
@@ -61,6 +62,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     super.init(window: window)
     window.delegate = self
     construct()
+    installCommands()
     store.onChange = { [weak self] in self?.refresh() }
     refresh()
   }
@@ -81,7 +83,8 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     let sidebarItem = NSSplitViewItem(sidebarWithViewController: sidebarController)
     sidebarItem.minimumThickness = 220
     sidebarItem.maximumThickness = 360
-    sidebarItem.canCollapse = false
+    sidebarItem.canCollapse = true
+    self.sidebarItem = sidebarItem
     sidebarItem.holdingPriority = .defaultHigh
     let contentItem = NSSplitViewItem(viewController: contentController)
     contentItem.minimumThickness = 480
@@ -219,6 +222,40 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     let button = NSButton(title: title, target: self, action: action)
     button.bezelStyle = .rounded
     return button
+  }
+
+  private func installCommands() {
+    guard let menu = NSApp.mainMenu else { return }
+    let chat = NSMenu(title: "Chat")
+    let view = NSMenu(title: "View")
+    for (parent, title, action, key, modifiers) in [
+      (chat, "New Thread", #selector(newThread), "n", NSEvent.ModifierFlags.command),
+      (chat, "Choose Model…", #selector(chooseModel), "m", [.command, .shift]),
+      (view, "Toggle Sidebar", #selector(toggleSidebar), "b", [.command]),
+    ] {
+      let item = parent.addItem(withTitle: title, action: action, keyEquivalent: key)
+      item.keyEquivalentModifierMask = modifiers
+      item.target = self
+    }
+    for submenu in [chat, view] {
+      let item = NSMenuItem(title: submenu.title, action: nil, keyEquivalent: "")
+      item.submenu = submenu
+      menu.addItem(item)
+    }
+  }
+
+  func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+    if menuItem.action == #selector(chooseModel) {
+      return store.canEditThread && store.catalogReady
+    }
+    if menuItem.action == #selector(newThread) { return store.ready && store.selectedThread != nil }
+    return true
+  }
+
+  @objc private func chooseModel() { modelControls.showModels() }
+  @objc private func toggleSidebar() {
+    guard let sidebarItem else { return }
+    sidebarItem.isCollapsed.toggle()
   }
 
   private func pin(_ child: NSView, to parent: NSView, inset: CGFloat, top: CGFloat) {
