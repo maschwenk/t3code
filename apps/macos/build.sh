@@ -1,6 +1,8 @@
 #!/bin/bash
 set -euo pipefail
+[[ "$(uname -m)" == arm64 ]] || { echo 'T3 Native requires Apple Silicon.' >&2; exit 1; }
 macos_root="$(cd "$(dirname "$0")" && pwd)"
+(cd "$macos_root/Vendor" && shasum -a 256 --check GHOSTTY_SHA256)
 swift build --package-path "$macos_root" -c release
 binary_dir="$(swift build --package-path "$macos_root" -c release --show-bin-path)"
 bundle="${1:-$macos_root/.build/T3 Native.app}"

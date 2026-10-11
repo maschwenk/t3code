@@ -99,7 +99,16 @@ Save… downloads the original file. Formats macOS cannot decode can be opened
 through Actions. Syntax coloring, heading links and workspace content search
 remain incomplete.
 
-The integrated browser, interactive terminal, full diff views,
+Open the terminal drawer with ⌘J or the thread header. Its tabs reuse shells on
+the connected server, including shells opened from Electron. With terminal focus,
+⌘N opens another shell and ⌘W closes the selected shell. Hiding the drawer or
+switching threads leaves shells running; reopening restores their history. Clear
+removes saved output, and Restart explicitly starts a new shell after exit.
+Closing or restarting warns when a command is running. Copy, paste, selection,
+scrolling, Unicode and input methods use the native Ghostty renderer. Split panes
+and terminal search remain incomplete.
+
+The integrated browser, full diff views,
 provider setup, and T3 Connect
 account/relay discovery remain in the existing app. Markdown supports native headings,
 lists, task lists, quotes, code blocks, tables, and selectable links. Copy-message
@@ -108,8 +117,15 @@ Syntax highlighting, inline images, file/citation chips, math, and diagrams rema
 
 ## Build and run
 
-Requires Xcode with Swift 6.2 or later. Swift Package Manager fetches the pinned
+Requires Apple Silicon and Xcode with Swift 6.2 or later. Swift Package Manager fetches the pinned
 Swift Markdown and cmark parser dependencies; the native client needs no JavaScript build.
+GhosttyKit is vendored for arm64 only; Intel Macs are not supported. Ordinary app
+builds need neither Zig nor a Metal compiler. To rebuild GhosttyKit, install the
+Xcode Metal toolchain (`xcodebuild -downloadComponent MetalToolchain`) and run
+`apps/macos/scripts/build-ghostty.sh`. It pins and verifies Zig 0.16.0 and uses the
+Ghostty revision in `Vendor/GHOSTTY_VERSION`, with crash reporting disabled.
+Dependency notices ship in the app's Resources/Licenses directory. To rebuild
+with modified dependency sources, pass `GHOSTTY_ALLOW_LOCAL_CHANGES=1` to that script.
 
 ```sh
 swift test --package-path apps/macos
@@ -188,7 +204,9 @@ thread in the isolated project. It creates its own temporary directory and shell
 checks input/output, Unicode, resizing, history replay, clearing and restarting,
 then closes that shell and deletes its history. It sends no inference request and
 requires a bearer token with `terminal:operate`; older native pairing tokens need
-to be replaced for this check. The terminal view is not connected to the UI yet.
+to be replaced for this check. It also sends input from the native terminal engine
+through the real server PTY. The native test suite checks the renderer's history,
+selection, Unicode input and bracketed paste without opening a window.
 
 ## Measure
 

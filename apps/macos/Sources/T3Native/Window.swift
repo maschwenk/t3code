@@ -109,6 +109,8 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
   private var attachmentConnectionState = ""
   private let attachButton = NSButton(title: "Attach files…", target: nil, action: nil)
   private var sidebarItem: NSSplitViewItem?
+  private let terminal: TerminalPanel
+  private var terminalItem: NSSplitViewItem?
   private var rows: [ConversationEntry] = []
   private var expandedWork: [String: Set<String>] = [:]
   private var expandedPlans: [String: Set<String>] = [:]
@@ -134,6 +136,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
 
   init(store: ClientStore) {
     self.store = store
+    terminal = TerminalPanel(store: store)
     workspace = WorkspacePanel(store: store)
     sidebar = SidebarView(store: store)
     modelControls = ComposerControls(store: store)
@@ -176,7 +179,25 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     sidebarItem.canCollapse = true
     self.sidebarItem = sidebarItem
     sidebarItem.holdingPriority = .defaultHigh
-    let contentItem = NSSplitViewItem(viewController: contentController)
+    let conversationSplit = NSSplitViewController()
+    conversationSplit.splitView.isVertical = false
+    conversationSplit.splitView.dividerStyle = .thin
+    let conversationItem = NSSplitViewItem(viewController: contentController)
+    conversationItem.minimumThickness = 280
+    conversationSplit.addSplitViewItem(conversationItem)
+    let terminalItem = NSSplitViewItem(viewController: terminal)
+    terminalItem.minimumThickness = 180
+    terminalItem.canCollapse = true
+    terminalItem.isCollapsed = true
+    self.terminalItem = terminalItem
+    conversationSplit.addSplitViewItem(terminalItem)
+    terminal.onClose = { [weak self] in
+      self?.terminalItem?.isCollapsed = true
+      self?.terminal.refresh(active: false)
+      self?.window?.makeFirstResponder(self?.composer)
+    }
+    terminal.onOpenLink = { [weak self] url, location in self?.openMarkdownLink(url, at: location) }
+    let contentItem = NSSplitViewItem(viewController: conversationSplit)
     contentItem.minimumThickness = 480
     splitController.addSplitViewItem(sidebarItem)
     splitController.addSplitViewItem(contentItem)
@@ -314,6 +335,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     let header = NSStackView(views: [
       subtitle, NSTextField(labelWithString: "/"), heading, NSView(),
       button("Files", #selector(toggleWorkspace)),
+      button("Terminal", #selector(toggleTerminal)),
     ])
     header.spacing = 10
     right.addSubview(header)
@@ -370,6 +392,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
       (chat, "Resume", #selector(resume), "", []),
       (chat, "Enable Plan Mode", #selector(togglePlanModeEnabled), "", []),
       (view, "Toggle Files", #selector(toggleWorkspace), "e", [.command, .shift]),
+      (view, "Toggle Terminal", #selector(toggleTerminal), "j", [.command]),
       (view, "Save Workspace File", #selector(saveWorkspaceFile), "s", [.command]),
       (view, "Find in Workspace File", #selector(findWorkspaceFile), "f", [.command]),
       (view, "Toggle Sidebar", #selector(toggleSidebar), "b", [.command]),
@@ -433,6 +456,12 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
       workspace.focusSearch()
     }
   }
+  @objc private func toggleTerminal() {
+    guard let terminalItem else { return }
+    terminalItem.isCollapsed.toggle()
+    terminal.refresh(active: !terminalItem.isCollapsed)
+    if terminalItem.isCollapsed { window?.makeFirstResponder(composer) } else { terminal.focus() }
+  }
   @objc private func saveWorkspaceFile() { workspace.saveFile() }
   private func openMarkdownLink(_ url: URL, at location: WorkspaceLocation?) {
     if url.isFileURL {
@@ -477,6 +506,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     let anchor = scrollAnchor()
     sidebar.refresh()
     workspace.refreshContext(active: workspaceItem?.isCollapsed == false)
+    terminal.refresh(active: terminalItem?.isCollapsed == false)
     let selected = store.selectedThread
     heading.stringValue = selected?.title ?? "T3 Native"
     subtitle.stringValue =

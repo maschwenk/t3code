@@ -1,4 +1,4 @@
-import Foundation
+import AppKit
 import T3Core
 
 extension ParitySmoke {
@@ -86,6 +86,26 @@ extension ParitySmoke {
       }
       terminal.write("stty -echo; printf '%s\\n' restarted-$((5 + 6))\r")
       try await waitForTerminal(terminal) { terminalText($0).contains("restarted-11") }
+      _ = NSApplication.shared
+      let surface = TerminalSurface(frame: NSRect(x: 0, y: 0, width: 800, height: 320))
+      defer { surface.stop() }
+      var rendererError: String?
+      surface.onError = { rendererError = $0 }
+      surface.onInput = { [weak terminal] in terminal?.write($0) }
+      surface.start()
+      if let rendererError { throw T3Error(rendererError) }
+      surface.inputEnabled = true
+      surface.synchronize(terminal.state.output)
+      surface.insertText(
+        "printf '%s\\n' renderer-$((6 * 7))",
+        replacementRange: NSRange(location: NSNotFound, length: 0))
+      let enter = NSEvent.keyEvent(
+        with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0,
+        context: nil, characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false,
+        keyCode: 36)!
+      surface.keyDown(with: enter)
+      terminalProgress("native engine input through real PTY")
+      try await waitForTerminal(terminal) { terminalText($0).contains("renderer-42") }
       try await terminal.close()
       let final = try await connection.call(
         "orchestration.getThreadProjection", payload: .object(["threadId": .string(threadID)]))
@@ -93,7 +113,7 @@ extension ParitySmoke {
         throw T3Error("Terminal smoke unexpectedly changed inference state.")
       }
       print(
-        "Terminal smoke passed: real PTY input/output, Unicode/ANSI, resize, detach/history replay, clear, exit, explicit restart, close."
+        "Terminal smoke passed: native engine input through real PTY, Unicode/ANSI, resize, detach/history replay, clear, exit, explicit restart, close."
       )
     } catch {
       terminal.detach()

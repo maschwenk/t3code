@@ -20,5 +20,6 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
+      - run: test "$(uname -m)" = arm64
       - run: swift test --package-path apps/macos
       - run: apps/macos/build.sh
