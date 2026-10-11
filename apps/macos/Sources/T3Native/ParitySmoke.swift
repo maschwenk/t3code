@@ -24,6 +24,11 @@ enum ParitySmoke {
       Task { await connection.close() }
     }
     try await connection.open()
+    if let threadID = Arguments.value("--checkpoint-review-thread") {
+      try await checkpointReview(
+        connection: connection, settings: settings, threadID: threadID, projectID: project)
+      return
+    }
     if let threadID = Arguments.value("--review-thread") {
       try await reviewChanges(
         connection: connection, settings: settings, threadID: threadID, projectID: project)

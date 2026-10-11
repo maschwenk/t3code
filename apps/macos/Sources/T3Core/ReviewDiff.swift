@@ -12,6 +12,7 @@ public struct DiffFile: Equatable, Sendable {
   public var path: String
   public var previousPath: String?
   public var lines: [DiffLine] = []
+  public var rawPatch = ""
   public var isDeleted = false
   public var isBinary = false
   public var incomplete = false
@@ -27,8 +28,10 @@ public enum UnifiedDiff {
     var new = 0
     var oldRemaining = 0
     var newRemaining = 0
-    func finish() {
+    var start = text.utf8.startIndex
+    func finish(at end: String.UTF8View.Index) {
       if var value = file {
+        value.rawPatch = String(decoding: text.utf8[start..<end], as: UTF8.self)
         value.incomplete = value.incomplete || oldRemaining > 0 || newRemaining > 0
         files.append(value)
       }
@@ -40,7 +43,8 @@ public enum UnifiedDiff {
     for raw in text.utf8.split(separator: 10, omittingEmptySubsequences: false) {
       let line = String(decoding: raw, as: UTF8.self)
       if line.hasPrefix("diff --git ") {
-        finish()
+        finish(at: raw.startIndex)
+        start = raw.startIndex
         let paths = headerPaths(String(line.dropFirst(11)))
         file = DiffFile(path: paths.1, previousPath: paths.0 == paths.1 ? nil : paths.0)
         continue
@@ -113,7 +117,7 @@ public enum UnifiedDiff {
         file?.lines.append(DiffLine(kind: .metadata, text: line, oldLine: nil, newLine: nil))
       }
     }
-    finish()
+    finish(at: text.utf8.endIndex)
     return files
   }
 
@@ -190,6 +194,17 @@ public struct ReviewFile: Equatable, Sendable {
   public let previousPath: String?
   public let additions: Int
   public let deletions: Int
+  public init(path: String, previousPath: String?, additions: Int, deletions: Int) {
+    self.path = path
+    self.previousPath = previousPath
+    self.additions = additions
+    self.deletions = deletions
+  }
+  public init(_ patch: DiffFile) {
+    self.init(
+      path: patch.path, previousPath: patch.previousPath,
+      additions: patch.additions, deletions: patch.deletions)
+  }
   public var input: [String: JSON] {
     ["path": .string(path), "previousPath": previousPath.map(JSON.string) ?? .null]
   }
@@ -203,6 +218,20 @@ public struct ReviewSource: Equatable, Sendable {
   public let truncated: Bool
   public let completeFileList: Bool
   public let files: [ReviewFile]
+
+  public init(
+    kind: String, title: String, hash: String, patches: [DiffFile], outputLimited: Bool = false
+  ) {
+    self.kind = kind
+    self.title = title
+    self.hash = hash
+    baseRef = nil
+    truncated = outputLimited || patches.contains(where: \.incomplete)
+    completeFileList = !truncated
+    files = patches.map(ReviewFile.init).sorted {
+      $0.path.localizedStandardCompare($1.path) == .orderedAscending
+    }
+  }
 
   public init(_ value: JSON) throws {
     kind = try value.requiredString("kind")
@@ -234,6 +263,10 @@ public struct ReviewSource: Equatable, Sendable {
 public struct ReviewSnapshot: Sendable {
   public let root: String
   public let sources: [ReviewSource]
+  public init(root: String, sources: [ReviewSource]) {
+    self.root = root
+    self.sources = sources
+  }
   public init(_ value: JSON) throws {
     root = try value.requiredString("cwd")
     sources = try value["sources"].array.map(ReviewSource.init)

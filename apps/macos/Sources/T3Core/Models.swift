@@ -228,6 +228,7 @@ public struct ThreadState: Sendable {
   public private(set) var synchronized = false
   public private(set) var pendingRequests: [PendingRequest] = []
   public private(set) var execution = ThreadExecution()
+  public private(set) var checkpoints = ThreadCheckpoints()
   public private(set) var proposedPlans: [ProposedPlan] = []
   private var planTimes: [String: String] = [:]
   private var projectionUpdatedAt = ""
@@ -280,6 +281,7 @@ public struct ThreadState: Sendable {
         })?["capturedAt"].string
       updateWorkspaceMutationToken()
       execution = ThreadExecution(projection)
+      checkpoints = ThreadCheckpoints(projection)
       projectionUpdatedAt = projection["updatedAt"].string ?? ""
       planTimes = Dictionary(
         projection["turnItems"].array.compactMap { item in
@@ -314,6 +316,7 @@ public struct ThreadState: Sendable {
       let type = try event.requiredString("type")
       let previousRun = execution.latestRunID
       execution.apply(event)
+      checkpoints.apply(event)
       if type.hasPrefix("context-transfer.") || type == "checkpoint.rollback-requested"
         || type == "thread.provider-switched"
       {

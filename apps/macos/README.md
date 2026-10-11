@@ -113,9 +113,15 @@ against a branch or revision. Filter the changed-file list, ignore whitespace,
 wrap long lines, copy a patch, or use ⌘F to search the selected diff. Clicking a
 new line number opens that location in the current workspace file. Completed
 agent tools refresh the comparison; Refresh also picks up external edits.
+Choose Latest turn, a numbered turn, or Full thread to inspect saved checkpoint
+changes. Full thread compares the baseline through the latest saved turn.
+Changed-file cards below assistant replies open that turn or a particular file;
+file selection reuses the fetched comparison. Missing, stale and unfinished
+checkpoints show their availability rather than falling back to a different turn.
+Links open the current workspace file, which may have changed since the checkpoint.
 Changes and Files share the right side of the window. Large patches are bounded
 and labeled when incomplete; complete file totals remain available when supplied
-by the server. Split diffs, checkpoint comparisons, syntax coloring, and line
+by the server. Split diffs, syntax coloring, and line
 annotations remain incomplete. Older pairing sessions need a new pairing token
 for review access.
 
@@ -226,6 +232,12 @@ no inference request and requires `review:write`. Fixtures remain for UI checkin
 If the isolated project's directory lies outside the server's configured workspace,
 pass `--review-fixture-root /path/to/isolated-server-base/worktrees` to create the
 fixture inside that server's permitted managed-worktree directory.
+
+`--checkpoint-review-thread THREAD_ID` uses an existing completed sandbox thread
+with saved checkpoints. It checks turn and full-thread RPCs, exact per-file patch
+copies, current-file access, the timeline entry point, unavailable checkpoints,
+local rollback snapshot handling, reconnect and navigation. It sends no inference
+and verifies the server's run/checkpoint history remains unchanged.
 
 ## Measure
 

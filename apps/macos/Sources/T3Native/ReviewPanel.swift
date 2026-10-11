@@ -148,6 +148,11 @@ final class ReviewPanel: NSViewController, NSTableViewDataSource, NSTableViewDel
   }
 
   func refreshContext(active: Bool) { changes.refreshContext(active: active) }
+  func openCheckpoint(_ id: String, filePath: String?) {
+    search.stringValue = ""
+    changes.openCheckpoint(id, filePath: filePath)
+    refresh()
+  }
   func focus() { view.window?.makeFirstResponder(search) }
   func find() {
     view.window?.makeFirstResponder(text)
@@ -165,16 +170,20 @@ final class ReviewPanel: NSViewController, NSTableViewDataSource, NSTableViewDel
       search.stringValue = ""
       base.stringValue = changes.baseRef
     }
-    let titles = changes.snapshot?.sources.map { $0.title } ?? []
-    if titles != displayedSources {
-      displayedSources = titles
+    let comparisons = changes.comparisons
+    let keys = comparisons.map { $0.id + ":" + $0.title }
+    if keys != displayedSources {
+      displayedSources = keys
       sources.removeAllItems()
-      sources.addItems(withTitles: titles)
+      sources.addItems(withTitles: comparisons.map(\.title))
     }
-    if let index = changes.snapshot?.sources.firstIndex(where: { $0.kind == changes.sourceKind }) {
+    if let index = comparisons.firstIndex(where: { $0.id == changes.sourceKind }) {
       sources.selectItem(at: index)
+    } else {
+      sources.select(nil)
+      sources.title = "Saved changes unavailable"
     }
-    sources.isEnabled = !changes.loading && !titles.isEmpty
+    sources.isEnabled = !changes.loading
     table.isEnabled = !changes.loading
     base.isHidden = changes.sourceKind != "branch-range"
     base.superview?.isHidden = base.isHidden
@@ -224,11 +233,13 @@ final class ReviewPanel: NSViewController, NSTableViewDataSource, NSTableViewDel
       status.stringValue = "Connect to review changes."
     } else if changes.location == nil {
       status.stringValue = "Select a thread to review its workspace."
-    } else if changes.snapshot?.sources.isEmpty == true {
+    } else if !changes.isCheckpoint && changes.snapshot?.sources.isEmpty == true {
       status.stringValue = "This workspace has no supported repository."
     } else if files.isEmpty {
       status.stringValue = "No changes in this comparison."
-    } else if changes.truncated || displayLimited {
+    } else if changes.truncated || displayLimited
+      || changes.isCheckpoint && changes.source?.truncated == true
+    {
       status.stringValue =
         "This patch is incomplete or too large to display in full. Open the file to inspect it. Copy patch includes the loaded patch."
     } else if changes.patch?.isBinary == true {
@@ -295,10 +306,10 @@ final class ReviewPanel: NSViewController, NSTableViewDataSource, NSTableViewDel
   @objc private func reload() { changes.refresh() }
   @objc private func retryFile() { changes.loadFile() }
   @objc private func selectSource() {
-    guard let sources = changes.snapshot?.sources,
-      sources.indices.contains(self.sources.indexOfSelectedItem)
+    let comparisons = changes.comparisons
+    guard comparisons.indices.contains(sources.indexOfSelectedItem)
     else { return }
-    changes.selectSource(sources[self.sources.indexOfSelectedItem].kind)
+    changes.selectSource(comparisons[sources.indexOfSelectedItem].id)
   }
   @objc private func compare() {
     changes.compare(baseRef: base.stringValue, ignoreWhitespace: whitespace.state == .on)

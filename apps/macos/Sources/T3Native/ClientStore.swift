@@ -480,6 +480,30 @@ import T3Core
     return result
   }
 
+  var reviewRepositoryRoot: String? {
+    guard let selectedThread else { return nil }
+    let project =
+      shell.projectDetails[selectedThread.projectID]
+      ?? archives.projectDetails[selectedThread.projectID] ?? .null
+    return selectedThread.worktreePath ?? project["repositoryIdentity"]["rootPath"].string
+      ?? workspaceLocation?.root
+  }
+
+  func checkpointDiff(_ request: CheckpointDiffRequest, at location: WorkspaceLocation)
+    async throws -> String
+  {
+    guard ready, let connection else { throw T3Error("Connect to review saved changes.") }
+    guard workspaceLocation == location, request.threadID == location.threadID else {
+      throw T3Error("The selected thread changed.")
+    }
+    let generation = generation
+    let result = try await connection.call(request.method, payload: request.input)
+    guard self.generation == generation, workspaceLocation == location else {
+      throw T3Error("The selected thread changed while loading its saved diff.")
+    }
+    return try request.validate(result)
+  }
+
   func readWorkspaceFile(_ path: String, at location: WorkspaceLocation) async throws
     -> WorkspaceFileDocument
   {

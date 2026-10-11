@@ -3,11 +3,13 @@ import Foundation
 public enum ConversationEntry: Sendable, Equatable, Identifiable {
   case item(TimelineRow)
   case work(TimelineWorkGroup)
+  case changes(TurnCheckpoint)
 
   public var id: String {
     switch self {
     case .item(let row): row.id
     case .work(let group): group.id
+    case .changes(let checkpoint): "changes:" + checkpoint.id
     }
   }
 
@@ -71,10 +73,25 @@ public struct TimelineWorkGroup: Sendable, Equatable, Identifiable {
 
 public enum ConversationTimeline {
   public static func entries(
-    from rows: [TimelineRow], activeRunID: String?, expandedItemIDs: Set<String> = []
+    from rows: [TimelineRow], activeRunID: String?, expandedItemIDs: Set<String> = [],
+    checkpoints: [TurnCheckpoint] = []
   ) -> [ConversationEntry] {
     var result: [ConversationEntry] = []
     var work: [TimelineRow] = []
+    let nonempty = checkpoints.filter { !$0.files.isEmpty }
+    let byID = Dictionary(nonempty.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+    let byMessage = Dictionary(
+      nonempty.compactMap { checkpoint in
+        checkpoint.assistantMessageID.map { ($0, checkpoint) }
+      }, uniquingKeysWith: { first, _ in first })
+    let visibleAssistants = Set(
+      rows.compactMap { row -> String? in
+        guard row.kind == "assistant_message", !row.inherited,
+          let message = row.item["messageId"].string
+        else { return nil }
+        return row.sourceID + "\u{0}" + message
+      })
+    var shown: Set<String> = []
     func flush(trailing: Bool) {
       guard let first = work.first else { return }
       let isCurrentRun =
@@ -87,6 +104,19 @@ public enum ConversationTimeline {
       work.removeAll(keepingCapacity: true)
     }
     for row in rows {
+      if row.kind == "checkpoint", !row.inherited,
+        let checkpoint = byID[row.item["checkpointId"].string ?? ""],
+        checkpoint.threadID == row.sourceID
+      {
+        if let message = checkpoint.assistantMessageID,
+          visibleAssistants.contains(checkpoint.threadID + "\u{0}" + message)
+        {
+          continue
+        }
+        flush(trailing: false)
+        if shown.insert(checkpoint.id).inserted { result.append(.changes(checkpoint)) }
+        continue
+      }
       // Empty checkpoints do not interrupt otherwise contiguous provider work.
       if row.kind == "checkpoint" && row.item["files"].array.isEmpty { continue }
       if row.canCollapseWork {
@@ -95,6 +125,12 @@ public enum ConversationTimeline {
       } else {
         flush(trailing: false)
         result.append(.item(row))
+        if row.kind == "assistant_message", !row.inherited,
+          let checkpoint = byMessage[row.item["messageId"].string ?? ""],
+          checkpoint.threadID == row.sourceID, shown.insert(checkpoint.id).inserted
+        {
+          result.append(.changes(checkpoint))
+        }
       }
     }
     flush(trailing: true)

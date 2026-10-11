@@ -617,7 +617,8 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     }
     return ConversationTimeline.entries(
       from: visible, activeRunID: store.selectedThread?.activeRunID,
-      expandedItemIDs: expandedWork[store.selectedID ?? ""] ?? [])
+      expandedItemIDs: expandedWork[store.selectedID ?? ""] ?? [],
+      checkpoints: store.thread?.checkpoints.items ?? [])
   }
 
   private func toggleWork(_ group: TimelineWorkGroup) {
@@ -753,6 +754,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     switch rows[row] {
     case .item(let item): item.kind == "proposed_plan" ? planLayout(item).height : render(item).1
     case .work: 36
+    case .changes(let checkpoint): CheckpointCard.height(checkpoint)
     }
   }
 
@@ -760,6 +762,17 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     -> NSView?
   {
     if case .work(let group) = rows[index] { return workCell(group) }
+    if case .changes(let checkpoint) = rows[index] {
+      let location = store.workspaceLocation
+      return CheckpointCard(checkpoint) { [weak self] path in
+        guard let self, let location, store.workspaceLocation == location,
+          checkpoint.threadID == location.threadID
+        else { return }
+        if reviewItem?.isCollapsed == true { toggleReview() }
+        review.openCheckpoint(checkpoint.id, filePath: path)
+        review.focus()
+      }
+    }
     guard case .item(let row) = rows[index] else { return nil }
     if row.kind == "proposed_plan" {
       let layout = planLayout(row)
