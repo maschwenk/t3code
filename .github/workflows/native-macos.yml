@@ -1,0 +1,24 @@
+name: Native macOS prototype
+
+on:
+  pull_request:
+    paths:
+      - apps/macos/**
+      - .github/workflows/native-macos.yml
+  push:
+    branches: [main]
+    paths:
+      - apps/macos/**
+      - .github/workflows/native-macos.yml
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - run: swift test --package-path apps/macos
+      - run: apps/macos/build.sh

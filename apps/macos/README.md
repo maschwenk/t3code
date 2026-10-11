@@ -1,0 +1,95 @@
+# T3 Native prototype
+
+A macOS 14+ AppKit client for an existing T3 protocol-v2 server. The interface uses
+native tables and text controls; it embeds neither Electron nor a web view. Agents,
+SQLite, Git, terminals, and remote access still belong to the existing server.
+Closing this app does not stop that server or its agents.
+
+This first slice supports the active thread sidebar, search, bounded conversation
+history with older pages, streamed text and activity, per-thread drafts, new threads
+using the selected thread's project/model, message submission, and stopping a run.
+New threads use the project's workspace root; they do not create a worktree.
+
+The integrated browser, interactive terminal, full diff views, attachments, model
+selection, archived threads, provider setup, approval responses, and T3 Connect
+account/relay discovery remain in the existing app. Pending approval/input requests
+are shown with a direction to respond there. Markdown supports inline formatting;
+full block layout and syntax highlighting are outside this slice.
+
+## Build and run
+
+Requires Xcode with Swift 6. No third-party Swift packages or JavaScript build are
+needed for the native client.
+
+```sh
+swift test --package-path apps/macos
+apps/macos/build.sh
+open 'apps/macos/.build/T3 Native.app'
+```
+
+The script creates an ad-hoc-signed local app, separate from the installed T3 app.
+It is not a notarized distributable. Quit the prototype before rebuilding its bundle.
+An optional first argument chooses the output bundle, for example
+`apps/macos/build.sh "$HOME/Applications/T3 Native.app"`.
+
+Choose **Connect**, enter the server's base URL and a pairing token from its
+Connections settings. Pairing requests only `orchestration:read` and
+`orchestration:operate`; the exchanged bearer token is saved in Keychain. Uncheck
+the pairing option to use an existing bearer token. HTTPS direct endpoints and
+HTTP loopback endpoints are supported. When the session expires, pair again.
+
+The native client does not open a database or launch a server. Connecting it to a
+live environment makes Send, New thread, and Stop operate on that environment.
+Use a separately running server with a pruned database copy for development; see
+the root AGENTS.md test-data procedure.
+
+## Integration check
+
+A private JSON connection file can be used for local tests without saving a token:
+
+```json
+{ "endpoint": "http://127.0.0.1:4773", "token": "YOUR_BEARER_TOKEN" }
+```
+
+Keep this file outside Git and restrict its permissions (`chmod 600`).
+
+```sh
+apps/macos/.build/release/T3Native --smoke --connection-file /private/path/connection.json
+```
+
+This reads real shell/thread subscriptions and an older history page. To verify a
+real provider reply and idempotent submission, create a disposable project rooted
+in an isolated workspace, then add `--send-smoke --sandbox-project PROJECT_ID`.
+This submits a short prompt to the server's authenticated Codex provider. It must
+not target a project containing ongoing work.
+
+## Measure
+
+```sh
+python3 apps/macos/measure.py --pid NATIVE_PID --pid ELECTRON_PID --seconds 15
+```
+
+The script samples entire descendant trees and reports summed RSS and CPU time as
+a percentage of one core. RSS includes shared pages and is not physical footprint.
+Report the backend separately: the native client uses an external server, whereas
+the Electron desktop normally owns its server. Use the same thread/history and
+idle workloads before comparing. A full-featured desktop and this limited client
+are not equivalent workloads. This sampler does not measure cold launch, input
+latency, scrolling frame times, or energy.
+
+Use `--exclude-pid BACKEND_PID` to exclude a verified backend subtree from the
+desktop client sample. Record that exclusion and measure the backend separately.
+
+## Protocol constraints
+
+The Swift adapter implements the existing Effect JSON RPC framing, WebSocket
+tickets, stream acknowledgements, cancellation, and protocol-v2 snapshots/events.
+It deliberately preserves the existing desktop `creationSource: "web"` value.
+No new server contract is introduced. Changes to those contracts need a native
+smoke run as well as the reducer tests.
+
+One reconnect task owns the session. Reconnect reloads authoritative bounded
+snapshots; cached text remains visible while offline. Mutations are never replayed
+automatically. An unchanged draft retry within this process reuses the command and
+message IDs; after an ambiguous failure across an app restart, check the history
+before submitting again. Drafts are held in memory, not persisted across app quits.
