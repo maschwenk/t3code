@@ -89,8 +89,11 @@ File links in messages, plans and previews open against the connected workspace.
 Folder links reveal their ancestors and contents in the file tree.
 `:line:column` and `#LlineCcolumn` destinations reveal source without changing
 the preview preference; positions beyond the file are clamped to its contents.
-Media/HTML/PDF previews, syntax coloring and heading links,
-file context actions, and workspace content search remain incomplete.
+Right-click a file or file link, or use Actions in the file toolbar, to copy its
+path, open it, reveal it in the host's file manager, or choose an available editor.
+Open and reveal use the connected environment's apps and capabilities.
+Media/HTML/PDF previews, syntax coloring, heading links and workspace content
+search remain incomplete.
 
 The integrated browser, interactive terminal, full diff views,
 provider setup, and T3 Connect

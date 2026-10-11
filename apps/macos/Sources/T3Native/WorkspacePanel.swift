@@ -8,11 +8,13 @@ import T3Core
 
 @MainActor
 final class WorkspacePanel: NSViewController, NSOutlineViewDataSource,
-  NSOutlineViewDelegate, NSTextViewDelegate, NSSearchFieldDelegate
+  NSOutlineViewDelegate, NSTextViewDelegate, NSSearchFieldDelegate, NSMenuDelegate
 {
+  private let store: ClientStore
   let files: WorkspaceFiles
   var onClose: (() -> Void)?
-  private let outline = NSOutlineView()
+  private let outline = WorkspaceOutlineView()
+  private let actionsButton = NSPopUpButton(frame: .zero, pullsDown: true)
   private let search = NSSearchField()
   private let editor = NSTextView()
   private let editorScroll = NSScrollView()
@@ -37,6 +39,7 @@ final class WorkspacePanel: NSViewController, NSOutlineViewDataSource,
   private var updating = false
 
   init(store: ClientStore) {
+    self.store = store
     files = WorkspaceFiles(store: store)
     super.init(nibName: nil, bundle: nil)
     files.onChange = { [weak self] in self?.refresh() }
@@ -49,6 +52,10 @@ final class WorkspacePanel: NSViewController, NSOutlineViewDataSource,
     renderedPreview.onFileLink = { [weak self] id, url in
       guard let self, self.files.selected == id else { return }
       self.open(url)
+    }
+    renderedPreview.fileLinkMenu = { [weak self] id, url in
+      guard let self, self.files.selected == id else { return nil }
+      return FileContextMenu.forLink(url, at: self.files.location, store: self.store)
     }
   }
   required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -75,6 +82,12 @@ final class WorkspacePanel: NSViewController, NSOutlineViewDataSource,
     outline.setAccessibilityLabel("Workspace files")
     outline.target = self
     outline.action = #selector(openSelection)
+    outline.menuAtRow = { [weak self] row in
+      guard let self, let node = self.outline.item(atRow: row) as? WorkspaceNode,
+        let location = self.files.location
+      else { return nil }
+      return FileContextMenu.make(path: node.entry.path, at: location, store: self.store)
+    }
     let treeScroll = NSScrollView()
     treeScroll.documentView = outline
     treeScroll.hasVerticalScroller = true
@@ -94,7 +107,13 @@ final class WorkspacePanel: NSViewController, NSOutlineViewDataSource,
     reloadButton.target = self
     reloadButton.action = #selector(reloadFile)
     let copy = NSButton(title: "Copy", target: self, action: #selector(copyContents))
-    let actions = NSStackView(views: [path, NSView(), copy, reloadButton, saveButton])
+    actionsButton.addItem(withTitle: "Actions")
+    actionsButton.setAccessibilityLabel("File actions")
+    actionsButton.menu?.autoenablesItems = false
+    actionsButton.menu?.delegate = self
+    let actions = NSStackView(views: [
+      path, NSView(), actionsButton, copy, reloadButton, saveButton,
+    ])
     draftsButton.target = self
     draftsButton.action = #selector(openDraft)
     editor.isRichText = false
@@ -189,6 +208,15 @@ final class WorkspacePanel: NSViewController, NSOutlineViewDataSource,
   }
   var storageError: String? { files.storageError }
   func saveDraftsBeforeExit() -> Bool { files.flush() }
+
+  func menuNeedsUpdate(_ menu: NSMenu) {
+    guard menu === actionsButton.menu else { return }
+    menu.removeAllItems()
+    menu.addItem(withTitle: "Actions", action: nil, keyEquivalent: "")
+    guard let selected = files.selected, let location = files.location else { return }
+    FileContextMenu.append(
+      FileContextMenu.make(path: selected.path, at: location, store: store), to: menu)
+  }
 
   private func refresh() {
     guard isViewLoaded else { return }
@@ -291,7 +319,8 @@ final class WorkspacePanel: NSViewController, NSOutlineViewDataSource,
     }
     path.stringValue =
       (files.selected?.path ?? "Select a file") + (files.pendingSave ? " •" : "")
-    path.toolTip = files.selected.map { $0.root + "/" + $0.path }
+    path.toolTip = files.selected.map { FileOpenCapabilities.absolutePath($0.path, root: $0.root) }
+    actionsButton.isEnabled = files.selected != nil
     saveButton.isEnabled = files.canSave
     saveButton.title = files.selectedSaveError == nil ? "Save  ⌘S" : "Retry  ⌘S"
     reloadButton.isEnabled =

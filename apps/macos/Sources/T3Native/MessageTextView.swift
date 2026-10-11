@@ -3,6 +3,7 @@ import T3Markdown
 
 @MainActor final class MessageTextView: NSTextView, NSTextViewDelegate {
   var onOpenLink: ((URL) -> Void)?
+  var fileLinkMenu: ((URL) -> NSMenu?)?
   private let rendered: RenderedMarkdown
 
   init(rendered: RenderedMarkdown, width: CGFloat, height: CGFloat) {
@@ -66,6 +67,10 @@ import T3Markdown
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(link.absoluteString, forType: .string)
           })
+        if let actions = fileLinkMenu?(link) {
+          menu.addItem(.separator())
+          FileContextMenu.append(actions, to: menu)
+        }
       }
     }
     if !menu.items.isEmpty { menu.addItem(.separator()) }

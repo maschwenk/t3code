@@ -10,6 +10,7 @@ import T3Markdown
 {
   var onTask: ((WorkspaceFileID, String, Int, Bool) -> Void)?
   var onFileLink: ((WorkspaceFileID, URL) -> Void)?
+  var fileLinkMenu: ((WorkspaceFileID, URL) -> NSMenu?)?
   private let scroll = NSScrollView()
   private let notice = NSTextField(wrappingLabelWithString: "")
   private let table = NSTableView()
@@ -122,6 +123,10 @@ import T3Markdown
         } else if ["http", "https", "mailto"].contains(url.scheme?.lowercased() ?? "") {
           NSWorkspace.shared.open(url)
         }
+      }
+      content.fileLinkMenu = { [weak self] url in
+        guard let self, self.file == file, self.source == source else { return nil }
+        return self.fileLinkMenu?(file, url)
       }
       let canvas = MarkdownPreviewCanvas(
         frame: NSRect(x: 0, y: 0, width: bounds.width - 16, height: height + 32))

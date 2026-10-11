@@ -417,6 +417,32 @@ import T3Core
     selectedID.flatMap { shell.threads[$0] ?? archives.threads[$0] }
   }
   var environmentKey: String { settings?.endpoint.absoluteString ?? "disconnected" }
+  var fileOpenCapabilities: FileOpenCapabilities {
+    ready && catalogReady ? catalog.fileOpen : FileOpenCapabilities()
+  }
+  func openFileExternally(
+    _ path: String, position: FileSourcePosition? = nil,
+    editor: String, reveal: Bool, at location: WorkspaceLocation
+  ) {
+    guard ready, catalogReady, let connection, workspaceLocation == location else { return }
+    let payload: JSON
+    do {
+      payload = try fileOpenCapabilities.launchInput(
+        path: path, root: location.root, editor: editor, reveal: reveal, position: position)
+    } catch {
+      self.error = error.localizedDescription
+      notify()
+      return
+    }
+    let generation = generation
+    Task {
+      do { _ = try await connection.call("shell.openInEditor", payload: payload) } catch {
+        guard self.generation == generation, workspaceLocation == location else { return }
+        self.error = error.localizedDescription
+        notify()
+      }
+    }
+  }
   var workspaceLocation: WorkspaceLocation? {
     guard let selectedThread else { return nil }
     return WorkspaceLocation(

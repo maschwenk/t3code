@@ -706,7 +706,11 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
         save: { [weak self] in
           if let location { self?.savePlan(layout.document, rowID: row.id, location: location) }
         },
-        openLink: { [weak self] in self?.openMarkdownLink($0, at: location) })
+        openLink: { [weak self] in self?.openMarkdownLink($0, at: location) },
+        fileLinkMenu: { [weak store] url in
+          guard let store else { return nil }
+          return FileContextMenu.forLink(url, at: location, store: store)
+        })
     }
     let cell = NSView()
     let title = NSTextField(labelWithString: "")
@@ -724,6 +728,10 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
       rendered: markdown, width: max(120, timeline.bounds.width - 36), height: bodyHeight)
     let location = store.workspaceLocation
     body.onOpenLink = { [weak self] in self?.openMarkdownLink($0, at: location) }
+    body.fileLinkMenu = { [weak store] url in
+      guard let store else { return nil }
+      return FileContextMenu.forLink(url, at: location, store: store)
+    }
     let copy = ActionButton("") {
       NSPasteboard.general.clearContents()
       NSPasteboard.general.setString(row.text, forType: .string)

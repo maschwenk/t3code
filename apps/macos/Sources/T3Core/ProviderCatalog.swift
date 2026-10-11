@@ -80,6 +80,7 @@ public struct ProviderCatalog: Sendable, Equatable {
   public private(set) var providers: [ProviderEntry] = []
   public private(set) var planModeEnabled = false
   public private(set) var attachmentPolicy = AttachmentPolicy()
+  public private(set) var fileOpen = FileOpenCapabilities()
   private var defaultMode = "approval-required"
   private var projectModes: [String: String] = [:]
   public init(planModeEnabled: Bool = false) { self.planModeEnabled = planModeEnabled }
@@ -91,6 +92,7 @@ public struct ProviderCatalog: Sendable, Equatable {
       providers = try event["config"]["providers"].array.map(ProviderEntry.init)
       applySettings(event["config"]["settings"])
       attachmentPolicy = AttachmentPolicy(event["config"]["environment"]["capabilities"])
+      fileOpen = FileOpenCapabilities(event["config"])
     case "providerStatuses":
       providers = try event["payload"]["providers"].array.map(ProviderEntry.init)
     case "settingsUpdated":

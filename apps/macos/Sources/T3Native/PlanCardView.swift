@@ -28,7 +28,7 @@ import T3Markdown
     layout: PlanCardLayout, inherited: Bool, canSave: Bool,
     toggle: @escaping () -> Void, copy: @escaping () -> Void,
     download: @escaping () -> Void, save: @escaping () -> Void,
-    openLink: @escaping (URL) -> Void
+    openLink: @escaping (URL) -> Void, fileLinkMenu: ((URL) -> NSMenu?)? = nil
   ) {
     super.init(frame: .zero)
     let surface = SurfaceView(raised: true)
@@ -65,7 +65,7 @@ import T3Markdown
     actions.menu?.addItem(saveItem)
     let header = NSStackView(views: [badge, title, NSView(), actions])
     header.spacing = 8
-    let body = PlanBodyView(layout: layout, openLink: openLink)
+    let body = PlanBodyView(layout: layout, openLink: openLink, fileLinkMenu: fileLinkMenu)
     let stack = NSStackView(views: [header, body])
     stack.orientation = .vertical
     stack.alignment = .leading
@@ -104,7 +104,8 @@ import T3Markdown
 
 @MainActor private final class PlanBodyView: NSView {
   private let fade: CAGradientLayer?
-  init(layout: PlanCardLayout, openLink: @escaping (URL) -> Void) {
+  init(layout: PlanCardLayout, openLink: @escaping (URL) -> Void, fileLinkMenu: ((URL) -> NSMenu?)?)
+  {
     fade = layout.document.canCollapse && !layout.expanded ? CAGradientLayer() : nil
     super.init(frame: .zero)
     wantsLayer = true
@@ -118,6 +119,7 @@ import T3Markdown
     let text = MessageTextView(
       rendered: layout.rendered, width: layout.width, height: layout.textHeight)
     text.onOpenLink = openLink
+    text.fileLinkMenu = fileLinkMenu
     text.setAccessibilityLabel("Plan content")
     addSubview(text)
     text.translatesAutoresizingMaskIntoConstraints = false
