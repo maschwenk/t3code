@@ -35,6 +35,16 @@ public struct WorkspaceFileID: Codable, Hashable, Sendable {
   }
 }
 
+public enum WorkspaceTreeNavigation {
+  public static func directories(for path: String, isDirectory: Bool) -> [String] {
+    guard !path.hasPrefix("/") else { return [] }
+    let parts = path.split(separator: "/").filter { $0 != "." }
+    guard !parts.contains("..") else { return [] }
+    let count = isDirectory ? parts.count : max(0, parts.count - 1)
+    return [""] + (0..<count).map { parts.prefix($0 + 1).joined(separator: "/") }
+  }
+}
+
 public struct WorkspaceFileDocument: Codable, Equatable, Sendable {
   public let path: String
   public private(set) var original: String

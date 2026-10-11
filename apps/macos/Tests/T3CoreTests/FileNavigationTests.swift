@@ -61,3 +61,43 @@ import Testing
   #expect(FileSourcePosition(line: 1).range(in: "\r\n\n") == NSRange(location: 0, length: 0))
   #expect(FileSourcePosition(line: 2).range(in: "\r\n\n") == NSRange(location: 2, length: 0))
 }
+
+@Test func folderFailuresRemainStructuredThroughTheRPCEnvelope() throws {
+  for failure in ["path_not_file", "binary_file", "operation_failed"] {
+    let value: JSON = .object([
+      "_tag": .string("Failure"),
+      "cause": .object([
+        "reasons": .array([
+          .object([
+            "_tag": .string("Fail"),
+            "error": .object([
+              "_tag": .string("ProjectReadFileError"), "failure": .string(failure),
+              "message": .string("Cannot read the requested path"),
+            ]),
+          ])
+        ])
+      ]),
+    ])
+    let error = RPCConnection.requestError(value)
+    #expect(error.remoteCode == "ProjectReadFileError")
+    #expect(error.remoteFailure == failure)
+    #expect(error.localizedDescription == "Cannot read the requested path")
+  }
+  let unknown = RPCConnection.requestError(.object(["message": .string("Connection lost")]))
+  #expect(unknown.remoteCode == nil)
+  #expect(unknown.remoteFailure == nil)
+  #expect(unknown.localizedDescription == "Connection lost")
+  #expect(
+    WorkspaceTreeNavigation.directories(for: "docs/nested/readme.md", isDirectory: false) == [
+      "", "docs", "docs/nested",
+    ])
+  #expect(
+    WorkspaceTreeNavigation.directories(for: "docs/nested/", isDirectory: true) == [
+      "", "docs", "docs/nested",
+    ])
+  #expect(WorkspaceTreeNavigation.directories(for: "../outside", isDirectory: true).isEmpty)
+  #expect(WorkspaceTreeNavigation.directories(for: "/tmp/report", isDirectory: true).isEmpty)
+  let root = try #require(WorkspaceMarkdown.link("..", filePath: "docs/readme.md", root: "/repo"))
+  #expect(WorkspaceMarkdown.workspacePath(root, root: "/repo") == ".")
+  #expect(WorkspaceTreeNavigation.directories(for: ".", isDirectory: true) == [""])
+}

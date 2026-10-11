@@ -30,6 +30,8 @@ final class WorkspacePanel: NSViewController, NSOutlineViewDataSource,
   private var nodes: [String: WorkspaceNode] = [:]
   private var treeRevision = -1
   private var displayedFile: WorkspaceFileID?
+  private var displayedDirectory: String?
+  private var pendingTreeSelection: WorkspaceFileID?
   private var expanded: Set<String> = []
   private var renderedLocation: WorkspaceLocation?
   private var updating = false
@@ -198,7 +200,16 @@ final class WorkspacePanel: NSViewController, NSOutlineViewDataSource,
       nodes = [:]
     }
     if search.stringValue != files.query { search.stringValue = files.query }
-    if treeRevision != files.treeRevision {
+    let changedFile = displayedFile != files.selected
+    let changedDirectory = displayedDirectory != files.selectedDirectory
+    if changedFile || changedDirectory { pendingTreeSelection = files.selected }
+    if changedFile || changedDirectory, let selected = files.selected {
+      expanded.formUnion(
+        WorkspaceTreeNavigation.directories(
+          for: selected.path, isDirectory: files.selectedDirectory != nil))
+    }
+    let changedTree = treeRevision != files.treeRevision
+    if changedTree {
       treeRevision = files.treeRevision
       let selection = (outline.item(atRow: outline.selectedRow) as? WorkspaceNode)?.entry.path
       let entries = files.directories.values.flatMap { $0 } + files.searchResults
@@ -225,13 +236,21 @@ final class WorkspacePanel: NSViewController, NSOutlineViewDataSource,
         }
       }
     }
-    let changedFile = displayedFile != files.selected
     displayedFile = files.selected
-    if changedFile, let selected = files.selected, let node = nodes[selected.path] {
+    displayedDirectory = files.selectedDirectory
+    if changedFile || changedDirectory {
+      for path in expanded.sorted() {
+        if let node = nodes[path] { outline.expandItem(node) }
+      }
+    }
+    if let selected = pendingTreeSelection, selected == files.selected,
+      let node = nodes[selected.path]
+    {
       let row = outline.row(forItem: node)
       if row >= 0 {
         outline.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
         outline.scrollRowToVisible(row)
+        pendingTreeSelection = nil
       }
     }
     let document = files.document
@@ -276,7 +295,7 @@ final class WorkspacePanel: NSViewController, NSOutlineViewDataSource,
     saveButton.isEnabled = files.canSave
     saveButton.title = files.selectedSaveError == nil ? "Save  ⌘S" : "Retry  ⌘S"
     reloadButton.isEnabled =
-      document != nil && !files.loadingFile
+      (document != nil || files.selectedDirectory != nil) && !files.loadingFile
       && files.selected.map { !files.saving.contains($0) } == true
     let draftIDs = files.drafts
     if draftsButton.itemArray.compactMap({ $0.representedObject as? String })
@@ -375,7 +394,9 @@ final class WorkspacePanel: NSViewController, NSOutlineViewDataSource,
     expanded.remove(node.entry.path)
   }
   func outlineViewSelectionDidChange(_ notification: Notification) {
-    guard !updating, let node = outline.item(atRow: outline.selectedRow) as? WorkspaceNode,
+    guard !updating else { return }
+    pendingTreeSelection = nil
+    guard let node = outline.item(atRow: outline.selectedRow) as? WorkspaceNode,
       !node.entry.isDirectory
     else { return }
     if files.selected?.path != node.entry.path { files.open(node.entry.path) }

@@ -231,7 +231,7 @@ public actor RPCConnection {
           calls.removeValue(forKey: id)?.resume(returning: exit["value"])
           streams.removeValue(forKey: id)?.finish()
         } else {
-          let error = T3Error(Self.failureMessage(exit), remoteCode: Self.failureCode(exit))
+          let error = Self.requestError(exit)
           calls.removeValue(forKey: id)?.resume(throwing: error)
           streams.removeValue(forKey: id)?.finish(throwing: error)
         }
@@ -261,13 +261,24 @@ public actor RPCConnection {
   }
 
   public static func failureCode(_ value: JSON) -> String? {
-    if let tag = value["_tag"].string, tag.hasSuffix("Error") { return tag }
+    failureDetails(value)?["_tag"].string
+  }
+
+  public static func requestError(_ value: JSON) -> T3Error {
+    let details = failureDetails(value)
+    return T3Error(
+      details?["message"].string ?? failureMessage(value),
+      remoteCode: details?["_tag"].string, remoteFailure: details?["failure"].string)
+  }
+
+  private static func failureDetails(_ value: JSON) -> JSON? {
+    if let tag = value["_tag"].string, tag.hasSuffix("Error") { return value }
     if case .object(let fields) = value {
       for key in ["cause", "error", "failure", "defect", "reasons"] {
-        if let child = fields[key], let code = failureCode(child) { return code }
+        if let child = fields[key], let details = failureDetails(child) { return details }
       }
     }
-    return value.array.lazy.compactMap(failureCode).first
+    return value.array.lazy.compactMap(failureDetails).first
   }
 
   public func close(error: any Error = CancellationError()) {

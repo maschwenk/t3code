@@ -72,10 +72,15 @@ public struct T3Error: LocalizedError, Sendable {
   public let message: String
   public let authentication: Bool
   public let remoteCode: String?
-  public init(_ message: String, authentication: Bool = false, remoteCode: String? = nil) {
+  public let remoteFailure: String?
+  public init(
+    _ message: String, authentication: Bool = false,
+    remoteCode: String? = nil, remoteFailure: String? = nil
+  ) {
     self.message = message
     self.authentication = authentication
     self.remoteCode = remoteCode
+    self.remoteFailure = remoteFailure
   }
   public var errorDescription: String? { message }
 }

@@ -1414,8 +1414,39 @@ enum ParitySmoke {
       reveal.position.range(in: contents).location
         == (contents as NSString).range(of: "[ ] Ordered task").location
     else { throw T3Error("File navigation lost its source location while loading.") }
+    let previewFolder = folder + "/previews"
+    files.search("readme")
+    files.open(previewFolder)
+    try await waitForFiles(files) { !files.loadingFile && !files.loadingTree }
+    guard files.selectedDirectory == previewFolder, files.document == nil,
+      !files.isSearching,
+      files.directories[previewFolder]?.contains(where: { $0.path == markdownPath }) == true,
+      files.directories[folder]?.contains(where: { $0.path == previewFolder && $0.isDirectory })
+        == true
+    else {
+      throw T3Error(
+        "A folder link did not reveal its ancestors and children: directory=\(files.selectedDirectory ?? "none"), message=\(files.message), search=\(files.isSearching), loaded=\(files.directories.keys.sorted())."
+      )
+    }
+    let changingPath = previewFolder + "/changing.txt"
+    let changingURL = URL(fileURLWithPath: location.root).appendingPathComponent(changingPath)
+    try FileManager.default.createDirectory(at: changingURL, withIntermediateDirectories: false)
+    files.open(changingPath)
+    try await waitForFiles(files) { !files.loadingFile && !files.loadingTree }
+    guard files.selectedDirectory == changingPath else {
+      throw T3Error("A folder named like a file was not recognized.")
+    }
+    try FileManager.default.removeItem(at: changingURL)
+    _ = try await store.workspaceCall(
+      "projects.writeFile", at: location,
+      fields: ["relativePath": .string(changingPath), "contents": .string("Now a text file\n")])
+    files.receiveWorkspaceMutation("folder-became-file")
+    try await waitForFiles(files) { files.document?.contents == "Now a text file\n" }
+    guard files.selectedDirectory == nil, files.canEditDocument else {
+      throw T3Error("A workspace mutation did not replace the folder view with the new file.")
+    }
     print(
-      "PASS: Markdown task source offsets and exact CRLF/Unicode autosave, relative file and source-position navigation after loading, CSV/TSV quoted table previews with unchanged source; fixtures \(folder)/previews."
+      "PASS: Markdown task source offsets and exact CRLF/Unicode autosave, relative file and source-position navigation after loading, folder reveal and folder-to-file mutation, CSV/TSV quoted table previews with unchanged source; fixtures \(folder)/previews."
     )
   }
 

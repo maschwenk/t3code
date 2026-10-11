@@ -142,6 +142,7 @@ public enum WorkspaceMarkdown {
     }
     let path = (url.path as NSString).standardizingPath
     let root = (root as NSString).standardizingPath
+    if path == root { return "." }
     let prefix = root == "/" ? "/" : root + "/"
     return path.hasPrefix(prefix) ? String(path.dropFirst(prefix.count)) : path
   }

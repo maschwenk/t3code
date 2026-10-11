@@ -86,6 +86,7 @@ Table display is limited to 100 rows, 30 columns, and 2,000 characters per cell;
 Source retains the complete loaded text. Markdown and table display preferences
 are saved separately. ⌘F opens source for searching without changing that preference.
 File links in messages, plans and previews open against the connected workspace.
+Folder links reveal their ancestors and contents in the file tree.
 `:line:column` and `#LlineCcolumn` destinations reveal source without changing
 the preview preference; positions beyond the file are clamped to its contents.
 Media/HTML/PDF previews, syntax coloring and heading links,

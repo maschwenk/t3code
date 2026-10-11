@@ -40,6 +40,7 @@ struct WorkspaceFileReveal {
   private(set) var query = ""
   private(set) var treeRevision = 0
   private(set) var selected: WorkspaceFileID?
+  private(set) var selectedDirectory: String?
   private(set) var saving: Set<WorkspaceFileID> = []
   private(set) var loadingFile = false
   private(set) var loadingTree = false
@@ -116,6 +117,7 @@ struct WorkspaceFileReveal {
     searchTask = nil
     location = next
     selected = nil
+    selectedDirectory = nil
     requestedReveal = nil
     directories = [:]
     searchResults = []
@@ -142,6 +144,22 @@ struct WorkspaceFileReveal {
     else { return }
     pendingDirectories.append(path)
     runDirectories()
+  }
+
+  private func revealInTree(_ path: String, isDirectory: Bool) {
+    let ancestors = WorkspaceTreeNavigation.directories(for: path, isDirectory: isDirectory)
+    guard !ancestors.isEmpty else { return }
+    let children = Array(ancestors.dropFirst()) + (isDirectory ? [] : [path])
+    for child in children {
+      let parent = child.split(separator: "/").dropLast().joined(separator: "/")
+      if let entries = directories[parent], !entries.contains(where: { $0.path == child }) {
+        directories.removeValue(forKey: parent)
+        requestedDirectories.remove(parent)
+        treeRevision += 1
+        loadDirectory(parent)
+      }
+    }
+    for directory in ancestors { loadDirectory(directory) }
   }
 
   private func runDirectories() {
@@ -240,6 +258,7 @@ struct WorkspaceFileReveal {
     fileTask?.cancel()
     readingFile = false
     let id = WorkspaceFileID(location: location, path: path)
+    if !background || selected != id { selectedDirectory = nil }
     if !background {
       requestedReveal = position.map { WorkspaceFileReveal(file: id, position: $0) }
     }
@@ -250,10 +269,14 @@ struct WorkspaceFileReveal {
       saveErrors.removeValue(forKey: id)
     }
     selected = id
+    for directory in WorkspaceTreeNavigation.directories(for: path, isDirectory: false) {
+      loadDirectory(directory)
+    }
     if !saving.contains(id) { saveAccess[id] = try? store.workspaceFileAccess(at: location) }
     message = ""
     if !reload, documents[id]?.requiresRecovery == true || saveSchedules[id]?.pending == true {
       loadingFile = false
+      revealInTree(path, isDirectory: false)
       onChange?()
       return
     }
@@ -273,6 +296,8 @@ struct WorkspaceFileReveal {
             && documents[id]?.requiresRecovery != true)
         {
           documents[id] = document
+          selectedDirectory = nil
+          revealInTree(path, isDirectory: false)
           if let requestedMutation { refreshedFileTokens[id] = requestedMutation }
           failedReads.remove(id)
           pruneCleanDocuments()
@@ -282,7 +307,19 @@ struct WorkspaceFileReveal {
         guard !Task.isCancelled, self.context == context, selected == id else { return }
         if let requestedMutation { refreshedFileTokens[id] = requestedMutation }
         if documents[id]?.requiresRecovery != true { failedReads.insert(id) }
-        message = error.localizedDescription
+        if let error = error as? T3Error, error.remoteCode == "ProjectReadFileError",
+          error.remoteFailure == "path_not_file", !path.hasPrefix("/"),
+          documents[id]?.requiresRecovery != true
+        {
+          documents.removeValue(forKey: id)
+          selectedDirectory = path
+          requestedReveal = nil
+          if isSearching { search("") }
+          revealInTree(path, isDirectory: true)
+          message = "Folder · " + path
+        } else {
+          message = error.localizedDescription
+        }
       }
       readingFile = false
       loadingFile = false
@@ -451,7 +488,8 @@ struct WorkspaceFileReveal {
       refreshedTreeToken = token
       refresh()
     }
-    guard let selected, let document, !document.requiresRecovery,
+    guard let selected, document != nil || selectedDirectory != nil,
+      document?.requiresRecovery != true,
       saveSchedules[selected]?.pending != true, !saving.contains(selected), !readingFile,
       refreshedFileTokens[selected] != token
     else { return }
