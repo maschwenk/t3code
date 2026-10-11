@@ -28,10 +28,13 @@ final class ReviewPanel: NSViewController, NSTableViewDataSource, NSTableViewDel
   private let copyButton = NSButton(title: "Copy patch", target: nil, action: nil)
   private let retryButton = NSButton(title: "Retry file", target: nil, action: nil)
   private let refreshButton = NSButton(title: "Refresh", target: nil, action: nil)
+  private let expandButton = NSButton(title: "Expand all context", target: nil, action: nil)
+  private let collapseButton = NSButton(title: "Collapse context", target: nil, action: nil)
   private var filtered: [ReviewFile] = []
   private var displayedFiles: [ReviewFile] = []
   private var displayedSources: [String] = []
   private var renderedRevision: UUID?
+  private var renderedFile: UUID?
   private var location: WorkspaceLocation?
   private var updating = false
   private var displayLimited = false
@@ -123,7 +126,13 @@ final class ReviewPanel: NSViewController, NSTableViewDataSource, NSTableViewDel
     scroll.hasVerticalScroller = true
     scroll.autohidesScrollers = true
     splitDiff.onOpenLine = { [weak self] line in self?.open(line: line) }
-    let detail = stack([actions, status, retryButton, scroll, splitDiff])
+    splitDiff.onExpandContext = { [weak self] id in self?.changes.expandContext(id) }
+    expandButton.target = self
+    expandButton.action = #selector(expandContext)
+    collapseButton.target = self
+    collapseButton.action = #selector(collapseContext)
+    let contextActions = NSStackView(views: [expandButton, collapseButton, NSView()])
+    let detail = stack([actions, contextActions, status, retryButton, scroll, splitDiff])
     let split = NSSplitView()
     split.isVertical = false
     split.dividerStyle = .thin
@@ -232,18 +241,25 @@ final class ReviewPanel: NSViewController, NSTableViewDataSource, NSTableViewDel
     openButton.isEnabled = changes.patch != nil && changes.patch?.isDeleted != true
     retryButton.isHidden = changes.fileError == nil
     retryButton.isEnabled = changes.canRefresh
+    expandButton.superview?.isHidden = !changes.canExpandContext
+    expandButton.isEnabled = !changes.loadingContext
+    expandButton.title = changes.loadingContext ? "Loading context…" : "Expand all context"
+    collapseButton.isEnabled = changes.hasExpandedContext || changes.loadingContext
     if renderedRevision != changes.patchRevision {
       renderedRevision = changes.patchRevision
       render()
     }
     status.textColor =
-      changes.error != nil || changes.fileError != nil ? .systemOrange : .secondaryLabelColor
-    if let error = changes.error ?? changes.fileError {
+      changes.error != nil || changes.fileError != nil || changes.contextError != nil
+      ? .systemOrange : .secondaryLabelColor
+    if let error = changes.error ?? changes.fileError ?? changes.contextError {
       status.stringValue = error
     } else if changes.loading {
       status.stringValue = "Loading changes…"
     } else if changes.loadingFile {
       status.stringValue = "Loading patch…"
+    } else if changes.loadingContext {
+      status.stringValue = "Loading unchanged context…"
     } else if !store.ready {
       status.stringValue = "Connect to review changes."
     } else if changes.location == nil {
@@ -252,7 +268,7 @@ final class ReviewPanel: NSViewController, NSTableViewDataSource, NSTableViewDel
       status.stringValue = "This workspace has no supported repository."
     } else if files.isEmpty {
       status.stringValue = "No changes in this comparison."
-    } else if changes.truncated || displayLimited
+    } else if changes.truncated || displayLimited || changes.contextLimited
       || changes.isCheckpoint && changes.source?.truncated == true
     {
       status.stringValue =
@@ -266,16 +282,23 @@ final class ReviewPanel: NSViewController, NSTableViewDataSource, NSTableViewDel
   }
 
   private func render() {
+    let preservePosition = renderedFile == changes.fileRevision
+    renderedFile = changes.fileRevision
     let split = layoutStyle.selectedSegment == 1
     scroll.isHidden = split
     splitDiff.isHidden = !split
     if split {
-      displayLimited = splitDiff.render(changes.patch)
+      displayLimited = splitDiff.render(changes.displayPatch, preservePosition: preservePosition)
     } else {
-      let rendered = ReviewText.render(changes.patch)
+      let position = preservePosition ? ReviewText.capturePosition(text, in: scroll) : []
+      let rendered = ReviewText.render(changes.displayPatch)
       displayLimited = rendered.limited
       text.textStorage?.setAttributedString(rendered.text)
-      text.scrollToBeginningOfDocument(nil)
+      if preservePosition {
+        ReviewText.restorePosition(position, text: text, scroll: scroll)
+      } else {
+        text.scrollToBeginningOfDocument(nil)
+      }
     }
   }
 
@@ -311,6 +334,11 @@ final class ReviewPanel: NSViewController, NSTableViewDataSource, NSTableViewDel
   }
   func controlTextDidChange(_ obj: Notification) { refresh() }
   func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
+    if let string = link as? String, string.hasPrefix("context:"), let id = Int(string.dropFirst(8))
+    {
+      changes.expandContext(id)
+      return true
+    }
     guard let string = link as? String, let line = Int(string) else { return false }
     open(line: line)
     return true
@@ -327,6 +355,8 @@ final class ReviewPanel: NSViewController, NSTableViewDataSource, NSTableViewDel
   @objc private func closePanel() { onClose?() }
   @objc private func reload() { changes.refresh() }
   @objc private func retryFile() { changes.loadFile() }
+  @objc private func expandContext() { changes.expandContext() }
+  @objc private func collapseContext() { changes.collapseContext() }
   @objc private func selectSource() {
     let comparisons = changes.comparisons
     guard comparisons.indices.contains(sources.indexOfSelectedItem)
@@ -347,6 +377,7 @@ final class ReviewPanel: NSViewController, NSTableViewDataSource, NSTableViewDel
   @objc private func changeLayout() {
     UserDefaults.standard.set(
       layoutStyle.selectedSegment == 1 ? "split" : "unified", forKey: "reviewDiffLayout")
+    renderedFile = nil
     render()
     refresh()
   }

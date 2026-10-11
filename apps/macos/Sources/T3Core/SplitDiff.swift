@@ -26,8 +26,9 @@ public struct SplitDiff: Sendable {
       additions.removeAll(keepingCapacity: true)
     }
     for (index, line) in (file?.lines ?? []).enumerated() {
-      let both = line.kind == .context || line.kind == .hunk || line.kind == .metadata
-      let cost = line.text.utf16.count * (both ? 2 : 1) + 64
+      let both =
+        line.kind == .context || line.kind == .hunk || line.kind == .metadata || line.kind == .gap
+      let cost = line.text.utf16.count + (both ? (line.oldText ?? line.text).utf16.count : 0) + 64
       guard index < lineLimit, cost <= characterLimit - characters else {
         limited = true
         break

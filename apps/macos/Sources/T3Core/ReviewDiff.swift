@@ -1,11 +1,13 @@
 import Foundation
 
 public struct DiffLine: Equatable, Sendable {
-  public enum Kind: Sendable { case context, addition, deletion, hunk, metadata }
+  public enum Kind: Sendable { case context, addition, deletion, hunk, metadata, gap }
   public let kind: Kind
   public let text: String
   public let oldLine: Int?
   public let newLine: Int?
+  public var oldText: String? = nil
+  public var contextID: Int? = nil
 }
 
 public struct DiffFile: Equatable, Sendable {
@@ -14,6 +16,7 @@ public struct DiffFile: Equatable, Sendable {
   public var lines: [DiffLine] = []
   public var rawPatch = ""
   public var isDeleted = false
+  public var isNew = false
   public var isBinary = false
   public var incomplete = false
   public var additions: Int { lines.lazy.filter { $0.kind == .addition }.count }
@@ -100,6 +103,7 @@ public enum UnifiedDiff {
       }
       if line.hasPrefix("--- ") {
         let path = patchPath(String(line.dropFirst(4)), prefix: "a/")
+        if path == "/dev/null" { file?.isNew = true }
         if path != "/dev/null", path != file?.path { file?.previousPath = path }
       } else if line.hasPrefix("+++ ") {
         let path = patchPath(String(line.dropFirst(4)), prefix: "b/")
@@ -112,6 +116,8 @@ public enum UnifiedDiff {
         file?.isBinary = true
       } else if line.hasPrefix("deleted file mode ") {
         file?.isDeleted = true
+      } else if line.hasPrefix("new file mode ") {
+        file?.isNew = true
       }
       if !line.isEmpty {
         file?.lines.append(DiffLine(kind: .metadata, text: line, oldLine: nil, newLine: nil))

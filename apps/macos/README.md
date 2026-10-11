@@ -121,9 +121,12 @@ Changed-file cards below assistant replies open that turn or a particular file;
 file selection reuses the fetched comparison. Missing, stale and unfinished
 checkpoints show their availability rather than falling back to a different turn.
 Links open the current workspace file, which may have changed since the checkpoint.
+Workspace comparisons can expand unchanged context inline or for the whole file,
+then collapse it again. Context is loaded on demand and checked against the patch;
+refresh if the file changed during loading. Copy patch retains the original diff.
 Changes and Files share the right side of the window. Large patches are bounded
 and labeled when incomplete; complete file totals remain available when supplied
-by the server. Syntax coloring, context expansion, and line
+by the server. Syntax coloring and line
 annotations remain incomplete. Older pairing sessions need a new pairing token
 for review access.
 

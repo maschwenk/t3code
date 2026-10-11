@@ -48,6 +48,8 @@ extension ParitySmoke {
     try write("deleted.txt", "removed\n")
     try write("old name.txt", "unchanged renamed contents\n")
     try write("whitespace.txt", "let answer = 42\n")
+    let contextBefore = (1...80).map { "context line \($0)" }
+    try write("context.txt", contextBefore.joined(separator: "\n") + "\n")
     try Data([0, 1, 2, 3]).write(to: root.appendingPathComponent("binary.bin"))
     try git(["add", "."])
     try git(["-c", "commit.gpgsign=false", "commit", "-m", "Initial review fixture"])
@@ -60,6 +62,10 @@ extension ParitySmoke {
     try git(["mv", "old name.txt", "new name.txt"])
     try write("新 file.txt", "new untracked file without final newline")
     try write("whitespace.txt", "let   answer   =   42\n")
+    var contextAfter = contextBefore
+    contextAfter[39] = "changed context line 40"
+    let contextContents = contextAfter.joined(separator: "\n") + "\n"
+    try write("context.txt", contextContents)
     try Data([0, 4, 5, 6]).write(to: root.appendingPathComponent("binary.bin"))
     try write(
       "large.txt",
@@ -93,7 +99,8 @@ extension ParitySmoke {
     guard
       names
         == Set([
-          "binary.bin", "changed.txt", "deleted.txt", "large.txt", "new name.txt", "whitespace.txt",
+          "binary.bin", "changed.txt", "context.txt", "deleted.txt", "large.txt", "new name.txt",
+          "whitespace.txt",
           "新 file.txt",
         ]), changes.source?.completeFileList == true
     else {
@@ -120,6 +127,28 @@ extension ParitySmoke {
     guard split.oldScroll.hasHorizontalScroller && split.newScroll.hasHorizontalScroller else {
       throw T3Error("The split diff cannot scroll unwrapped lines.")
     }
+    reviewProgress("context expansion and concurrent edits")
+    changes.selectFile("context.txt")
+    try await waitForChanges(changes) { !changes.loadingFile }
+    let copied = changes.rawPatch
+    changes.expandContext(0)
+    try await waitForChanges(changes) { !changes.loadingContext }
+    guard changes.hasExpandedContext, changes.rawPatch == copied,
+      changes.displayPatch?.lines.contains(where: { $0.text == "context line 20" }) == true
+    else {
+      throw T3Error("Context expansion did not load surrounding lines or changed the copied patch.")
+    }
+    changes.collapseContext()
+    guard !changes.hasExpandedContext else { throw T3Error("Context could not be collapsed.") }
+    changes.loadFile()
+    try await waitForChanges(changes) { !changes.loadingFile }
+    try write("context.txt", contextContents + "unseen edit outside the patch\n")
+    changes.expandContext()
+    try await waitForChanges(changes, allowsError: true) { !changes.loadingContext }
+    guard changes.contextError != nil, changes.patch != nil, !changes.hasExpandedContext else {
+      throw T3Error("An edit during context loading was mixed into an older patch.")
+    }
+    try write("context.txt", contextContents)
     for (name, check) in [
       ("deleted.txt", { (file: DiffFile) in file.isDeleted }),
       ("new name.txt", { (file: DiffFile) in file.previousPath == "old name.txt" }),
@@ -151,6 +180,13 @@ extension ParitySmoke {
     guard changes.source?.files.contains(where: { $0.path == "branch.txt" }) == true,
       changes.source?.files.contains(where: { $0.path == "whitespace.txt" }) == false
     else { throw T3Error("Branch comparison or whitespace filtering failed.") }
+    changes.selectFile("context.txt")
+    try await waitForChanges(changes) { !changes.loadingFile }
+    changes.expandContext()
+    try await waitForChanges(changes) { !changes.loadingContext }
+    guard changes.displayPatch?.lines.compactMap(\.oldLine) == Array(1...80),
+      changes.displayPatch?.lines.compactMap(\.newLine) == Array(1...80)
+    else { throw T3Error("Branch context did not preserve both full-file line sequences.") }
     changes.compare(baseRef: "does-not-exist-native-review", ignoreWhitespace: false)
     reviewProgress("invalid base reference")
     try await waitForChanges(changes, allowsError: true) { !changes.loading }
@@ -207,7 +243,9 @@ extension ParitySmoke {
     }
     continuation.yield(())
     for await _ in stream {
-      if !allowsError, let error = changes.error ?? changes.fileError { throw T3Error(error) }
+      if !allowsError, let error = changes.error ?? changes.fileError ?? changes.contextError {
+        throw T3Error(error)
+      }
       if predicate() { return }
     }
     throw T3Error("Timed out waiting for Changes.")

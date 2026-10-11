@@ -3,6 +3,11 @@ import T3Core
 
 @MainActor enum ReviewText {
   enum Column { case unified, old, new }
+  struct Position {
+    let id: String
+    let offset: CGFloat
+  }
+  private static let anchorKey = NSAttributedString.Key("T3ReviewLine")
   private static let font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
   private static let paragraph: NSParagraphStyle = {
     let value = NSMutableParagraphStyle()
@@ -33,8 +38,9 @@ import T3Core
     }
     let prefix = column == .unified ? padded(old) + padded(new) : padded(column == .old ? old : new)
     let sign = line?.kind == .addition ? "+" : line?.kind == .deletion ? "−" : " "
+    let content = column == .old ? line?.oldText ?? line?.text : line?.text
     let value = NSMutableAttributedString(
-      string: prefix + sign + " " + (line?.text ?? "") + "\n",
+      string: prefix + sign + " " + (content ?? "") + "\n",
       attributes: [.font: font, .foregroundColor: NSColor.labelColor, .paragraphStyle: paragraph])
     if let line {
       switch line.kind {
@@ -46,7 +52,7 @@ import T3Core
         value.addAttribute(
           .backgroundColor, value: NSColor.systemRed.withAlphaComponent(0.13),
           range: NSRange(location: 0, length: value.length))
-      case .hunk:
+      case .hunk, .gap:
         value.addAttribute(
           .foregroundColor, value: NSColor.systemBlue,
           range: NSRange(location: 0, length: value.length))
@@ -65,7 +71,73 @@ import T3Core
         .link, value: String(number),
         range: NSRange(location: prefix.utf16.count - new.count - 1, length: new.count))
     }
+    if let id = line?.contextID {
+      value.addAttribute(
+        .link, value: "context:\(id)",
+        range: NSRange(location: prefix.utf16.count + 2, length: (content ?? "").utf16.count))
+    }
+    let anchor =
+      line?.contextID.map { "gap:\($0)" }
+      ?? (column == .old ? line?.oldLine : line?.newLine).map { "line:\($0)" }
+    if let anchor {
+      value.addAttribute(
+        anchorKey, value: anchor, range: NSRange(location: 0, length: value.length))
+    }
     return value
+  }
+
+  static func capturePosition(_ text: NSTextView, in scroll: NSScrollView) -> [Position] {
+    guard let manager = text.layoutManager, let container = text.textContainer,
+      let storage = text.textStorage, storage.length > 0
+    else { return [] }
+    manager.ensureLayout(for: container)
+    let point = NSPoint(
+      x: 0, y: max(0, scroll.contentView.bounds.minY - text.textContainerInset.height))
+    let glyph = manager.glyphIndex(for: point, in: container)
+    guard glyph < manager.numberOfGlyphs else { return [] }
+    var index = manager.characterIndexForGlyph(at: glyph)
+    var result: [Position] = []
+    while index < storage.length, result.count < 2 {
+      var range = NSRange()
+      let id = storage.attribute(anchorKey, at: index, effectiveRange: &range) as? String
+      if let id {
+        let row = manager.lineFragmentRect(
+          forGlyphAt: manager.glyphIndexForCharacter(at: range.location), effectiveRange: nil)
+        result.append(
+          Position(
+            id: id,
+            offset: row.minY + text.textContainerInset.height - scroll.contentView.bounds.minY))
+      }
+      index = NSMaxRange(range)
+    }
+    return result
+  }
+
+  static func restorePosition(_ positions: [Position], text: NSTextView, scroll: NSScrollView) {
+    guard let manager = text.layoutManager, let container = text.textContainer,
+      let storage = text.textStorage
+    else { return }
+    manager.ensureLayout(for: container)
+    for position in positions {
+      var found: Int?
+      storage.enumerateAttribute(anchorKey, in: NSRange(location: 0, length: storage.length)) {
+        value, range, stop in
+        if value as? String == position.id {
+          found = range.location
+          stop.pointee = true
+        }
+      }
+      if let found {
+        let row = manager.lineFragmentRect(
+          forGlyphAt: manager.glyphIndexForCharacter(at: found), effectiveRange: nil)
+        scroll.contentView.scroll(
+          to: NSPoint(
+            x: scroll.contentView.bounds.minX,
+            y: max(0, row.minY + text.textContainerInset.height - position.offset)))
+        scroll.reflectScrolledClipView(scroll.contentView)
+        return
+      }
+    }
   }
 }
 

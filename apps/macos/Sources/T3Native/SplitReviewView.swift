@@ -7,11 +7,14 @@ import T3Core
   let oldScroll = NSScrollView()
   let newScroll = NSScrollView()
   var onOpenLine: ((Int) -> Void)?
+  var onExpandContext: ((Int) -> Void)?
   private var rendered: SplitReviewText?
   private var widths: [CGFloat] = []
   private var wrapping = false
   private var synchronizing = false
   private var resetPosition = false
+  private var resetSelection = false
+  private var pendingPosition: [ReviewText.Position] = []
 
   override init(frame: NSRect) {
     super.init(frame: frame)
@@ -64,9 +67,11 @@ import T3Core
   }
   required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-  @discardableResult func render(_ file: DiffFile?) -> Bool {
+  @discardableResult func render(_ file: DiffFile?, preservePosition: Bool = false) -> Bool {
+    pendingPosition = preservePosition ? ReviewText.capturePosition(oldText, in: oldScroll) : []
     rendered = SplitReviewText(file)
-    resetPosition = true
+    resetPosition = !preservePosition
+    resetSelection = true
     widths = []
     needsLayout = true
     layoutSubtreeIfNeeded()
@@ -100,7 +105,7 @@ import T3Core
     let ranges = [rendered.oldRanges, rendered.newRanges]
     let texts = [oldText, newText]
     let selections = texts.map {
-      resetPosition ? NSRange(location: 0, length: 0) : $0.selectedRange()
+      resetSelection ? NSRange(location: 0, length: 0) : $0.selectedRange()
     }
     for index in 0..<2 {
       let text = texts[index]
@@ -157,7 +162,17 @@ import T3Core
         to: NSPoint(x: resetPosition ? 0 : scroll.contentView.bounds.minX, y: offset.y))
       scroll.reflectScrolledClipView(scroll.contentView)
     }
+    if !pendingPosition.isEmpty {
+      ReviewText.restorePosition(pendingPosition, text: oldText, scroll: oldScroll)
+      newScroll.contentView.scroll(
+        to: NSPoint(
+          x: newScroll.contentView.bounds.minX,
+          y: oldScroll.contentView.bounds.minY))
+      newScroll.reflectScrolledClipView(newScroll.contentView)
+      pendingPosition = []
+    }
     resetPosition = false
+    resetSelection = false
   }
 
   /// One layout traversal per column; wrapping never creates one text view or layout manager per row.
@@ -196,6 +211,11 @@ import T3Core
   }
 
   func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
+    if let string = link as? String, string.hasPrefix("context:"), let id = Int(string.dropFirst(8))
+    {
+      onExpandContext?(id)
+      return true
+    }
     guard textView === newText, let string = link as? String, let line = Int(string) else {
       return false
     }

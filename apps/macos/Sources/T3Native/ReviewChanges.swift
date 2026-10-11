@@ -11,6 +11,12 @@ import T3Core
   private var previewTask: Task<Void, Never>?
   private var fileTask: Task<Void, Never>?
   private var refreshTask: Task<Void, Never>?
+  private var contextTask: Task<Void, Never>?
+  private var contextRequest = UUID()
+  private var fileContentsInput: [String: JSON]?
+  private var fileContext: DiffContext?
+  private var expandedContext: [Int: Int] = [:]
+  private var contextView: DiffFile?
   private var checkpointRevision: UUID?
   private var loadedCheckpoint: CheckpointDiffRequest?
   private var checkpointPatches: [String: DiffFile] = [:]
@@ -30,6 +36,13 @@ import T3Core
   private(set) var rawPatch = ""
   private(set) var truncated = false
   private(set) var patchRevision = UUID()
+  private(set) var fileRevision = UUID()
+  private(set) var loadingContext = false
+  private(set) var contextError: String?
+  private(set) var contextLimited = false
+  var displayPatch: DiffFile? { contextView ?? patch }
+  var canExpandContext: Bool { connected && fileContentsInput != nil && !loadingFile }
+  var hasExpandedContext: Bool { expandedContext.values.contains { $0 > 0 } }
   var onChange: (() -> Void)?
   var source: ReviewSource? { snapshot?.sources.first { $0.kind == sourceKind } }
   var file: ReviewFile? { source?.files.first { $0.path == selectedPath } }
@@ -228,6 +241,7 @@ import T3Core
         self.patch = patch
         rawPatch = raw
         truncated = resultSource["truncated"].bool || patch.incomplete
+        prepareContext(source: resultSource)
         patchRevision = UUID()
       } catch {
         guard self.context == context, self.selection == selection, !Task.isCancelled else {
@@ -242,6 +256,94 @@ import T3Core
   var absolutePath: String? {
     guard let root = snapshot?.root, let file else { return nil }
     return FileOpenCapabilities.absolutePath(file.path, root: root)
+  }
+
+  private func prepareContext(source: JSON) {
+    guard let patch, !truncated, !patch.isBinary, !patch.isNew, !patch.isDeleted else { return }
+    fileContentsInput = [
+      "sourceKind": .string(sourceKind), "baseRef": source["baseRef"], "headRef": source["headRef"],
+      "changeType": .string(
+        patch.previousPath == nil
+          ? "change" : patch.additions + patch.deletions == 0 ? "rename-pure" : "rename-changed"),
+      "oldPath": .string(patch.previousPath ?? patch.path), "newPath": .string(patch.path),
+    ]
+    contextView = DiffContext.preview(patch)
+  }
+
+  func expandContext(_ id: Int? = nil) {
+    guard active, canExpandContext, !loadingContext, let location, let patch,
+      let input = fileContentsInput
+    else { return }
+    contextRequest = UUID()
+    let request = contextRequest
+    let selection = selection
+    let context = context
+    let cached = fileContext
+    let expanded = expandedContext
+    let ignoreWhitespace = ignoreWhitespace
+    loadingContext = true
+    contextError = nil
+    contextTask = Task { [weak self] in
+      guard let self, !Task.isCancelled else { return }
+      defer {
+        if self.contextRequest == request {
+          loadingContext = false
+          contextTask = nil
+          onChange?()
+        }
+      }
+      do {
+        let loaded: DiffContext
+        if let cached {
+          loaded = cached
+        } else {
+          let contents = try await store.workspaceCall(
+            "review.getDiffFileContents", at: location, fields: input)
+          let old = try contents.requiredString("oldContents")
+          let new = try contents.requiredString("newContents")
+          loaded = try await Task.detached {
+            try DiffContext(
+              patch, oldContents: old, newContents: new, ignoreWhitespace: ignoreWhitespace)
+          }.value
+        }
+        var counts = expanded
+        for gap in loaded.gaps where id == nil || gap.id == id {
+          counts[gap.id] = id == nil ? gap.count : min(gap.count, (counts[gap.id] ?? 0) + 20)
+        }
+        let next = counts
+        let rendered = await Task.detached { loaded.render(expanded: next) }.value
+        guard self.context == context, self.selection == selection, contextRequest == request,
+          !Task.isCancelled
+        else { return }
+        fileContext = loaded
+        expandedContext = next
+        contextView = rendered.file
+        contextLimited = rendered.limited
+        patchRevision = UUID()
+      } catch {
+        guard self.context == context, self.selection == selection, contextRequest == request,
+          !Task.isCancelled
+        else { return }
+        contextError = error.localizedDescription
+      }
+    }
+    onChange?()
+  }
+
+  func collapseContext() {
+    contextRequest = UUID()
+    contextTask?.cancel()
+    contextTask = nil
+    loadingContext = false
+    expandedContext = [:]
+    contextError = nil
+    if let fileContext {
+      let rendered = fileContext.render(expanded: [:])
+      contextView = rendered.file
+      contextLimited = rendered.limited
+    }
+    patchRevision = UUID()
+    onChange?()
   }
 
   func openCheckpoint(_ id: String, filePath: String? = nil) {
@@ -340,6 +442,17 @@ import T3Core
   }
 
   private func resetFile() {
+    fileRevision = UUID()
+    contextRequest = UUID()
+    contextTask?.cancel()
+    contextTask = nil
+    loadingContext = false
+    contextError = nil
+    contextLimited = false
+    fileContext = nil
+    contextView = nil
+    fileContentsInput = nil
+    expandedContext = [:]
     selection = UUID()
     fileTask?.cancel()
     fileTask = nil
