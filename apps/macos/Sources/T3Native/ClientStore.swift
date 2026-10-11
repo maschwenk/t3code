@@ -696,13 +696,30 @@ import T3Core
     }
   }
   func submitComposer() {
-    if let request = questionRequest {
-      advanceQuestion(request)
-    } else if planFollowUp != nil {
-      submitPlan()
-    } else {
-      send()
+    guard sendBlockReason == nil else { return }
+    switch composerAction {
+    case .question: if let request = questionRequest { advanceQuestion(request) }
+    case .plan: submitPlan()
+    case .resume: resume()
+    case .stop: stop()
+    case .message: send()
     }
+  }
+
+  enum ComposerAction { case question, plan, resume, stop, message }
+  var composerAction: ComposerAction {
+    if questionRequest != nil { return .question }
+    let plan = planFollowUp
+    let hasContent =
+      !composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      || !selectedAttachments.isEmpty || importingAttachments.contains(composerDraftID ?? "")
+    let canResume = execution.isHeld || execution.resumableRunID != nil
+    if plan != nil && (pendingPlanSubmission != nil || hasContent || !canResume) { return .plan }
+    if queuedEdit == nil && !hasContent {
+      if execution.activeRunID != nil { return .stop }
+      if canResume { return .resume }
+    }
+    return .message
   }
 
   var pendingPlanSubmission: PendingPlanSubmission? {
@@ -1172,7 +1189,15 @@ import T3Core
       return progress.answer == nil || (progress.isLast && progress.answers == nil)
         ? "Answer the question and finish its uploads before continuing." : nil
     }
-    if planFollowUp != nil { return planSendBlockReason }
+    let action = composerAction
+    if action == .plan { return planSendBlockReason }
+    if action == .resume || action == .stop {
+      guard canEditThread else { return "Wait for the thread to connect." }
+      if sending.contains(selectedID ?? "") { return "Sending…" }
+      if queueBusy { return "Wait for the queue update." }
+      if commandsInFlight.contains((selectedID ?? "") + ":stop") { return "Stopping…" }
+      return nil
+    }
     return messageSendBlockReason
   }
   private var messageSendBlockReason: String? {

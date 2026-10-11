@@ -37,7 +37,11 @@ Enable the optional Plan control from Chat → Enable Plan Mode. This is a saved
 client preference. After a plan finishes, type feedback and choose Refine to stay
 in planning mode, or leave the composer empty and choose Implement. The adjacent
 menu can start implementation in a new thread with the same model and workspace.
-Both paths retain the link to the source plan. If a send loses its connection,
+An empty composer shows Resume for an interrupted or usage-limited thread, including
+one with a proposed plan, and Stop while a run is active. Typing restores the send
+or refinement action. Questions, queued edits, and saved plan-send retries keep
+their own actions; ⌘ Return follows the same action as the primary button.
+Both implementation paths retain the link to the source plan. If a send loses its connection,
 Retry resumes the saved send; its menu can dismiss the retry without stopping
 work already accepted by the server.
 

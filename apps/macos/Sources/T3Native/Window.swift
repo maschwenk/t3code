@@ -860,7 +860,8 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     sendButton.isEnabled = store.sendBlockReason == nil
     attachButton.isEnabled = store.canAttach
     composer.allowsAttachments = store.canAttach
-    let plan = store.planFollowUp
+    let action = store.composerAction
+    let plan = action == .plan ? store.planFollowUp : nil
     planBanner.isHidden = plan == nil
     planBanner.stringValue =
       plan.map {
@@ -868,21 +869,30 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
       } ?? ""
     sendButton.title = plan == nil ? "" : sending ? "Sending…" : store.planActionTitle
     sendButton.imagePosition = plan == nil ? .imageOnly : .noImage
-    let label =
-      store.questionRequest != nil
-      ? (store.activeQuestionProgress?.isLast == true ? "Submit answers" : "Next question")
-      : plan != nil
-        ? store.planActionTitle
-        : store.queuedEdit != nil
-          ? "Save queued message" : store.delivery == .auto ? "Send message" : store.delivery.title
+    let label: String
+    switch action {
+    case .question:
+      label = store.activeQuestionProgress?.isLast == true ? "Submit answers" : "Next question"
+    case .plan: label = store.planActionTitle
+    case .resume: label = "Resume thread"
+    case .stop: label = "Stop generation"
+    case .message:
+      label =
+        store.queuedEdit != nil
+        ? "Save queued message" : store.delivery == .auto ? "Send message" : store.delivery.title
+    }
     sendButton.toolTip = store.sendBlockReason ?? label + " (⌘ Return)"
     sendButton.setAccessibilityLabel(sending ? "Sending message" : label)
     sendButton.image = NSImage(
-      systemSymbolName: store.queuedEdit == nil ? "arrow.up.circle.fill" : "checkmark.circle.fill",
+      systemSymbolName: action == .resume
+        ? "play.circle.fill"
+        : action == .stop
+          ? "stop.circle.fill"
+          : store.queuedEdit == nil ? "arrow.up.circle.fill" : "checkmark.circle.fill",
       accessibilityDescription: nil)
     let execution = store.execution
     let state =
-      "\(store.delivery):\(execution.canQueue):\(execution.canSteer):\(execution.canRestart):\(execution.steeringInterruptsTools):\(store.queuedEdit != nil):\(sending):\(store.questionRequest != nil):\(plan != nil):\(store.planActionTitle):\(store.sendBlockReason ?? "")"
+      "\(action):\(store.delivery):\(execution.canQueue):\(execution.canSteer):\(execution.canRestart):\(execution.steeringInterruptsTools):\(store.queuedEdit != nil):\(sending):\(store.questionRequest != nil):\(plan != nil):\(store.planActionTitle):\(store.sendBlockReason ?? "")"
     if deliveryState != state {
       deliveryState = state
       deliveryButton.removeAllItems()
@@ -919,7 +929,8 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
         }
       }
       deliveryButton.isHidden =
-        store.queuedEdit != nil || store.questionRequest != nil
+        action == .resume || action == .stop || store.queuedEdit != nil
+        || store.questionRequest != nil
         || (plan != nil && store.pendingPlanSubmission == nil
           && store.planActionTitle != "Implement")
       deliveryButton.isEnabled = !sending
