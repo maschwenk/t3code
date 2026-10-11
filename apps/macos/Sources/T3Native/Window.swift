@@ -86,6 +86,8 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
   let store: ClientStore
   private let workspace: WorkspacePanel
   private var workspaceItem: NSSplitViewItem?
+  private let review: ReviewPanel
+  private var reviewItem: NSSplitViewItem?
   private let sidebar: SidebarView
   private let timeline = NSTableView()
   private let timelineScroll = NSScrollView()
@@ -138,6 +140,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     self.store = store
     terminal = TerminalPanel(store: store)
     workspace = WorkspacePanel(store: store)
+    review = ReviewPanel(store: store)
     sidebar = SidebarView(store: store)
     modelControls = ComposerControls(store: store)
     requestsPanel = RequestsPanel(store: store)
@@ -212,6 +215,19 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
       self?.workspaceItem?.isCollapsed = true
     }
     splitController.addSplitViewItem(workspaceItem)
+    let reviewItem = NSSplitViewItem(viewController: review)
+    reviewItem.minimumThickness = 440
+    reviewItem.holdingPriority = .defaultHigh
+    reviewItem.canCollapse = true
+    reviewItem.isCollapsed = true
+    self.reviewItem = reviewItem
+    review.onClose = { [weak self] in
+      self?.reviewItem?.isCollapsed = true
+      self?.review.refreshContext(active: false)
+      self?.window?.makeFirstResponder(self?.composer)
+    }
+    review.onOpenFile = { [weak self] url, location in self?.openMarkdownLink(url, at: location) }
+    splitController.addSplitViewItem(reviewItem)
     window.contentViewController = splitController
     splitController.splitView.setPosition(285, ofDividerAt: 0)
 
@@ -335,6 +351,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     let header = NSStackView(views: [
       subtitle, NSTextField(labelWithString: "/"), heading, NSView(),
       button("Files", #selector(toggleWorkspace)),
+      button("Changes", #selector(toggleReview)),
       button("Terminal", #selector(toggleTerminal)),
     ])
     header.spacing = 10
@@ -392,9 +409,10 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
       (chat, "Resume", #selector(resume), "", []),
       (chat, "Enable Plan Mode", #selector(togglePlanModeEnabled), "", []),
       (view, "Toggle Files", #selector(toggleWorkspace), "e", [.command, .shift]),
+      (view, "Toggle Changes", #selector(toggleReview), "g", [.command, .shift]),
       (view, "Toggle Terminal", #selector(toggleTerminal), "j", [.command]),
       (view, "Save Workspace File", #selector(saveWorkspaceFile), "s", [.command]),
-      (view, "Find in Workspace File", #selector(findWorkspaceFile), "f", [.command]),
+      (view, "Find in File or Diff", #selector(findWorkspaceFile), "f", [.command]),
       (view, "Toggle Sidebar", #selector(toggleSidebar), "b", [.command]),
     ] {
       let item = parent.addItem(withTitle: title, action: action, keyEquivalent: key)
@@ -417,7 +435,8 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
       return workspaceItem?.isCollapsed == false && workspace.files.canSave
     }
     if menuItem.action == #selector(findWorkspaceFile) {
-      return workspaceItem?.isCollapsed == false && workspace.files.document != nil
+      return reviewItem?.isCollapsed == false
+        || workspaceItem?.isCollapsed == false && workspace.files.document != nil
     }
     if menuItem.action == #selector(chooseModel) {
       return store.canEditThread && store.catalogReady
@@ -447,6 +466,8 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     workspaceItem.isCollapsed.toggle()
     if workspaceItem.isCollapsed { workspace.closeEditor() }
     if !workspaceItem.isCollapsed {
+      reviewItem?.isCollapsed = true
+      review.refreshContext(active: false)
       if let window, window.frame.width < 1220 {
         var frame = window.frame
         frame.size.width = 1220
@@ -455,6 +476,22 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
       workspace.refreshContext()
       workspace.focusSearch()
     }
+  }
+  @objc private func toggleReview() {
+    guard let reviewItem else { return }
+    reviewItem.isCollapsed.toggle()
+    if !reviewItem.isCollapsed {
+      workspace.closeEditor()
+      workspaceItem?.isCollapsed = true
+      workspace.refreshContext(active: false)
+      if let window, window.frame.width < 1240 {
+        var frame = window.frame
+        frame.size.width = 1240
+        window.setFrame(frame, display: true)
+      }
+    }
+    review.refreshContext(active: !reviewItem.isCollapsed)
+    if reviewItem.isCollapsed { window?.makeFirstResponder(composer) } else { review.focus() }
   }
   @objc private func toggleTerminal() {
     guard let terminalItem else { return }
@@ -473,7 +510,9 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
       NSWorkspace.shared.open(url)
     }
   }
-  @objc private func findWorkspaceFile() { workspace.findInFile() }
+  @objc private func findWorkspaceFile() {
+    if reviewItem?.isCollapsed == false { review.find() } else { workspace.findInFile() }
+  }
   func finishWorkspaceSaving() async -> Bool { await workspace.finishSaving() }
   var workspaceStorageError: String? { workspace.storageError }
 
@@ -506,6 +545,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     let anchor = scrollAnchor()
     sidebar.refresh()
     workspace.refreshContext(active: workspaceItem?.isCollapsed == false)
+    review.refreshContext(active: reviewItem?.isCollapsed == false)
     terminal.refresh(active: terminalItem?.isCollapsed == false)
     let selected = store.selectedThread
     heading.stringValue = selected?.title ?? "T3 Native"

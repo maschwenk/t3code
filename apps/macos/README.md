@@ -108,8 +108,18 @@ Closing or restarting warns when a command is running. Copy, paste, selection,
 scrolling, Unicode and input methods use the native Ghostty renderer. Split panes
 and terminal search remain incomplete.
 
-The integrated browser, full diff views,
-provider setup, and T3 Connect
+Open Changes from the thread header or ⌘⇧G to review uncommitted work or compare
+against a branch or revision. Filter the changed-file list, ignore whitespace,
+wrap long lines, copy a patch, or use ⌘F to search the selected diff. Clicking a
+new line number opens that location in the current workspace file. Completed
+agent tools refresh the comparison; Refresh also picks up external edits.
+Changes and Files share the right side of the window. Large patches are bounded
+and labeled when incomplete; complete file totals remain available when supplied
+by the server. Split diffs, checkpoint comparisons, syntax coloring, and line
+annotations remain incomplete. Older pairing sessions need a new pairing token
+for review access.
+
+The integrated browser, provider setup, and T3 Connect
 account/relay discovery remain in the existing app. Markdown supports native headings,
 lists, task lists, quotes, code blocks, tables, and selectable links. Copy-message
 actions preserve the original Markdown; code blocks have a Copy code context action.
@@ -140,7 +150,7 @@ An optional first argument chooses the output bundle, for example
 
 Choose **Connect**, enter the server's base URL and a pairing token from its
 Connections settings. Pairing requests `orchestration:read`,
-`orchestration:operate`, and `terminal:operate`; the exchanged bearer token is saved in Keychain. Uncheck
+`orchestration:operate`, `terminal:operate`, and `review:write`; the exchanged bearer token is saved in Keychain. Uncheck
 the pairing option to use an existing bearer token. HTTPS direct endpoints and
 HTTP loopback endpoints are supported. When the session expires, pair again.
 
@@ -207,6 +217,15 @@ requires a bearer token with `terminal:operate`; older native pairing tokens nee
 to be replaced for this check. It also sends input from the native terminal engine
 through the real server PTY. The native test suite checks the renderer's history,
 selection, Unicode input and bracketed paste without opening a window.
+
+`--review-thread THREAD_ID` creates a disposable Git repository and thread in the
+isolated project, then checks actual working-tree and branch patches, complete
+statistics, renames, deletions, binary/Unicode/CRLF/untracked files, whitespace
+filtering, large patches, invalid-ref recovery, navigation and refresh. It sends
+no inference request and requires `review:write`. Fixtures remain for UI checking.
+If the isolated project's directory lies outside the server's configured workspace,
+pass `--review-fixture-root /path/to/isolated-server-base/worktrees` to create the
+fixture inside that server's permitted managed-worktree directory.
 
 ## Measure
 

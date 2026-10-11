@@ -65,7 +65,7 @@ public enum EnvironmentHTTP {
       "subject_token": credential,
       "subject_token_type": "urn:t3:params:oauth:token-type:environment-bootstrap",
       "requested_token_type": "urn:ietf:params:oauth:token-type:access_token",
-      "scope": "orchestration:read orchestration:operate terminal:operate",
+      "scope": "orchestration:read orchestration:operate terminal:operate review:write",
       "client_label": "T3 Native", "client_device_type": "desktop", "client_os": "macOS",
     ]
     let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~"))
@@ -245,6 +245,7 @@ public actor RPCConnection {
 
   public static func failureMessage(_ value: JSON) -> String {
     if let message = value["message"].string { return message }
+    if let detail = value["detail"].string { return detail }
     if case .object(let fields) = value {
       for key in ["cause", "error", "failure", "defect", "reasons"] {
         if let child = fields[key] {
@@ -267,7 +268,7 @@ public actor RPCConnection {
   public static func requestError(_ value: JSON) -> T3Error {
     let details = failureDetails(value)
     return T3Error(
-      details?["message"].string ?? failureMessage(value),
+      details?["message"].string ?? details?["detail"].string ?? failureMessage(value),
       remoteCode: details?["_tag"].string, remoteFailure: details?["failure"].string)
   }
 

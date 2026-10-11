@@ -24,6 +24,11 @@ enum ParitySmoke {
       Task { await connection.close() }
     }
     try await connection.open()
+    if let threadID = Arguments.value("--review-thread") {
+      try await reviewChanges(
+        connection: connection, settings: settings, threadID: threadID, projectID: project)
+      return
+    }
     if let threadID = Arguments.value("--terminal-thread") {
       try await terminal(
         connection: connection, settings: settings, threadID: threadID, projectID: project)
@@ -1855,7 +1860,7 @@ enum ParitySmoke {
     )
   }
 
-  @MainActor private static func waitForStore(
+  @MainActor static func waitForStore(
     _ store: ClientStore, seconds: Int = 25, until predicate: @escaping @MainActor () -> Bool
   ) async throws {
     let (stream, continuation) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
