@@ -82,6 +82,8 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
   private let modelControls: ComposerControls
   private let requestsPanel: RequestsPanel
   private let attachmentTray: AttachmentTray
+  private let attachmentPreviews = AttachmentPreviews()
+  private var attachmentConnectionState = ""
   private let attachButton = NSButton(title: "Attach files…", target: nil, action: nil)
   private var sidebarItem: NSSplitViewItem?
   private var rows: [ConversationEntry] = []
@@ -102,7 +104,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     sidebar = SidebarView(store: store)
     modelControls = ComposerControls(store: store)
     requestsPanel = RequestsPanel(store: store)
-    attachmentTray = AttachmentTray(store: store)
+    attachmentTray = AttachmentTray(store: store, previews: attachmentPreviews)
     let window = NSWindow(
       contentRect: NSRect(x: 0, y: 0, width: 1220, height: 840),
       styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
@@ -372,11 +374,21 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     if window?.isKeyWindow == true { store.markVisibleThreadRead() }
     modelControls.refresh()
     requestsPanel.refresh()
+    attachmentPreviews.updateEnvironment(store.environmentKey)
     attachmentTray.refresh()
     stopButton.isHidden = selected?.activeRunID == nil
     stopButton.isEnabled = store.ready
     window?.contentView?.layoutSubtreeIfNeeded()
     updateRows(conversationEntries(), anchor: anchor)
+    let connectionState = "\(store.environmentKey):\(store.ready)"
+    if connectionState != attachmentConnectionState {
+      attachmentConnectionState = connectionState
+      timeline.reloadData(
+        forRowIndexes: IndexSet(
+          rows.indices.filter {
+            !(rows[$0].item?.item["attachments"].array.isEmpty ?? true)
+          }), columnIndexes: IndexSet(integer: 0))
+    }
     let requests = Set(store.commandsInFlight.filter { $0.hasSuffix(":output") })
     if requests != outputRequests {
       outputRequests = requests
@@ -498,13 +510,18 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     }
     let height =
       max(65, MarkdownRenderer.height(of: markdown.text, width: width) + 45)
-      + CGFloat(row.item["attachments"].array.count * 30)
+      + attachmentHeight(row)
     rendered[row.id] = (row, markdown, width, height)
     return (markdown, height)
   }
 
   func numberOfRows(in tableView: NSTableView) -> Int {
     rows.count
+  }
+
+  private func attachmentHeight(_ row: TimelineRow) -> CGFloat {
+    let attachments = row.item["attachments"].array
+    return attachments.isEmpty ? 0 : MessageAttachmentsView.height(attachments) + 6
   }
 
   func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
@@ -530,7 +547,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
       row.failed
       ? .systemRed : row.kind == "user_message" ? .controlAccentColor : .secondaryLabelColor
     let (markdown, height) = render(row)
-    let bodyHeight = height - 45 - CGFloat(row.item["attachments"].array.count * 30)
+    let bodyHeight = height - 45 - attachmentHeight(row)
     let body = MessageTextView(
       rendered: markdown, width: max(120, timeline.bounds.width - 36), height: bodyHeight)
     let copy = ActionButton("") {
@@ -556,22 +573,14 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     stack.orientation = .vertical
     stack.alignment = .leading
     stack.spacing = 6
-    for attachment in row.item["attachments"].array {
-      let name = attachment["name"].string ?? "Attachment"
-      let download = ActionButton(name + " ↓") { [weak self] in self?.downloadAttachment(attachment)
-      }
-      download.bezelStyle = .inline
-      download.alignment = .left
-      download.font = .systemFont(ofSize: 12)
-      download.image = NSImage(
-        systemSymbolName: attachment["type"].string == "image" ? "photo" : "doc",
-        accessibilityDescription: nil)
-      download.imagePosition = .imageLeading
-      download.setAccessibilityLabel("Download " + name)
-      download.toolTip = ByteCountFormatter.string(
-        fromByteCount: Int64(attachment["sizeBytes"].int ?? 0), countStyle: .file)
-      download.heightAnchor.constraint(equalToConstant: 24).isActive = true
-      stack.addArrangedSubview(download)
+    if !row.item["attachments"].array.isEmpty {
+      let attachments = MessageAttachmentsView(
+        attachments: row.item["attachments"].array, store: store, previews: attachmentPreviews
+      ) { [weak self] in self?.downloadAttachment($0) }
+      stack.addArrangedSubview(attachments)
+      attachments.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+      attachments.heightAnchor.constraint(equalToConstant: attachmentHeight(row) - 6).isActive =
+        true
     }
     cell.addSubview(stack)
     stack.translatesAutoresizingMaskIntoConstraints = false
@@ -636,7 +645,12 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
       guard response == .OK, let url = panel.url, let self, self.store.environmentKey == environment
       else { return }
       Task {
-        do { try await self.store.downloadAttachment(attachment, to: url) } catch {
+        guard self.store.environmentKey == environment else { return }
+        do {
+          let request = try self.store.attachmentPreviewRequest(attachment)
+          let file = try await self.attachmentPreviews.cache.file(for: request)
+          try await file.save(to: url)
+        } catch {
           self.store.error = error.localizedDescription
           self.refresh()
         }

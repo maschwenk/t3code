@@ -148,6 +148,29 @@ enum Smoke {
     print(
       "Connected: \(shell.projects.count) projects, \(shell.threads.count) threads; \(initialRows) recent rows, \(thread.rows.count) after history page; \(Int(Date().timeIntervalSince(start) * 1000)) ms to read."
     )
+    if CommandLine.arguments.contains("--attachment-preview-smoke") {
+      let cache = AttachmentPreviewCache()
+      let attachments = thread.rows.flatMap { $0.item["attachments"].array }
+      guard !attachments.isEmpty else { throw T3Error("The selected thread has no attachments.") }
+      var images = 0
+      for attachment in attachments {
+        let request = try AttachmentPreviewRequest.remote(
+          attachment, connection: connection, settings: settings)
+        let file = try await cache.file(for: request)
+        let reused = try await cache.file(for: request)
+        guard file === reused else { throw T3Error("The preview cache did not reuse the file.") }
+        if attachment["type"].string == "image" {
+          let thumbnail = try await cache.thumbnail(for: request)
+          guard thumbnail.width <= 512, thumbnail.height <= 512 else {
+            throw T3Error("The thumbnail exceeded its decode limit.")
+          }
+          images += 1
+        }
+      }
+      print(
+        "PASS: \(attachments.count) signed attachment previews, \(images) decoded thumbnails, cached file reuse."
+      )
+    }
     if CommandLine.arguments.contains("--send-smoke") {
       guard let project = Arguments.value("--sandbox-project") else {
         throw T3Error("--send-smoke requires --sandbox-project (an isolated project ID).")

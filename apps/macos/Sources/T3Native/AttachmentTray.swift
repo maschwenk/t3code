@@ -7,11 +7,13 @@ import T3Core
 
 @MainActor final class AttachmentTray: NSScrollView {
   private let store: ClientStore
+  private let previews: AttachmentPreviews
   private let rows = AttachmentRows()
   private var fingerprint = ""
   private var trayHeight: NSLayoutConstraint!
-  init(store: ClientStore) {
+  init(store: ClientStore, previews: AttachmentPreviews) {
     self.store = store
+    self.previews = previews
     super.init(frame: .zero)
     drawsBackground = false
     hasVerticalScroller = true
@@ -33,7 +35,7 @@ import T3Core
     let importing = store.importingAttachments.contains(store.selectedID ?? "")
     let sending = store.sending.contains(store.selectedID ?? "")
     let key =
-      (store.selectedID ?? "") + "\(importing):\(sending):"
+      store.environmentKey + (store.selectedID ?? "") + "\(importing):\(sending):"
       + attachments.map {
         "\($0.id):\(String(describing: store.attachmentUploads[$0.id]))"
       }.joined(separator: "|")
@@ -47,7 +49,14 @@ import T3Core
       rows.addArrangedSubview(view)
       view.widthAnchor.constraint(equalTo: rows.widthAnchor, constant: -14).isActive = true
     }
-    for attachment in attachments {
+    let repository = store.attachmentRepository
+    let items = attachments.map { attachment in
+      AttachmentPreviewItem(name: attachment.name) {
+        guard let repository else { throw T3Error("The saved attachment is unavailable.") }
+        return .local(try repository.file(attachment), name: attachment.name)
+      }
+    }
+    for (index, attachment) in attachments.enumerated() {
       let label = NSTextField(labelWithString: attachment.name)
       label.font = .systemFont(ofSize: 12, weight: .medium)
       label.lineBreakMode = .byTruncatingMiddle
@@ -74,11 +83,20 @@ import T3Core
       labels.spacing = 2
       label.widthAnchor.constraint(equalTo: labels.widthAnchor).isActive = true
       detail.widthAnchor.constraint(equalTo: labels.widthAnchor).isActive = true
-      let icon = NSImageView(
-        image: NSImage(
-          systemSymbolName: attachment.type == "image" ? "photo" : "doc",
-          accessibilityDescription: nil)!)
-      icon.widthAnchor.constraint(equalToConstant: 24).isActive = true
+      let open = { [weak self] in self?.previews.show(items, index: index, from: self?.window) }
+      let icon: NSView
+      if attachment.type == "image" {
+        icon = AttachmentThumbnail(item: items[index], cache: previews.cache) { open() }
+      } else {
+        let button = ActionButton("") { open() }
+        button.isBordered = false
+        button.image = NSImage(systemSymbolName: "doc", accessibilityDescription: nil)
+        button.setAccessibilityLabel("Preview " + attachment.name)
+        button.toolTip = "Preview " + attachment.name
+        icon = button
+      }
+      icon.widthAnchor.constraint(equalToConstant: 36).isActive = true
+      icon.heightAnchor.constraint(equalToConstant: 36).isActive = true
       let row = NSStackView(views: [icon, labels])
       row.spacing = 8
       row.heightAnchor.constraint(equalToConstant: 38).isActive = true

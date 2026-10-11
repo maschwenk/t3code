@@ -623,21 +623,14 @@ import T3Core
   var attachmentRepository: AttachmentRepository? {
     settings.map { draftRepository.attachmentRepository(for: $0.endpoint) }
   }
-  func downloadAttachment(_ attachment: JSON, to destination: URL) async throws {
+  func attachmentPreviewRequest(_ attachment: JSON) throws -> AttachmentPreviewRequest {
     guard let connection, let settings, ready else {
       throw T3Error("Connect before downloading attachments.")
     }
-    let issued = try await connection.call(
-      "assets.createUrl",
-      payload: .object([
-        "resource": .object([
-          "_tag": .string("attachment"), "attachmentId": attachment["id"],
-          "fileName": attachment["name"], "mimeType": attachment["mimeType"],
-        ])
-      ]))
-    let url = try AttachmentHTTP.signedURL(
-      issued.requiredString("relativeUrl"), endpoint: settings.endpoint, prefix: "/api/assets/")
-    try await AttachmentHTTP.download(url, to: destination)
+    return try .remote(attachment, connection: connection, settings: settings)
+  }
+  func downloadAttachment(_ attachment: JSON, to destination: URL) async throws {
+    try await attachmentPreviewRequest(attachment).load(destination)
   }
   var sendBlockReason: String? {
     guard let id = selectedID, canEditThread else { return "Wait for the thread to connect." }
