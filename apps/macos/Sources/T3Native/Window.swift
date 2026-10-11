@@ -2,6 +2,13 @@ import AppKit
 import T3Core
 import T3Markdown
 
+@MainActor private final class ConversationWindow: NSWindow {
+  var questionShortcut: ((NSEvent) -> Bool)?
+  override func keyDown(with event: NSEvent) {
+    if questionShortcut?(event) != true { super.keyDown(with: event) }
+  }
+}
+
 @MainActor final class Composer: NSTextView {
   var submit: (() -> Void)?
   var editLatestQueued: (() -> Bool)?
@@ -118,7 +125,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     requestsPanel = RequestsPanel(store: store)
     attachmentTray = AttachmentTray(store: store, previews: attachmentPreviews)
     queuePanel = QueuePanel(store: store, previews: attachmentPreviews)
-    let window = NSWindow(
+    let window = ConversationWindow(
       contentRect: NSRect(x: 0, y: 0, width: 1220, height: 840),
       styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
       backing: .buffered, defer: false)
@@ -216,7 +223,10 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     composer.textContainer?.widthTracksTextView = true
     composer.delegate = self
     composer.setAccessibilityLabel("Message")
-    composer.submit = { [weak store] in store?.send() }
+    composer.submit = { [weak store] in store?.submitComposer() }
+    (window as? ConversationWindow)?.questionShortcut = { [weak requestsPanel] in
+      requestsPanel?.handleNumberKey($0) ?? false
+    }
     composer.editLatestQueued = { [weak store] in
       guard let store, store.queuedEdit == nil, !store.queueBusy,
         let message = store.execution.queued.last
@@ -411,6 +421,10 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     composer.isEditable =
       selected?.archived != true
       && !(store.queuedEdit != nil && store.sending.contains(store.selectedID ?? ""))
+      && store.questionRequest.map { $0.canRespond && !store.questionBusy($0) } != false
+      && store.activeQuestionProgress?.question["allowCustomAnswer"] != .bool(false)
+    composer.setAccessibilityLabel(
+      store.questionRequest == nil ? "Message" : "Answer to the current question")
     if window?.isKeyWindow == true { store.markVisibleThreadRead() }
     modelControls.refresh()
     requestsPanel.refresh()
@@ -428,7 +442,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
       timeline.reloadData(
         forRowIndexes: IndexSet(
           rows.indices.filter {
-            !(rows[$0].item?.item["attachments"].array.isEmpty ?? true)
+            !(rows[$0].item?.attachments.isEmpty ?? true)
           }), columnIndexes: IndexSet(integer: 0))
     }
     let requests = Set(store.commandsInFlight.filter { $0.hasSuffix(":output") })
@@ -566,7 +580,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
   }
 
   private func attachmentHeight(_ row: TimelineRow) -> CGFloat {
-    let attachments = row.item["attachments"].array
+    let attachments = row.attachments
     return attachments.isEmpty ? 0 : MessageAttachmentsView.height(attachments) + 6
   }
 
@@ -619,9 +633,9 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     stack.orientation = .vertical
     stack.alignment = .leading
     stack.spacing = 6
-    if !row.item["attachments"].array.isEmpty {
+    if !row.attachments.isEmpty {
       let attachments = MessageAttachmentsView(
-        attachments: row.item["attachments"].array, store: store, previews: attachmentPreviews
+        attachments: row.attachments, store: store, previews: attachmentPreviews
       ) { [weak self] in self?.downloadAttachment($0) }
       stack.addArrangedSubview(attachments)
       attachments.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
@@ -671,16 +685,19 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
   func textDidChange(_ notification: Notification) {
     store.composerText = composer.string
     updateComposerControls()
+    requestsPanel.refresh()
   }
   private func updateComposerControls() {
-    let sending = store.sending.contains(store.selectedID ?? "")
+    let sending = store.composerBusy
     sendButton.isEnabled = store.sendBlockReason == nil
     attachButton.isEnabled = store.canAttach
     composer.allowsAttachments = store.canAttach
     sendButton.title = ""
     let label =
-      store.queuedEdit != nil
-      ? "Save queued message" : store.delivery == .auto ? "Send message" : store.delivery.title
+      store.questionRequest != nil
+      ? (store.activeQuestionProgress?.isLast == true ? "Submit answers" : "Next question")
+      : store.queuedEdit != nil
+        ? "Save queued message" : store.delivery == .auto ? "Send message" : store.delivery.title
     sendButton.toolTip = store.sendBlockReason ?? label + " (⌘ Return)"
     sendButton.setAccessibilityLabel(sending ? "Sending message" : label)
     sendButton.image = NSImage(
@@ -688,7 +705,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
       accessibilityDescription: nil)
     let execution = store.execution
     let state =
-      "\(store.delivery):\(execution.canQueue):\(execution.canSteer):\(execution.canRestart):\(execution.steeringInterruptsTools):\(store.queuedEdit != nil):\(sending)"
+      "\(store.delivery):\(execution.canQueue):\(execution.canSteer):\(execution.canRestart):\(execution.steeringInterruptsTools):\(store.queuedEdit != nil):\(sending):\(store.questionRequest != nil)"
     if deliveryState != state {
       deliveryState = state
       deliveryButton.removeAllItems()
@@ -707,12 +724,12 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
           mode == .auto || mode == .queue && execution.canQueue
           || mode == .steer && execution.canSteer || mode == .restart && execution.canRestart
       }
-      deliveryButton.isHidden = store.queuedEdit != nil
+      deliveryButton.isHidden = store.queuedEdit != nil || store.questionRequest != nil
       deliveryButton.isEnabled = !sending
       deliveryButton.toolTip = "Message delivery: " + store.delivery.title
     }
   }
-  @objc private func send() { store.send() }
+  @objc private func send() { store.submitComposer() }
   private func downloadAttachment(_ attachment: JSON) {
     guard let window else { return }
     let panel = NSSavePanel()

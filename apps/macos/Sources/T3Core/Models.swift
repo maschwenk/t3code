@@ -106,6 +106,7 @@ public struct TimelineRow: Sendable, Equatable, Identifiable {
   public let streaming: Bool
   public let position: Int
   public let inherited: Bool
+  public let attachments: [JSON]
 
   public init(item: JSON, position: Int, sourceID: String, inherited: Bool = false) throws {
     self.item = item
@@ -114,6 +115,16 @@ public struct TimelineRow: Sendable, Equatable, Identifiable {
     kind = try item.requiredString("type")
     self.position = position
     self.inherited = inherited
+    if kind == "user_input_request",
+      case .object(let files) = item["questionAnswer"]["attachmentsByQuestionId"]
+    {
+      let ordered = item["questions"].array.compactMap { $0["id"].string }
+      attachments = (ordered + files.keys.filter { !ordered.contains($0) }.sorted()).flatMap {
+        files[$0]?.array ?? []
+      }
+    } else {
+      attachments = item["attachments"].array
+    }
     streaming = item["streaming"].bool || item["status"].string == "running"
     switch kind {
     case "user_message":
@@ -164,8 +175,13 @@ public struct TimelineRow: Sendable, Equatable, Identifiable {
       title = "Approval request"
       text = item["prompt"].string ?? item["appName"].string ?? "Agent requested approval"
     case "user_input_request":
-      title = "Question"
-      text = item["questions"].array.compactMap { $0["question"].string }.joined(separator: "\n")
+      title = item["status"].string == "completed" ? "Answered questions" : "Question"
+      text = item["questions"].array.map { question in
+        let prompt = question["question"].string ?? ""
+        let answer = item["questionAnswer"]["answers"][question["id"].string ?? ""]
+        let reply = answer.string ?? answer.array.compactMap(\.string).joined(separator: ", ")
+        return reply.isEmpty ? prompt : prompt + "\n" + reply
+      }.joined(separator: "\n\n")
     case "todo_list":
       title = "Plan"
       text = item["steps"].array.map {

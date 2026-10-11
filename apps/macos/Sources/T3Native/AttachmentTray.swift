@@ -34,7 +34,7 @@ import T3Core
     let attachments = store.selectedAttachments
     let retained = store.queuedEdit?.attachments ?? []
     let importing = store.importingAttachments.contains(store.composerDraftID ?? "")
-    let sending = store.sending.contains(store.selectedID ?? "")
+    let sending = store.composerBusy
     let key =
       store.environmentKey + (store.composerDraftID ?? "") + "\(importing):\(sending):"
       + retained.compactMap { $0["id"].string }.joined(separator: "|")

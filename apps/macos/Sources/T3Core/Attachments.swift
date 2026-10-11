@@ -27,9 +27,11 @@ public struct AttachmentPolicy: Sendable, Equatable {
   public static let imageLimit = 10 * 1024 * 1024
   public static let fileLimit = 50 * 1024 * 1024
   public var uploads = false
+  public var questions = false
   public var fileBytes: Int?
   public init(_ capabilities: JSON = .null) {
     uploads = capabilities["attachmentUploads"].bool
+    questions = capabilities["questionAttachments"].bool
     fileBytes = capabilities["fileAttachments"]["maxUploadBytes"].int.map {
       min($0, Self.fileLimit)
     }

@@ -7,8 +7,8 @@ import T3Core
   private(set) var showingArchives = false
   private(set) var archiveError: String?
   private(set) var sortedThreads: [ThreadSummary] = []
-  var thread: ThreadState?
-  var selectedID: String?
+  var thread: ThreadState? { didSet { questionProgressCache = nil } }
+  var selectedID: String? { didSet { questionProgressCache = nil } }
   var status = "Connect to your T3 server"
   var error: String?
   var ready = false
@@ -18,19 +18,41 @@ import T3Core
   private(set) var queuedEdits: [String: QueuedEdit] = [:] { didSet { scheduleDraftSave() } }
   private var deliveries: [String: MessageDelivery] = [:] { didSet { scheduleDraftSave() } }
   private(set) var attachmentDrafts: [String: [DraftAttachment]] = [:] {
-    didSet { scheduleDraftSave() }
+    didSet {
+      questionProgressCache = nil
+      scheduleDraftSave()
+    }
   }
   enum UploadState: Equatable {
     case uploading(Int)
     case ready
     case failed(String)
   }
-  private(set) var attachmentUploads: [String: UploadState] = [:]
-  private(set) var importingAttachments: Set<String> = []
+  private(set) var attachmentUploads: [String: UploadState] = [:] {
+    didSet { questionProgressCache = nil }
+  }
+  private(set) var importingAttachments: Set<String> = [] { didSet { questionProgressCache = nil } }
   private var uploadJobs: [String: (token: UUID, task: Task<Void, Never>)] = [:]
-  var catalog = ProviderCatalog()
+  var catalog = ProviderCatalog() { didSet { questionProgressCache = nil } }
   private(set) var catalogReady = false
-  var questionDrafts: [String: [String: QuestionDraft]] = [:] { didSet { scheduleDraftSave() } }
+  var questionDrafts: [String: [String: QuestionDraft]] = [:] {
+    didSet {
+      questionProgressCache = nil
+      scheduleDraftSave()
+    }
+  }
+  private var questionPages: [String: Int] = [:] {
+    didSet {
+      questionProgressCache = nil
+      scheduleDraftSave()
+    }
+  }
+  private var questionResponses: [String: PendingQuestionResponse] = [:] {
+    didSet { scheduleDraftSave() }
+  }
+  private var selectedRequestID: String?
+  private var questionProgressCache:
+    (request: PendingRequest, progress: QuestionProgress, attachments: [String: [DraftAttachment]])?
   private(set) var storageError: String?
   private(set) var commandsInFlight: Set<String> = []
   var onChange: (() -> Void)?
@@ -61,7 +83,7 @@ import T3Core
   func connect(_ settings: ConnectionSettings, selecting threadID: String? = nil) {
     if let current = self.settings, current.endpoint != settings.endpoint,
       !drafts.isEmpty || !questionDrafts.isEmpty || !pending.isEmpty || !attachmentDrafts.isEmpty
-        || !queuedEdits.isEmpty,
+        || !queuedEdits.isEmpty || !questionResponses.isEmpty || !deliveries.isEmpty,
       !flushDrafts()
     {
       error = "Save the current drafts before switching servers."
@@ -82,6 +104,9 @@ import T3Core
       pending = [:]
       queuedEdits = [:]
       deliveries = [:]
+      questionPages = [:]
+      questionResponses = [:]
+      selectedRequestID = nil
       catalog = ProviderCatalog()
       do {
         let saved = try draftRepository.load(for: settings.endpoint)
@@ -91,6 +116,8 @@ import T3Core
         attachmentDrafts = saved.attachments ?? [:]
         queuedEdits = saved.queuedEdits ?? [:]
         deliveries = saved.deliveries ?? [:]
+        questionPages = saved.questionPages ?? [:]
+        questionResponses = saved.questionResponses ?? [:]
         draftEndpoint = settings.endpoint
         storageError = nil
       } catch {
@@ -340,7 +367,8 @@ import T3Core
         SavedDrafts(
           messages: drafts.filter { !$0.value.isEmpty }, submissions: pending,
           questions: questionDrafts, attachments: attachmentDrafts.filter { !$0.value.isEmpty },
-          queuedEdits: queuedEdits, deliveries: deliveries),
+          queuedEdits: queuedEdits, deliveries: deliveries,
+          questionPages: questionPages, questionResponses: questionResponses),
         for: draftEndpoint)
       storageError = nil
       return true
@@ -463,8 +491,8 @@ import T3Core
     guard request.canRespond, thread?.pendingRequests.contains(request) == true else { return }
     var fields: [String: JSON] = ["requestId": .string(request.id)]
     if request.isQuestion {
-      guard let answers = request.answers(from: questionDrafts[request.id] ?? [:]) else { return }
-      fields["answers"] = answers
+      respondToQuestions(request)
+      return
     } else {
       guard let decision, request.options.contains(where: { $0["decision"].string == decision })
       else { return }
@@ -474,10 +502,223 @@ import T3Core
   }
 
   func dismiss(_ request: PendingRequest) {
-    guard request.dismissible, thread?.pendingRequests.contains(request) == true else { return }
+    guard request.dismissible, thread?.pendingRequests.contains(request) == true,
+      let id = selectedID, !questionBusy(request),
+      !request.questions.contains(where: {
+        guard let questionID = $0["id"].string else { return false }
+        return importingAttachments.contains(
+          QuestionDraft.attachmentKey(threadID: id, requestID: request.id, questionID: questionID))
+      })
+    else { return }
     performThreadCommand(
       "thread.user-input.dismiss", fields: ["requestId": .string(request.id)],
-      key: "request:" + request.id)
+      key: "request:" + request.id,
+      completion: { [weak self] in self?.clearQuestionDrafts(request, threadID: id) })
+  }
+
+  var selectedRequest: PendingRequest? {
+    let requests = thread?.pendingRequests ?? []
+    return requests.first { $0.id == selectedRequestID } ?? requests.first
+  }
+  var questionRequest: PendingRequest? {
+    guard queuedEdit == nil, let request = selectedRequest, request.isQuestion else { return nil }
+    return request
+  }
+  func selectRequest(_ id: String) {
+    guard !importingAttachments.contains(composerDraftID ?? "") else { return }
+    selectedRequestID = id
+    notify()
+  }
+  func questionBusy(_ request: PendingRequest) -> Bool {
+    commandsInFlight.contains((selectedID ?? "") + ":request:" + request.id)
+  }
+  func questionIndex(_ request: PendingRequest) -> Int {
+    min(max(0, questionPages[request.id] ?? 0), max(0, request.questions.count - 1))
+  }
+  var activeQuestion: JSON? {
+    guard let request = questionRequest, !request.questions.isEmpty else { return nil }
+    return request.questions[questionIndex(request)]
+  }
+  private func questionAttachments(_ request: PendingRequest) -> [String: [DraftAttachment]] {
+    guard let threadID = selectedID else { return [:] }
+    return Dictionary(
+      request.questions.compactMap { question in
+        guard let id = question["id"].string else { return nil }
+        return (
+          id,
+          attachmentDrafts[
+            QuestionDraft.attachmentKey(
+              threadID: threadID, requestID: request.id, questionID: id)] ?? []
+        )
+      }, uniquingKeysWith: { _, new in new })
+  }
+  func questionProgress(_ request: PendingRequest) -> QuestionProgress {
+    if let cached = questionProgressCache, cached.request == request { return cached.progress }
+    let attachments = questionAttachments(request)
+    var blocked = Set<String>()
+    for question in request.questions {
+      guard let id = question["id"].string, let threadID = selectedID else { continue }
+      let key = QuestionDraft.attachmentKey(
+        threadID: threadID, requestID: request.id, questionID: id)
+      let files = attachments[id] ?? []
+      if importingAttachments.contains(key)
+        || (!files.isEmpty && !catalog.attachmentPolicy.questions)
+        || files.contains(where: { attachmentUploads[$0.id] != .ready })
+      {
+        blocked.insert(id)
+      }
+    }
+    let progress = QuestionProgress(
+      questions: request.questions, drafts: questionDrafts[request.id] ?? [:],
+      index: questionPages[request.id] ?? 0, attachmentCounts: attachments.mapValues(\.count),
+      blocked: blocked)
+    questionProgressCache = (request, progress, attachments)
+    return progress
+  }
+  var activeQuestionProgress: QuestionProgress? { questionRequest.map(questionProgress) }
+  var composerBusy: Bool {
+    sending.contains(selectedID ?? "") || questionRequest.map(questionBusy) == true
+  }
+  func setQuestionPage(_ index: Int, request: PendingRequest) {
+    guard !questionBusy(request), !importingAttachments.contains(composerDraftID ?? ""),
+      thread?.pendingRequests.contains(request) == true
+    else { return }
+    questionPages[request.id] = min(max(0, index), max(0, request.questions.count - 1))
+    notify()
+  }
+  func chooseQuestionOption(_ value: String, request: PendingRequest, question: JSON) {
+    guard canEditThread, request.canRespond, !questionBusy(request), queuedEdit == nil,
+      thread?.pendingRequests.contains(request) == true,
+      let id = question["id"].string, request.questions.contains(question),
+      question["options"].array.contains(where: {
+        ($0["value"].string ?? $0["label"].string) == value
+      })
+    else { return }
+    var draft = questionDrafts[request.id]?[id] ?? QuestionDraft()
+    let custom = draft.custom.trimmingCharacters(in: .whitespacesAndNewlines)
+    if !custom.isEmpty, let threadID = selectedID {
+      let old = (drafts[threadID] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+      drafts[threadID] = old.isEmpty ? custom : old + "\n\n" + custom
+    }
+    draft.custom = ""
+    if question["multiSelect"].bool {
+      if draft.selected.contains(value) {
+        draft.selected.removeAll { $0 == value }
+      } else {
+        draft.selected.append(value)
+      }
+    } else {
+      draft.selected = [value]
+    }
+    questionDrafts[request.id, default: [:]][id] = draft
+    notify()
+  }
+  func advanceQuestion(_ request: PendingRequest) {
+    guard canEditThread, request.canRespond, !questionBusy(request), queuedEdit == nil,
+      thread?.pendingRequests.contains(request) == true
+    else { return }
+    let progress = questionProgress(request)
+    guard progress.answer != nil else { return }
+    if progress.isLast {
+      respondToQuestions(request)
+    } else {
+      setQuestionPage(progress.index + 1, request: request)
+    }
+  }
+  func submitComposer() {
+    if let request = questionRequest { advanceQuestion(request) } else { send() }
+  }
+  private func respondToQuestions(_ request: PendingRequest) {
+    guard canEditThread, request.canRespond, !questionBusy(request), let id = selectedID,
+      let connection, let answers = questionProgress(request).answers
+    else { return }
+    let attachments = questionProgressCache?.attachments ?? [:]
+    do { try catalog.attachmentPolicy.validate(attachments.values.flatMap { $0 }) } catch {
+      self.error = error.localizedDescription
+      notify()
+      return
+    }
+    let command =
+      questionResponses[request.id].flatMap {
+        $0.matches(answers: answers, attachments: attachments) ? $0 : nil
+      }
+      ?? PendingQuestionResponse(
+        threadID: id, requestID: request.id, answers: answers, attachments: attachments)
+    questionResponses[request.id] = command
+    guard flushDrafts() else { return }
+    let operation = id + ":request:" + request.id
+    commandsInFlight.insert(operation)
+    error = nil
+    notify()
+    let generation = generation
+    Task {
+      defer {
+        if self.generation == generation {
+          commandsInFlight.remove(operation)
+          notify()
+        }
+      }
+      do {
+        _ = try await connection.call("orchestration.dispatchCommand", payload: command.payload)
+        guard self.generation == generation else { return }
+        clearQuestionDrafts(request, threadID: id)
+      } catch {
+        guard self.generation == generation else { return }
+        self.error = error.localizedDescription
+      }
+    }
+  }
+  private func clearQuestionDrafts(_ request: PendingRequest, threadID: String) {
+    clearQuestionDrafts([request.id], threadID: threadID)
+  }
+  private func clearQuestionDrafts(_ requestIDs: Set<String>, threadID: String) {
+    guard !requestIDs.isEmpty else { return }
+    var files: [DraftAttachment] = []
+    var changed = false
+    for key in Set(attachmentDrafts.keys).union(importingAttachments) {
+      guard let scope = QuestionDraft.attachmentScope(key), scope.threadID == threadID,
+        requestIDs.contains(scope.requestID)
+      else { continue }
+      files += attachmentDrafts.removeValue(forKey: key) ?? []
+      importingAttachments.remove(key)
+      changed = true
+    }
+    for id in requestIDs {
+      if let response = questionResponses.removeValue(forKey: id) {
+        files += response.attachments.values.flatMap { $0 }
+        changed = true
+      }
+      if questionDrafts.removeValue(forKey: id) != nil { changed = true }
+      if questionPages.removeValue(forKey: id) != nil { changed = true }
+    }
+    guard changed else { return }
+    files = Array(Dictionary(files.map { ($0.id, $0) }, uniquingKeysWith: { _, new in new }).values)
+    for file in files {
+      uploadJobs.removeValue(forKey: file.id)?.task.cancel()
+      attachmentUploads.removeValue(forKey: file.id)
+    }
+    if flushDrafts(), let repository = attachmentRepository {
+      for file in files { repository.remove(file) }
+    }
+    startAttachmentUploads()
+  }
+  private func cleanResolvedQuestions(_ value: JSON, threadID: String) {
+    let records: [JSON]
+    if value["kind"].string == "snapshot" {
+      records = value["projection"]["runtimeRequests"].array
+    } else if value["event"]["type"].string == "runtime-request.updated" {
+      records = [value["event"]["payload"]]
+    } else {
+      return
+    }
+    let ids = Set(
+      records.compactMap { record -> String? in
+        guard record["kind"].string == "user_input",
+          ["resolved", "expired", "cancelled"].contains(record["status"].string ?? "")
+        else { return nil }
+        return record["id"].string
+      })
+    clearQuestionDrafts(ids, threadID: threadID)
   }
 
   private func performThreadCommand(
@@ -544,9 +785,13 @@ import T3Core
         for try await value in subscription.values {
           try Task.checkCancellation()
           guard self.generation == generation && selectionGeneration == selection else { return }
+          let previousSequence = thread?.sequence
           if try thread?.apply(value) == true {
             select(id, force: true)
             return
+          }
+          if value["kind"].string == "snapshot" || thread?.sequence != previousSequence {
+            cleanResolvedQuestions(value, threadID: id)
           }
           notify()
         }
@@ -632,10 +877,36 @@ import T3Core
       $0.runID < $1.runID
     }
   }
-  var composerDraftID: String? { queuedEdit?.draftID ?? selectedID }
+  var messageDraftID: String? { queuedEdit?.draftID ?? selectedID }
+  var composerDraftID: String? {
+    if let request = questionRequest, let id = selectedID,
+      let questionID = activeQuestion?["id"].string
+    {
+      return QuestionDraft.attachmentKey(
+        threadID: id, requestID: request.id, questionID: questionID)
+    }
+    return messageDraftID
+  }
   var composerText: String {
-    get { composerDraftID.flatMap { drafts[$0] } ?? "" }
-    set { if let id = composerDraftID { drafts[id] = newValue } }
+    get {
+      if let request = questionRequest, let id = activeQuestion?["id"].string {
+        return questionDrafts[request.id]?[id]?.custom ?? ""
+      }
+      return messageDraftID.flatMap { drafts[$0] } ?? ""
+    }
+    set {
+      if let request = questionRequest, let question = activeQuestion,
+        let id = question["id"].string
+      {
+        guard question["allowCustomAnswer"] != .bool(false), !questionBusy(request) else { return }
+        var draft = questionDrafts[request.id]?[id] ?? QuestionDraft()
+        draft.custom = newValue
+        if !newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { draft.selected = [] }
+        questionDrafts[request.id, default: [:]][id] = draft
+      } else if let id = messageDraftID {
+        drafts[id] = newValue
+      }
+    }
   }
   var execution: ThreadExecution { thread?.execution ?? ThreadExecution() }
   var delivery: MessageDelivery {
@@ -712,8 +983,14 @@ import T3Core
     composerDraftID.flatMap { attachmentDrafts[$0] } ?? []
   }
   var canAttach: Bool {
-    selectedThread?.archived == false && !importingAttachments.contains(composerDraftID ?? "")
-      && !(queuedEdit != nil && sending.contains(selectedID ?? ""))
+    guard selectedThread?.archived == false, !importingAttachments.contains(composerDraftID ?? ""),
+      !(queuedEdit != nil && sending.contains(selectedID ?? ""))
+    else { return false }
+    if let request = questionRequest {
+      return request.canRespond && !questionBusy(request) && catalog.attachmentPolicy.questions
+        && activeQuestion?["allowCustomAnswer"] != .bool(false)
+    }
+    return true
   }
   var attachmentRepository: AttachmentRepository? {
     settings.map { draftRepository.attachmentRepository(for: $0.endpoint) }
@@ -728,7 +1005,19 @@ import T3Core
     try await attachmentPreviewRequest(attachment).load(destination)
   }
   var sendBlockReason: String? {
-    guard let threadID = selectedID, let id = composerDraftID, canEditThread else {
+    if let request = questionRequest {
+      guard canEditThread, request.canRespond else {
+        return request.reason ?? "Wait for the question to reconnect."
+      }
+      if questionBusy(request) { return "Sending answers…" }
+      let progress = questionProgress(request)
+      return progress.answer == nil || (progress.isLast && progress.answers == nil)
+        ? "Answer the question and finish its uploads before continuing." : nil
+    }
+    return messageSendBlockReason
+  }
+  private var messageSendBlockReason: String? {
+    guard let threadID = selectedID, let id = messageDraftID, canEditThread else {
       return "Wait for the thread to connect."
     }
     if sending.contains(threadID) { return "Sending…" }
@@ -778,7 +1067,12 @@ import T3Core
     guard let id = composerDraftID, canAttach, let repository = attachmentRepository else { return }
     let generation = generation
     let retained = queuedEdit?.attachments ?? []
-    let remaining = max(0, 100 - (attachmentDrafts[id]?.count ?? 0) - retained.count)
+    let questionFiles = questionRequest.map(questionAttachments) ?? [:]
+    let otherFiles = questionFiles.filter {
+      $0.key != activeQuestion?["id"].string
+    }.values.flatMap { $0 }
+    let remaining = max(
+      0, 100 - (attachmentDrafts[id]?.count ?? 0) - retained.count - otherFiles.count)
     importingAttachments.insert(id)
     notify()
     Task {
@@ -801,7 +1095,7 @@ import T3Core
         }
         return (files, errors)
       }.value
-      guard self.generation == generation else {
+      guard self.generation == generation, importingAttachments.contains(id) else {
         result.0.forEach(repository.remove)
         return
       }
@@ -810,7 +1104,7 @@ import T3Core
       for attachment in result.0 {
         do {
           try catalog.attachmentPolicy.validate(
-            (attachmentDrafts[id] ?? []) + [attachment], requireServer: catalogReady,
+            otherFiles + (attachmentDrafts[id] ?? []) + [attachment], requireServer: catalogReady,
             retained: retained)
           attachmentDrafts[id, default: []].append(attachment)
         } catch {
@@ -825,7 +1119,7 @@ import T3Core
   }
 
   func removeAttachment(_ attachment: DraftAttachment) {
-    guard let id = composerDraftID, !sending.contains(selectedID ?? ""),
+    guard let id = composerDraftID, !composerBusy,
       let repository = attachmentRepository
     else {
       return
@@ -834,7 +1128,10 @@ import T3Core
     attachmentUploads.removeValue(forKey: attachment.id)
     attachmentDrafts[id]?.removeAll { $0.id == attachment.id }
     // An uncertain send still owns its exact bytes and remote IDs until resolved.
-    if !(pending[id]?.localAttachmentIDs ?? []).contains(attachment.id), flushDrafts() {
+    if !(pending[id]?.localAttachmentIDs ?? []).contains(attachment.id),
+      !questionResponses.values.contains(where: { $0.localAttachmentIDs.contains(attachment.id) }),
+      flushDrafts()
+    {
       repository.remove(attachment)
       if let uploadedID = attachment.uploadedID, let connection {
         Task {
@@ -859,9 +1156,14 @@ import T3Core
       let connection, let settings, let repository = attachmentRepository
     else { return }
     let generation = generation
+    let questionAttachmentIDs = questionResponses.values.reduce(into: Set<String>()) {
+      $0.formUnion($1.localAttachmentIDs)
+    }
     for (threadID, attachments) in attachmentDrafts.sorted(by: { $0.key < $1.key }) {
       for attachment in attachments {
-        if (pending[threadID]?.localAttachmentIDs ?? []).contains(attachment.id) {
+        if (pending[threadID]?.localAttachmentIDs ?? []).contains(attachment.id)
+          || questionAttachmentIDs.contains(attachment.id)
+        {
           attachmentUploads[attachment.id] = .ready
           continue
         }
@@ -955,7 +1257,8 @@ import T3Core
   }
 
   func send() {
-    guard let id = selectedID, let draftID = composerDraftID, let connection, sendBlockReason == nil
+    guard let id = selectedID, let draftID = messageDraftID, let connection,
+      messageSendBlockReason == nil
     else { return }
     let text = drafts[draftID] ?? ""
     let attachments = attachmentDrafts[draftID] ?? []

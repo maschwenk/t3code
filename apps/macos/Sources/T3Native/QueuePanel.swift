@@ -23,6 +23,7 @@ import T3Core
     let resumable: String?
     let editing: String?
     let savedEdits: [QueuedEdit]
+    let returningToQuestion: Bool
     let busy: Bool
     let importing: Bool
     let sending: Bool
@@ -69,6 +70,7 @@ import T3Core
       interrupts: execution.steeringInterruptsTools,
       resumable: execution.resumableRunID, editing: store.queuedEdit?.runID,
       savedEdits: store.savedQueuedEdits,
+      returningToQuestion: store.selectedRequest?.isQuestion == true,
       busy: store.queueBusy,
       importing: store.importingAttachments.contains(store.composerDraftID ?? ""),
       sending: store.sending.contains(store.selectedID ?? ""))
@@ -111,8 +113,9 @@ import T3Core
         wrappingLabelWithString: waiting
           ? "Editing queued message" : "This message has left the queue. Your edit is saved.")
       label.font = .systemFont(ofSize: 12)
-      let cancel = ActionButton("Return to draft") { [weak store] in store?.cancelQueuedEdit() }
-      cancel.toolTip = "Keep this edit and return to your separate new-message draft"
+      let cancel = ActionButton(next.returningToQuestion ? "Return to question" : "Return to draft")
+      { [weak store] in store?.cancelQueuedEdit() }
+      cancel.toolTip = "Keep this edit and return to the composer"
       cancel.isEnabled = !next.sending && !next.importing
       editBanner.addArrangedSubview(label)
       editBanner.addArrangedSubview(NSView())

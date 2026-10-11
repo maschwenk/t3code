@@ -77,6 +77,10 @@ enum ParitySmoke {
       try await queue(settings: settings, connection: connection, threadID: id)
       return
     }
+    if CommandLine.arguments.contains("--question-paging-smoke") {
+      try await questions(settings: settings, connection: connection, threadID: id)
+      return
+    }
     func dispatch(_ type: String, fields: [String: JSON]) async throws {
       var fields = fields
       fields["type"] = .string(type)
@@ -469,6 +473,192 @@ enum ParitySmoke {
     )
   }
 
+  @MainActor private static func questions(
+    settings: ConnectionSettings, connection: RPCConnection, threadID: String
+  ) async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "t3-questions-smoke-" + UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let draftDirectory = directory.appendingPathComponent("drafts")
+    let source = directory.appendingPathComponent("question-evidence.txt")
+    let bytes = Data("Native question attachment evidence.\n".utf8)
+    try bytes.write(to: source)
+    var store = ClientStore(draftDirectory: draftDirectory)
+    defer { store.disconnect() }
+    do {
+      _ = try await connection.call(
+        "orchestration.dispatchCommand",
+        payload: .object([
+          "type": .string("thread.interaction-mode.set"), "commandId": .string(UUID().uuidString),
+          "threadId": .string(threadID), "interactionMode": .string("plan"),
+        ]))
+      store.connect(settings, selecting: threadID)
+      try await waitForStore(store) { store.canEditThread && store.catalogReady }
+      store.rename(threadID, to: "Native question paging verification")
+      store.composerText =
+        "For a UI test, call request_user_input with exactly two questions in one call. First ask Color? with options Blue (recommended) and Green. Second ask Evidence? with options File and Text; I may supply a custom answer or attached file instead. Wait for both answers, then reply exactly NATIVE_QUESTION_PAGING_DONE. Do not inspect files or run any other tools."
+      store.submitComposer()
+      try await waitForStore(store) {
+        !store.sending.contains(threadID) && store.questionRequest?.questions.count == 2
+      }
+      guard let request = store.questionRequest, request.canRespond,
+        store.catalog.attachmentPolicy.questions,
+        let firstID = request.questions[0]["id"].string,
+        let secondID = request.questions[1]["id"].string,
+        let option = request.questions[0]["options"].array.first
+      else {
+        throw T3Error(
+          "The provider did not issue two answerable questions with attachment support.")
+      }
+      store.drafts[threadID] = "Separate draft behind the questions."
+      let value = option["value"].string ?? option["label"].string ?? "Blue"
+      store.chooseQuestionOption(value, request: request, question: request.questions[0])
+      store.submitComposer()
+      guard store.activeQuestionProgress?.index == 1, store.composerText.isEmpty else {
+        throw T3Error("The composer did not advance to the second question.")
+      }
+      store.composerText = "Saved custom answer for the second question."
+      store.addAttachments([source])
+      try await waitForStore(store) {
+        store.selectedAttachments.count == 1
+          && store.selectedAttachments.allSatisfy {
+            store.attachmentUploads[$0.id] == .ready
+          }
+      }
+      let attachment = store.selectedAttachments[0]
+      store.setQuestionPage(0, request: request)
+      guard store.selectedAttachments.isEmpty, store.composerText.isEmpty else {
+        throw T3Error("The second question's files leaked into the first question.")
+      }
+      store.setQuestionPage(1, request: request)
+      guard store.composerText == "Saved custom answer for the second question.",
+        store.selectedAttachments.map(\.id) == [attachment.id], store.saveDraftsBeforeExit()
+      else { throw T3Error("Paging lost the question draft or attachment.") }
+      try FileManager.default.removeItem(at: source)
+      store.disconnect()
+      store = ClientStore(draftDirectory: draftDirectory)
+      store.connect(settings, selecting: threadID)
+      try await waitForStore(store) {
+        store.canEditThread && store.catalogReady && store.activeQuestionProgress?.index == 1
+          && store.selectedAttachments.count == 1
+          && store.selectedAttachments.allSatisfy { store.attachmentUploads[$0.id] == .ready }
+      }
+      guard store.composerText == "Saved custom answer for the second question.",
+        store.questionDrafts[request.id]?[firstID]?.selected == [value],
+        store.drafts[threadID] == "Separate draft behind the questions."
+      else { throw T3Error("A question answer or the normal draft did not survive restart.") }
+      store.composerText = ""
+      guard store.sendBlockReason == nil else {
+        throw T3Error("An attachment-only answer was blocked.")
+      }
+      store.submitComposer()
+      try await waitForStore(store) {
+        store.questionRequest == nil && !store.questionBusy(request)
+          && store.execution.activeRunID == nil
+          && store.thread?.rows.contains {
+            $0.kind == "assistant_message" && !$0.streaming
+              && $0.text.contains("NATIVE_QUESTION_PAGING_DONE")
+          } == true
+      }
+      let projection = try await connection.call(
+        "orchestration.getThreadProjection",
+        payload: .object(["threadId": .string(threadID)]))
+      guard
+        let recorded = projection["turnItems"].array.first(where: {
+          $0["requestId"].string == request.id
+        })?["questionAnswer"],
+        recorded["answers"][firstID].string == value,
+        recorded["answers"][secondID].string?.contains(attachment.name) == true,
+        recorded["attachmentsByQuestionId"][secondID].array.first?["name"].string
+          == attachment.name,
+        store.composerText == "Separate draft behind the questions.",
+        store.selectedAttachments.isEmpty, store.questionDrafts[request.id] == nil,
+        store.thread?.rows.first(where: { $0.item["requestId"].string == request.id })?.attachments
+          .count == 1
+      else {
+        throw T3Error(
+          "The recorded answer, attachment, or restored main draft differs from the submission.")
+      }
+      let downloaded = directory.appendingPathComponent("downloaded.txt")
+      try await store.downloadAttachment(
+        recorded["attachmentsByQuestionId"][secondID].array[0], to: downloaded)
+      guard try Data(contentsOf: downloaded) == bytes else {
+        throw T3Error("The claimed answer attachment changed bytes.")
+      }
+      store.composerText =
+        "For one more UI test, call request_user_input with one question: Ready? Offer Continue and Stop. After I answer, reply exactly NATIVE_QUESTION_EXTERNAL_DONE. Do not use any other tools."
+      store.submitComposer()
+      try await waitForStore(store) {
+        !store.sending.contains(threadID) && store.questionRequest != nil
+      }
+      guard let externalRequest = store.questionRequest else {
+        throw T3Error("Missing cross-client question.")
+      }
+      store.drafts[threadID] = "Separate draft behind the questions."
+      store.composerText = "Unsent answer superseded by another client."
+      let unusedSource = directory.appendingPathComponent("unused-answer.txt")
+      try bytes.write(to: unusedSource)
+      store.addAttachments([unusedSource])
+      try await waitForStore(store) {
+        store.selectedAttachments.count == 1
+          && store.selectedAttachments.allSatisfy {
+            store.attachmentUploads[$0.id] == .ready
+          }
+      }
+      guard let repository = store.attachmentRepository else {
+        throw T3Error("Missing answer storage.")
+      }
+      let unusedFile = try repository.file(store.selectedAttachments[0])
+      var externalAnswers: [String: JSON] = [:]
+      for question in externalRequest.questions {
+        guard let id = question["id"].string, let option = question["options"].array.first else {
+          continue
+        }
+        externalAnswers[id] = .string(
+          option["value"].string ?? option["label"].string ?? "Continue")
+      }
+      _ = try await connection.call(
+        "orchestration.dispatchCommand",
+        payload: .object([
+          "type": .string("runtime-request.respond"), "commandId": .string(UUID().uuidString),
+          "threadId": .string(threadID), "requestId": .string(externalRequest.id),
+          "answers": .object(externalAnswers),
+        ]))
+      try await waitForStore(store) {
+        store.questionRequest == nil && store.execution.activeRunID == nil
+          && store.thread?.rows.contains {
+            $0.kind == "assistant_message" && !$0.streaming
+              && $0.text.contains("NATIVE_QUESTION_EXTERNAL_DONE")
+          } == true
+      }
+      guard store.questionDrafts[externalRequest.id] == nil,
+        !FileManager.default.fileExists(atPath: unusedFile.path),
+        store.composerText == "Separate draft behind the questions."
+      else {
+        throw T3Error(
+          "Cross-client resolution retained obsolete question files or changed the normal draft.")
+      }
+      print(
+        "PASS: two real questions, separate answer files, backward/forward paging, restart after source deletion, attachment-only response, claimed bytes, provider completion and cross-client cleanup; normal draft preserved."
+      )
+    } catch {
+      let projection = try? await connection.call(
+        "orchestration.getThreadProjection",
+        payload: .object(["threadId": .string(threadID)]))
+      for run in projection?["runs"].array ?? []
+      where ["preparing", "starting", "running", "waiting"].contains(run["status"].string ?? "") {
+        _ = try? await connection.call(
+          "orchestration.dispatchCommand",
+          payload: .object([
+            "type": .string("run.interrupt"), "commandId": .string(UUID().uuidString),
+            "threadId": .string(threadID), "runId": run["id"], "holdQueue": .bool(true),
+          ]))
+      }
+      throw error
+    }
+  }
+
   @MainActor private static func queue(
     settings: ConnectionSettings, connection: RPCConnection, threadID: String
   ) async throws {
@@ -493,9 +683,18 @@ enum ParitySmoke {
       store.connect(settings, selecting: threadID)
       try await waitForStore(store) { store.canEditThread && store.catalogReady }
       store.rename(threadID, to: "Native queue verification")
-      store.composerText =
-        "For a UI queue test, call request_user_input now with one question: Ready? Offer Continue and Stop. Wait for my answer. After Continue, or if I ask to continue after an interruption, reply exactly NATIVE_QUEUE_READY and finish without asking again. Do not inspect files or run commands."
-      store.send()
+      store.addAttachments([source])
+      try await waitForStore(store) {
+        store.selectedAttachments.count == 1
+          && store.selectedAttachments.allSatisfy { store.attachmentUploads[$0.id] == .ready }
+      }
+      _ = try await connection.call(
+        "orchestration.dispatchCommand",
+        payload: Commands.message(
+          threadID: threadID,
+          text:
+            "For a UI queue test, call request_user_input now with one question: Ready? Offer Continue and Stop. Wait for my answer. After Continue, or if I ask to continue after an interruption, reply exactly NATIVE_QUEUE_READY and finish without asking again. Do not inspect files or run commands.",
+          commandID: UUID().uuidString, messageID: UUID().uuidString))
       try await waitForStore(store) {
         store.thread?.pendingRequests.contains { $0.isQuestion && $0.canRespond } == true
       }
@@ -503,24 +702,20 @@ enum ParitySmoke {
         throw T3Error("The test provider did not advertise queued messages.")
       }
       store.setDelivery(.queue)
-      store.addAttachments([source])
-      try await waitForStore(store) {
-        store.selectedAttachments.count == 1
-          && store.selectedAttachments.allSatisfy { store.attachmentUploads[$0.id] == .ready }
-      }
-      store.composerText = "Reply exactly NATIVE_QUEUE_FIRST. Do not open attachments or use tools."
+      store.drafts[threadID] =
+        "Reply exactly NATIVE_QUEUE_FIRST. Do not open attachments or use tools."
       store.send()
       try await waitForStore(store) {
         !store.sending.contains(threadID) && store.execution.queued.count == 1
       }
       let first = store.execution.queued[0]
-      store.composerText = "Reply exactly NATIVE_QUEUE_REMOVE. Do not use tools."
+      store.drafts[threadID] = "Reply exactly NATIVE_QUEUE_REMOVE. Do not use tools."
       store.send()
       try await waitForStore(store) {
         !store.sending.contains(threadID) && store.execution.queued.count == 2
       }
       let second = store.execution.queued[1]
-      store.composerText = "Separate normal draft must survive editing."
+      store.drafts[threadID] = "Separate normal draft must survive editing."
       store.editQueuedMessage(first)
       guard store.queuedEdit?.attachments.count == 1 else {
         throw T3Error("Queued edit dropped the original attachment.")
@@ -538,7 +733,7 @@ enum ParitySmoke {
       store.composerText = secondEdit
       store.cancelQueuedEdit()
       guard store.savedQueuedEdits.count == 2,
-        store.composerText == "Separate normal draft must survive editing."
+        store.drafts[threadID] == "Separate normal draft must survive editing."
       else { throw T3Error("Editing a second queued message lost an earlier draft.") }
       store.reopenQueuedEdit(first.id)
       guard store.saveDraftsBeforeExit() else { throw T3Error("Queued edit was not saved.") }
@@ -561,7 +756,7 @@ enum ParitySmoke {
           && store.execution.queued.first?.text == edited
       }
       guard store.execution.queued[0].attachments.count == 2,
-        store.composerText == "Separate normal draft must survive editing."
+        store.drafts[threadID] == "Separate normal draft must survive editing."
       else { throw T3Error("Saving the queued edit lost attachments or the normal draft.") }
       store.reorderQueuedMessage(second.id, before: first.id)
       try await waitForStore(store) {
@@ -612,7 +807,7 @@ enum ParitySmoke {
               && $0.text.contains("NATIVE_QUEUE_EDITED")
           } == true
       }
-      guard store.composerText == "Separate normal draft must survive editing." else {
+      guard store.drafts[threadID] == "Separate normal draft must survive editing." else {
         throw T3Error("Resume overwrote the normal draft.")
       }
       print(
@@ -671,7 +866,7 @@ enum ParitySmoke {
           throw T3Error("The test provider did not expose a steerable turn.")
         }
         store.setDelivery(mode)
-        store.composerText =
+        store.drafts[threadID] =
           "Stop waiting for the previous question. Reply exactly \(marker) and finish without using tools or asking questions."
         store.send()
         if mode == .queue {

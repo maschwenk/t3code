@@ -23,8 +23,8 @@ import UniformTypeIdentifiers
     messages: restored.messages, submissions: restored.submissions, questions: restored.questions,
     attachments: [:])
   try repository.save(saved, for: endpoint)
-  #expect(try repository.load(for: endpoint).version == 3)
-  let future = Data(#"{"version":4,"messages":{},"questions":{},"submissions":{}}"#.utf8)
+  #expect(try repository.load(for: endpoint).version == 4)
+  let future = Data(#"{"version":5,"messages":{},"questions":{},"submissions":{}}"#.utf8)
   try future.write(to: repository.file(for: endpoint))
   #expect(throws: T3Error.self) { try repository.load(for: endpoint) }
   #expect(try Data(contentsOf: repository.file(for: endpoint)) == future)

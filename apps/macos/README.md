@@ -25,15 +25,31 @@ replace a newer streaming revision. Commands, searches, file changes, and reason
 collapse into expandable work groups. Expanding preserves the full activity text;
 errors and pending questions or approvals stay outside collapsed groups.
 
+Questions appear one at a time. Write a custom answer or attach files in the main
+composer, then use Next or ⌘ Return to advance and submit the final answers.
+Previous returns to an earlier answer; the question header collapses its options.
+Single-choice options advance automatically, and number keys select visible
+options when focus is outside the text editor. Each answer and its files survive
+restart, separately from the normal message draft, which returns when the request
+closes. Answered files remain available in the conversation.
+
+The menu beside Send chooses Auto, Queue next, Steer now, or Interrupt and restart
+when the provider supports them. Queued messages can be edited, removed, reordered,
+or sent as steering. Stop holds the queue; Resume continues interrupted work and
+releases queued messages. Queued edits have separate saved drafts; ⌥↑ at the start
+of the composer opens the last queued message and ⌘⇧Return steers the next one.
+
 Attach images or files with the paperclip or ⌘⇧A, or paste/drop into the message
 field. The attachment tray shows uploads, failures, retry, and removal. Drafts keep
 private local copies across restarts, and expired uploads are restored from those
 copies. HEIC/TIFF and oversized images are converted to JPEG; file and aggregate
 image limits follow the server contract. Attachment-only messages are supported.
 Received files can be downloaded from the conversation with a native save dialog.
+Image attachments have thumbnails, and files open in a Quick Look gallery with
+navigation and Save controls.
 
-The integrated browser, interactive terminal, full diff views, inline image previews,
-provider setup, question attachments, and T3 Connect
+The integrated browser, interactive terminal, full diff views,
+provider setup, and T3 Connect
 account/relay discovery remain in the existing app. Markdown supports native headings,
 lists, task lists, quotes, code blocks, tables, and selectable links. Copy-message
 actions preserve the original Markdown; code blocks have a Copy code context action.
@@ -98,6 +114,10 @@ apps/macos/.build/release/T3Native --parity-smoke \
 Add `--question-smoke` to ask the real Codex provider for a question, answer through
 the app controller, and verify the resolved request and completed reply. This
 requires an authenticated Codex instance and consumes one short provider turn.
+Use `--question-paging-smoke` for two provider turns covering multiple questions,
+per-question attachments, paging and restart recovery, attachment-only answers,
+exact downloaded bytes, and resolution from another client. `--queue-smoke`
+checks queue edits, reorder, cancellation, stop/resume, and draft recovery.
 Add `--manual-question` instead to leave the real question pending for a UI check.
 Add `--tool-output-smoke` to run a diagnostic `printf`, approve only that exact
 command once if requested, and fetch its omitted output through the controller.

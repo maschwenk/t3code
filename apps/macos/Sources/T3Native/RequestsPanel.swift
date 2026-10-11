@@ -6,9 +6,14 @@ import T3Core
   private var previous: [PendingRequest] = []
   private var previousReady = false
   private var previousBusy: Set<String> = []
-  private var selectedRequestID: String?
+  private var previousPage = -1
+  private var previousRequestID: String?
+  private var previousImporting = false
+  private var previousEditingQueue = false
+  private var collapsedQuestion: String?
+  private var autoAdvance: Task<Void, Never>?
+  private var progressLabel: NSTextField?
   private var answerButtons: [String: [ActionButton]] = [:]
-  private var answerFields: [String: ActionTextField] = [:]
   private var submitButton: ActionButton?
 
   init(store: ClientStore) {
@@ -27,10 +32,25 @@ import T3Core
     let requests = store.thread?.pendingRequests ?? []
     let busy = Set(
       store.commandsInFlight.filter { $0.hasPrefix((store.selectedID ?? "") + ":request:") })
+    let request = store.selectedRequest
+    let page = request.map(store.questionIndex) ?? 0
+    let importing = store.importingAttachments.contains(store.composerDraftID ?? "")
     guard
       force || previous != requests || previousReady != store.canEditThread
-        || previousBusy != busy
-    else { return }
+        || previousBusy != busy || previousPage != page
+        || previousEditingQueue != (store.queuedEdit != nil)
+        || previousRequestID != request?.id || previousImporting != importing
+    else {
+      if let request, request.isQuestion { updateAnswers(request) }
+      return
+    }
+    if previousPage != page || previous != requests || previousRequestID != request?.id {
+      autoAdvance?.cancel()
+    }
+    previousPage = page
+    previousRequestID = request?.id
+    previousImporting = importing
+    previousEditingQueue = store.queuedEdit != nil
     previous = requests
     previousReady = store.canEditThread
     previousBusy = busy
@@ -40,11 +60,9 @@ import T3Core
       view.removeFromSuperview()
     }
     answerButtons = [:]
-    answerFields = [:]
+    progressLabel = nil
     submitButton = nil
-    guard let request = requests.first(where: { $0.id == selectedRequestID }) ?? requests.first
-    else { return }
-    selectedRequestID = request.id
+    guard let request else { return }
     layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
     let title = NSTextField(labelWithString: request.title)
     title.font = .systemFont(ofSize: 12, weight: .semibold)
@@ -57,7 +75,7 @@ import T3Core
       for (index, candidate) in requests.enumerated() {
         let item = ActionMenuItem("\(index + 1)/\(requests.count) · \(candidate.title)") {
           [weak self] in
-          self?.selectedRequestID = candidate.id
+          self?.store.selectRequest(candidate.id)
           self?.refresh(force: true)
         }
         item.representedObject = candidate.id
@@ -121,25 +139,54 @@ import T3Core
   }
 
   private func buildQuestions(_ request: PendingRequest, enabled: Bool) {
-    let content = NSStackView()
-    content.orientation = .vertical
-    content.alignment = .leading
-    content.spacing = 8
-    for question in request.questions {
-      guard let id = question["id"].string else { continue }
+    let progress = store.questionProgress(request)
+    let question = progress.question
+    guard let id = question["id"].string else { return }
+    let key = request.id + ":" + id
+    let collapsed = collapsedQuestion == key
+    let toggle = ActionButton(question["header"].string ?? "Question") { [weak self] in
+      guard let self else { return }
+      self.collapsedQuestion = collapsed ? nil : key
+      self.refresh(force: true)
+      self.store.onChange?()
+    }
+    toggle.isBordered = false
+    toggle.font = .systemFont(ofSize: 12, weight: .semibold)
+    toggle.image = NSImage(
+      systemSymbolName: collapsed ? "chevron.right" : "chevron.down", accessibilityDescription: nil)
+    toggle.imagePosition = .imageLeading
+    toggle.toolTip =
+      collapsed ? "Show the question and its options" : "Hide the question and its options"
+    let count = NSTextField(labelWithString: "")
+    count.font = .systemFont(ofSize: 11)
+    count.textColor = .secondaryLabelColor
+    progressLabel = count
+    let heading = NSStackView(views: [toggle, NSView(), count])
+    addArrangedSubview(heading)
+    stretch(heading)
+    if !collapsed {
+      let content = NSStackView()
+      content.orientation = .vertical
+      content.alignment = .leading
+      content.spacing = 8
       let prompt = label(question["question"].string ?? "")
       prompt.font = .systemFont(ofSize: 12, weight: .medium)
       content.addArrangedSubview(prompt)
       prompt.widthAnchor.constraint(equalTo: content.widthAnchor, constant: -6).isActive = true
-      for option in question["options"].array {
+      if question["multiSelect"].bool {
+        content.addArrangedSubview(label("Select one or more options."))
+      }
+      for (index, option) in question["options"].array.enumerated() {
         let value = option["value"].string ?? option["label"].string ?? ""
         let description = option["description"].string ?? ""
-        let button = ActionButton(option["label"].string ?? value) { [weak self] in
+        let button = ActionButton(
+          (index < 9 ? "\(index + 1). " : "") + (option["label"].string ?? value)
+        ) { [weak self] in
           self?.choose(value, question: question, request: request)
         }
         button.setButtonType(question["multiSelect"].bool ? .switch : .radio)
         button.toolTip = description
-        button.isEnabled = enabled
+        button.isEnabled = enabled && store.queuedEdit == nil
         content.addArrangedSubview(button)
         answerButtons[id, default: []].append(button)
         if !description.isEmpty {
@@ -149,42 +196,43 @@ import T3Core
           detail.widthAnchor.constraint(equalTo: content.widthAnchor, constant: -6).isActive = true
         }
       }
-      if question["allowCustomAnswer"] != .bool(false) {
-        let field = ActionTextField(frame: .zero)
-        field.placeholderString = "Type your answer…"
-        field.setAccessibilityLabel(question["question"].string ?? "Answer")
-        field.isEnabled = enabled
-        field.changed = { [weak self] text in
-          guard let self else { return }
-          var draft = store.questionDrafts[request.id]?[id] ?? QuestionDraft()
-          draft.custom = text
-          if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { draft.selected = [] }
-          store.questionDrafts[request.id, default: [:]][id] = draft
-          updateAnswers(request)
-        }
-        content.addArrangedSubview(field)
-        field.widthAnchor.constraint(equalTo: content.widthAnchor, constant: -6).isActive = true
-        answerFields[id] = field
-      }
+      let hint = label(
+        question["allowCustomAnswer"] == .bool(false)
+          ? "Choose an option to continue." : "Or write your answer in the composer below.")
+      hint.textColor = .secondaryLabelColor
+      content.addArrangedSubview(hint)
+      let scroll = NSScrollView()
+      scroll.documentView = content
+      scroll.hasVerticalScroller = true
+      scroll.drawsBackground = false
+      content.translatesAutoresizingMaskIntoConstraints = false
+      content.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor).isActive = true
+      content.topAnchor.constraint(equalTo: scroll.contentView.topAnchor).isActive = true
+      content.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor).isActive = true
+      scroll.heightAnchor.constraint(
+        equalToConstant: CGFloat(min(240, max(85, (3 + question["options"].array.count * 2) * 21)))
+      ).isActive = true
+      addArrangedSubview(scroll)
+      stretch(scroll)
+    } else {
+      let summary = NSTextField(labelWithString: question["question"].string ?? "")
+      summary.lineBreakMode = .byTruncatingTail
+      summary.font = .systemFont(ofSize: 11)
+      addArrangedSubview(summary)
+      stretch(summary)
     }
-    let scroll = NSScrollView()
-    scroll.documentView = content
-    scroll.hasVerticalScroller = true
-    scroll.drawsBackground = false
-    content.translatesAutoresizingMaskIntoConstraints = false
-    content.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor).isActive = true
-    content.topAnchor.constraint(equalTo: scroll.contentView.topAnchor).isActive = true
-    content.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor).isActive = true
-    let lines = request.questions.reduce(0) { $0 + 2 + $1["options"].array.count * 2 }
-    scroll.heightAnchor.constraint(equalToConstant: CGFloat(min(240, max(85, lines * 21))))
-      .isActive = true
-    addArrangedSubview(scroll)
-    stretch(scroll)
-    let submit = ActionButton(responding(request) ? "Sending…" : "Submit answers") { [weak store] in
-      store?.respond(request)
-    }
+    let submit = ActionButton("") { [weak store] in store?.advanceQuestion(request) }
     submitButton = submit
-    let buttons = NSStackView(views: [submit])
+    let buttons = NSStackView()
+    if progress.index > 0 {
+      let back = ActionButton("Previous") { [weak store] in
+        store?.setQuestionPage(progress.index - 1, request: request)
+      }
+      back.isEnabled =
+        !responding(request) && !store.importingAttachments.contains(store.composerDraftID ?? "")
+      buttons.addArrangedSubview(back)
+    }
+    buttons.addArrangedSubview(submit)
     if request.dismissible {
       let dismiss = ActionButton("Dismiss") { [weak store] in store?.dismiss(request) }
       dismiss.isEnabled = store.canEditThread && !responding(request)
@@ -195,44 +243,62 @@ import T3Core
   }
 
   private func choose(_ value: String, question: JSON, request: PendingRequest) {
-    guard let id = question["id"].string else { return }
-    var draft = store.questionDrafts[request.id]?[id] ?? QuestionDraft()
-    if !draft.custom.isEmpty, let threadID = store.selectedID {
-      let old = store.drafts[threadID] ?? ""
-      store.drafts[threadID] = old.isEmpty ? draft.custom : old + "\n\n" + draft.custom
-    }
-    draft.custom = ""
-    if question["multiSelect"].bool {
-      if draft.selected.contains(value) {
-        draft.selected.removeAll { $0 == value }
-      } else {
-        draft.selected.append(value)
-      }
-    } else {
-      draft.selected = [value]
-    }
-    store.questionDrafts[request.id, default: [:]][id] = draft
+    store.chooseQuestionOption(value, request: request, question: question)
     updateAnswers(request)
-    store.onChange?()
+    autoAdvance?.cancel()
+    guard !question["multiSelect"].bool, let questionID = question["id"].string else { return }
+    let environment = store.environmentKey
+    let thread = store.selectedID
+    autoAdvance = Task { [weak self] in
+      do { try await Task.sleep(for: .milliseconds(200)) } catch { return }
+      guard let self, self.store.environmentKey == environment, self.store.selectedID == thread,
+        self.store.questionRequest?.id == request.id,
+        self.store.activeQuestion?["id"].string == questionID,
+        self.store.questionDrafts[request.id]?[questionID]?.selected == [value],
+        self.store.questionDrafts[request.id]?[questionID]?.custom.isEmpty == true
+      else { return }
+      self.store.advanceQuestion(request)
+    }
+  }
+
+  func handleNumberKey(_ event: NSEvent) -> Bool {
+    guard event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty,
+      !(window?.firstResponder is NSTextView), let digit = Int(event.characters ?? ""),
+      (1...9).contains(digit),
+      let request = store.questionRequest, request.canRespond, store.canEditThread,
+      !responding(request)
+    else { return false }
+    let question = store.questionProgress(request).question
+    guard let id = question["id"].string, collapsedQuestion != request.id + ":" + id,
+      question["options"].array.indices.contains(digit - 1)
+    else { return false }
+    let option = question["options"].array[digit - 1]
+    choose(
+      option["value"].string ?? option["label"].string ?? "", question: question, request: request)
+    return true
   }
 
   private func updateAnswers(_ request: PendingRequest) {
-    let drafts = store.questionDrafts[request.id] ?? [:]
-    for question in request.questions {
-      guard let id = question["id"].string else { continue }
-      let draft = drafts[id] ?? QuestionDraft()
+    let progress = store.questionProgress(request)
+    let question = progress.question
+    if let id = question["id"].string {
+      let draft = store.questionDrafts[request.id]?[id] ?? QuestionDraft()
       for (index, button) in (answerButtons[id] ?? []).enumerated() {
         let option = question["options"].array[index]
         let value = option["value"].string ?? option["label"].string ?? ""
-        button.state = draft.selected.contains(value) ? .on : .off
-      }
-      if let field = answerFields[id], field.stringValue != draft.custom {
-        field.stringValue = draft.custom
+        button.state =
+          draft.custom.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && draft.selected.contains(value) ? .on : .off
       }
     }
+    progressLabel?.stringValue =
+      "\(progress.index + 1)/\(request.questions.count) · \(progress.answeredCount) answered"
+    submitButton?.title =
+      responding(request) ? "Sending…" : progress.isLast ? "Submit answers" : "Next"
     submitButton?.isEnabled =
       store.canEditThread && request.canRespond && !responding(request)
-      && request.answers(from: drafts) != nil
+      && store.queuedEdit == nil && progress.answer != nil
+      && (!progress.isLast || progress.answers != nil)
   }
 
   private func responding(_ request: PendingRequest) -> Bool {
