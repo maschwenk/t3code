@@ -178,13 +178,13 @@ private func update(_ item: JSON, sequence: Int, type: String = "turn-item.updat
   #expect(state.synchronized)
 }
 
-@Test func repeatedMessageUsesStableReceiptAndMessageIdentity() throws {
-  let first = Commands.message(
-    threadID: "thread", text: "hello", commandID: "command", messageID: "message")
-  let retry = Commands.message(
-    threadID: "thread", text: "hello", commandID: "command", messageID: "message")
-  #expect(first == retry)
-  #expect(first["dispatchMode"]["type"].string == "start_immediately")
-  #expect(first["deliveryIntent"].string == "auto")
-  #expect(try JSON.decode(first.data()) == first)
+@Test func authoritativeReconnectSnapshotReplacesCacheAndItsCursor() throws {
+  var state = ThreadState(id: "thread")
+  _ = try state.apply(snapshot([visible(item("old", text: "cached"), position: 0)], sequence: 20))
+  _ = try state.apply(.object(["kind": .string("synchronized")]))
+  _ = try state.apply(snapshot([visible(item("new", text: "restored"), position: 0)], sequence: 3))
+  #expect(!state.synchronized)
+  _ = try state.apply(update(item("new", text: "live after restore"), sequence: 4))
+  #expect(state.rows.map(\.text) == ["live after restore"])
+  #expect(state.sequence == 4)
 }
