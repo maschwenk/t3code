@@ -13,6 +13,7 @@ public struct ThreadSummary: Sendable, Equatable, Identifiable {
   public let archived: Bool
   public let lifecycle: ThreadLifecycle
   public let branch: String?
+  public let worktreePath: String?
   public let deleted: Bool
 
   public init(_ value: JSON) throws {
@@ -28,6 +29,7 @@ public struct ThreadSummary: Sendable, Equatable, Identifiable {
     archived = value["archivedAt"].string != nil
     lifecycle = ThreadLifecycle(value)
     branch = value["branch"].string
+    worktreePath = value["worktreePath"].string
     deleted = value["deletedAt"].string != nil
   }
 }
@@ -108,7 +110,10 @@ public struct TimelineRow: Sendable, Equatable, Identifiable {
   public let inherited: Bool
   public let attachments: [JSON]
 
-  public init(item: JSON, position: Int, sourceID: String, inherited: Bool = false) throws {
+  public init(
+    item: JSON, position: Int, sourceID: String, inherited: Bool = false,
+    request: JSON = .null
+  ) throws {
     self.item = item
     self.sourceID = sourceID
     id = sourceID + ":" + (try item.requiredString("id"))
@@ -175,11 +180,18 @@ public struct TimelineRow: Sendable, Equatable, Identifiable {
       title = "Approval request"
       text = item["prompt"].string ?? item["appName"].string ?? "Agent requested approval"
     case "user_input_request":
-      title = item["status"].string == "completed" ? "Answered questions" : "Question"
+      let resolved =
+        !inherited && request["id"] == item["requestId"]
+        && request["kind"].string == "user_input" && request["status"].string == "resolved"
+      let answers =
+        item["questionAnswer"] != .null
+        ? item["questionAnswer"]["answers"] : resolved ? request["answers"] : .null
+      title =
+        item["status"].string == "completed" || answers != .null
+        ? "Answered questions" : "Question"
       text = item["questions"].array.map { question in
         let prompt = question["question"].string ?? ""
-        let answer = item["questionAnswer"]["answers"][question["id"].string ?? ""]
-        let reply = answer.string ?? answer.array.compactMap(\.string).joined(separator: ", ")
+        let reply = Self.answerText(answers[question["id"].string ?? ""])
         return reply.isEmpty ? prompt : prompt + "\n" + reply
       }.joined(separator: "\n\n")
     case "todo_list":
@@ -196,6 +208,15 @@ public struct TimelineRow: Sendable, Equatable, Identifiable {
       text = item["title"].string ?? item["toolName"].string ?? item["progress"].string ?? title
     }
   }
+
+  private static func answerText(_ value: JSON) -> String {
+    switch value {
+    case .string(let text): text
+    case .array(let values): values.map(answerText).filter { !$0.isEmpty }.joined(separator: ", ")
+    case .object: answerText(value["answers"])
+    default: ""
+    }
+  }
 }
 
 public struct ThreadState: Sendable {
@@ -207,6 +228,10 @@ public struct ThreadState: Sendable {
   public private(set) var synchronized = false
   public private(set) var pendingRequests: [PendingRequest] = []
   public private(set) var execution = ThreadExecution()
+  public private(set) var proposedPlans: [ProposedPlan] = []
+  private var planTimes: [String: String] = [:]
+  private var projectionUpdatedAt = ""
+  public private(set) var latestProposedPlan: ProposedPlan?
   private var requests: [String: JSON] = [:]
   private var requestItems: [String: JSON] = [:]
   private var indices: [String: Int] = [:]
@@ -234,16 +259,30 @@ public struct ThreadState: Sendable {
       }
       var next: [TimelineRow] = []
       for visible in projection["visibleTurnItems"].array {
-        next.append(try Self.projectedRow(visible))
+        next.append(try projectedRow(visible, requests: nextRequests))
       }
       if next.isEmpty {
         for item in projection["turnItems"].array {
           next.append(
-            try TimelineRow(item: item, position: item.requiredInt("ordinal"), sourceID: id))
+            try TimelineRow(
+              item: item, position: item.requiredInt("ordinal"), sourceID: id,
+              request: nextRequests[item["requestId"].string ?? ""] ?? .null))
         }
       }
       rows = next.sorted { $0.position < $1.position }
       execution = ThreadExecution(projection)
+      projectionUpdatedAt = projection["updatedAt"].string ?? ""
+      planTimes = Dictionary(
+        projection["turnItems"].array.compactMap { item in
+          guard item["type"].string == "proposed_plan", let id = item["planId"].string else {
+            return nil
+          }
+          return (id, item["updatedAt"].string ?? projectionUpdatedAt)
+        }, uniquingKeysWith: max)
+      proposedPlans = projection["plans"].array.compactMap {
+        ProposedPlan($0, updatedAt: planTimes[$0["id"].string ?? ""] ?? projectionUpdatedAt)
+      }
+      latestProposedPlan = ProposedPlan.latest(proposedPlans, runID: execution.latestRunID)
       requests = nextRequests
       requestItems = nextRequestItems
       for row in rows where !row.inherited {
@@ -264,6 +303,7 @@ public struct ThreadState: Sendable {
         throw T3Error("Update belongs to another thread.")
       }
       let type = try event.requiredString("type")
+      let previousRun = execution.latestRunID
       execution.apply(event)
       if type.hasPrefix("context-transfer.") || type == "checkpoint.rollback-requested"
         || type == "thread.provider-switched"
@@ -276,11 +316,21 @@ public struct ThreadState: Sendable {
           throw T3Error("Update belongs to another thread.")
         }
         let key = id + ":" + (try item.requiredString("id"))
+        if item["type"].string == "proposed_plan", let planID = item["planId"].string {
+          let time = item["updatedAt"].string ?? projectionUpdatedAt
+          planTimes[planID] = time
+          if let index = proposedPlans.firstIndex(where: { $0.id == planID }) {
+            proposedPlans[index].updateTime(time)
+          }
+        }
+        let request = requests[item["requestId"].string ?? ""] ?? .null
         if let index = indices[key] {
-          rows[index] = try TimelineRow(item: item, position: rows[index].position, sourceID: id)
+          rows[index] = try TimelineRow(
+            item: item, position: rows[index].position, sourceID: id, request: request)
         } else {
           let position = (rows.last?.position ?? -1) + 1
-          let row = try TimelineRow(item: item, position: position, sourceID: id)
+          let row = try TimelineRow(
+            item: item, position: position, sourceID: id, request: request)
           indices[row.id] = rows.count
           rows.append(row)
         }
@@ -288,12 +338,33 @@ public struct ThreadState: Sendable {
           requestItems[id] = item
           try rebuildRequests()
         }
+      } else if type == "plan.updated" {
+        let value = event["payload"]
+        if let plan = ProposedPlan(
+          value, updatedAt: planTimes[value["id"].string ?? ""] ?? projectionUpdatedAt)
+        {
+          proposedPlans.removeAll { $0.id == plan.id }
+          proposedPlans.append(plan)
+        }
       } else if type == "runtime-request.updated" {
         let request = event["payload"]
         let requestID = try request.requiredString("id")
         _ = try request.requiredString("kind")
         requests[requestID] = request
+        for index in rows.indices
+        where rows[index].sourceID == id && !rows[index].inherited
+          && rows[index].item["requestId"].string == requestID
+        {
+          let row = rows[index]
+          rows[index] = try TimelineRow(
+            item: row.item, position: row.position, sourceID: id, request: request)
+        }
         try rebuildRequests()
+      }
+      if previousRun != execution.latestRunID || type == "plan.updated"
+        || (type == "turn-item.updated" && event["payload"]["type"].string == "proposed_plan")
+      {
+        latestProposedPlan = ProposedPlan.latest(proposedPlans, runID: execution.latestRunID)
       }
       sequence = nextSequence
     default: break
@@ -304,7 +375,7 @@ public struct ThreadState: Sendable {
   public mutating func prependHistory(_ page: JSON) throws {
     var older: [TimelineRow] = []
     for visible in page["items"].array {
-      let row = try Self.projectedRow(visible)
+      let row = try projectedRow(visible, requests: requests)
       // A history response may have been generated before the latest live update.
       if indices[row.id] == nil { older.append(row) }
     }
@@ -332,11 +403,14 @@ public struct ThreadState: Sendable {
     return true
   }
 
-  private static func projectedRow(_ visible: JSON) throws -> TimelineRow {
-    try TimelineRow(
+  private func projectedRow(_ visible: JSON, requests: [String: JSON]) throws -> TimelineRow {
+    let sourceID = try visible.requiredString("sourceThreadId")
+    return try TimelineRow(
       item: visible["item"], position: visible.requiredInt("position"),
-      sourceID: visible.requiredString("sourceThreadId"),
-      inherited: visible["visibility"].string == "inherited")
+      sourceID: sourceID,
+      inherited: visible["visibility"].string == "inherited",
+      request: sourceID == id
+        ? requests[visible["item"]["requestId"].string ?? ""] ?? .null : .null)
   }
 
   private mutating func reindex() {
@@ -359,7 +433,8 @@ public struct ThreadState: Sendable {
 public enum Commands {
   public static func message(
     threadID: String, text: String, commandID: String, messageID: String, attachments: [JSON] = [],
-    delivery: MessageDelivery = .auto, continuationOf: String? = nil
+    delivery: MessageDelivery = .auto, continuationOf: String? = nil,
+    sourcePlanRef: JSON? = nil, modelSelection: JSON? = nil
   )
     -> JSON
   {
@@ -377,17 +452,24 @@ public enum Commands {
     } else if delivery != .queue {
       fields["deliveryIntent"] = .string(delivery.rawValue)
     }
+    if let sourcePlanRef { fields["sourcePlanRef"] = sourcePlanRef }
+    if let modelSelection { fields["modelSelection"] = modelSelection }
     return .object(fields)
   }
 
-  public static func newThread(template: ThreadSummary, id: String, title: String = "New thread")
+  public static func newThread(
+    template: ThreadSummary, id: String, title: String = "New thread",
+    runtimeMode: String? = nil, interactionMode: String? = nil, inheritWorkspace: Bool = false
+  )
     -> JSON
   {
     .object([
       "type": .string("thread.create"), "commandId": .string(UUID().uuidString),
       "threadId": .string(id), "projectId": .string(template.projectID), "title": .string(title),
-      "modelSelection": template.model, "runtimeMode": .string(template.runtimeMode),
-      "interactionMode": .string(template.interactionMode), "branch": .null, "worktreePath": .null,
+      "modelSelection": template.model, "runtimeMode": .string(runtimeMode ?? template.runtimeMode),
+      "interactionMode": .string(interactionMode ?? template.interactionMode),
+      "branch": inheritWorkspace ? template.branch.map(JSON.string) ?? .null : .null,
+      "worktreePath": inheritWorkspace ? template.worktreePath.map(JSON.string) ?? .null : .null,
       "createdBy": .string("user"), "creationSource": .string("web"),
     ])
   }

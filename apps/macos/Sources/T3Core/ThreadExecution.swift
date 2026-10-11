@@ -56,6 +56,8 @@ public struct ThreadExecution: Sendable {
   public private(set) var canRestart = false
   public private(set) var steeringInterruptsTools = false
   public private(set) var resumableRunID: String?
+  public private(set) var latestRunID: String?
+  public private(set) var latestRunSettled = false
   public private(set) var hiddenUserMessageIDs: Set<String> = []
   private var thread: JSON = .null
   private var runs: [String: JSON] = [:]
@@ -204,6 +206,10 @@ public struct ThreadExecution: Sendable {
     let limited =
       latest?["status"].string == "failed" && failure?["class"].string == "usage_limit"
       && (session?["lastError"].string == nil || session?["lastError"] == failure?["message"])
+    latestRunID = latest?["id"].string
+    latestRunSettled =
+      latest != nil && activeRunID == nil
+      && thread["activeRunId"].string != latestRunID
     resumableRunID =
       activeRunID == nil && (latest?["status"].string == "interrupted" || limited)
       ? latest?["id"].string : nil

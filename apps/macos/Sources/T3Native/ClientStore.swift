@@ -68,11 +68,17 @@ import T3Core
   private var generation = UUID()
   private var selectionGeneration = UUID()
   private var pending: [String: PendingSubmission] = [:] { didSet { scheduleDraftSave() } }
+  private var planSubmissions: [String: PendingPlanSubmission] = [:] {
+    didSet { scheduleDraftSave() }
+  }
   private let draftRepository: DraftRepository
+  private let preferences: UserDefaults
   private var draftEndpoint: URL?
   private var draftSave: Task<Void, Never>?
 
-  init(draftDirectory: URL? = nil) {
+  init(draftDirectory: URL? = nil, preferences: UserDefaults = .standard) {
+    self.preferences = preferences
+    catalog = ProviderCatalog(planModeEnabled: preferences.bool(forKey: "planModeEnabled"))
     let directory =
       draftDirectory
       ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -83,7 +89,8 @@ import T3Core
   func connect(_ settings: ConnectionSettings, selecting threadID: String? = nil) {
     if let current = self.settings, current.endpoint != settings.endpoint,
       !drafts.isEmpty || !questionDrafts.isEmpty || !pending.isEmpty || !attachmentDrafts.isEmpty
-        || !queuedEdits.isEmpty || !questionResponses.isEmpty || !deliveries.isEmpty,
+        || !queuedEdits.isEmpty || !questionResponses.isEmpty || !deliveries.isEmpty
+        || !planSubmissions.isEmpty,
       !flushDrafts()
     {
       error = "Save the current drafts before switching servers."
@@ -106,8 +113,9 @@ import T3Core
       deliveries = [:]
       questionPages = [:]
       questionResponses = [:]
+      planSubmissions = [:]
       selectedRequestID = nil
-      catalog = ProviderCatalog()
+      catalog = ProviderCatalog(planModeEnabled: preferences.bool(forKey: "planModeEnabled"))
       do {
         let saved = try draftRepository.load(for: settings.endpoint)
         drafts = saved.messages
@@ -118,6 +126,7 @@ import T3Core
         deliveries = saved.deliveries ?? [:]
         questionPages = saved.questionPages ?? [:]
         questionResponses = saved.questionResponses ?? [:]
+        planSubmissions = saved.planSubmissions ?? [:]
         draftEndpoint = settings.endpoint
         storageError = nil
       } catch {
@@ -368,7 +377,8 @@ import T3Core
           messages: drafts.filter { !$0.value.isEmpty }, submissions: pending,
           questions: questionDrafts, attachments: attachmentDrafts.filter { !$0.value.isEmpty },
           queuedEdits: queuedEdits, deliveries: deliveries,
-          questionPages: questionPages, questionResponses: questionResponses),
+          questionPages: questionPages, questionResponses: questionResponses,
+          planSubmissions: planSubmissions),
         for: draftEndpoint)
       storageError = nil
       return true
@@ -485,6 +495,12 @@ import T3Core
     else { return }
     performThreadCommand(
       "thread.interaction-mode.set", fields: ["interactionMode": .string(mode)], key: "settings")
+  }
+
+  func setPlanModeEnabled(_ enabled: Bool) {
+    preferences.set(enabled, forKey: "planModeEnabled")
+    catalog.setPlanModeEnabled(enabled)
+    notify()
   }
 
   func respond(_ request: PendingRequest, decision: String? = nil) {
@@ -626,7 +642,95 @@ import T3Core
     }
   }
   func submitComposer() {
-    if let request = questionRequest { advanceQuestion(request) } else { send() }
+    if let request = questionRequest {
+      advanceQuestion(request)
+    } else if planFollowUp != nil {
+      submitPlan()
+    } else {
+      send()
+    }
+  }
+
+  var pendingPlanSubmission: PendingPlanSubmission? {
+    selectedID.flatMap { planSubmissions[$0] }
+  }
+  var planFollowUp: ProposedPlan? {
+    guard queuedEdit == nil, selectedAttachments.isEmpty,
+      !importingAttachments.contains(selectedID ?? ""),
+      thread?.pendingRequests.contains(where: \.isQuestion) != true
+    else { return nil }
+    if let pendingPlanSubmission { return pendingPlanSubmission.plan }
+    guard catalog.planModeEnabled, selectedThread?.interactionMode == "plan",
+      execution.latestRunSettled, let plan = thread?.latestProposedPlan,
+      plan.status == "active",
+      !plan.markdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    else { return nil }
+    return plan
+  }
+  var planActionTitle: String {
+    if let pendingPlanSubmission {
+      return pendingPlanSubmission.isImplementation ? "Retry implementation" : "Retry refinement"
+    }
+    return composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      ? "Implement" : "Refine"
+  }
+  func discardPlanRetry() {
+    guard let id = selectedID, let command = planSubmissions[id], !sending.contains(id) else {
+      return
+    }
+    planSubmissions.removeValue(forKey: id)
+    if !flushDrafts() { planSubmissions[id] = command }
+    notify()
+  }
+  private var planSendBlockReason: String? {
+    guard canEditThread, catalogReady else { return "Wait for the thread to connect." }
+    if sending.contains(selectedID ?? "") { return "Sending…" }
+    if queueBusy { return "Wait for the queue update." }
+    if pendingPlanSubmission == nil,
+      catalog.provider(for: selectedThread?.model ?? .null)?.available != true
+    {
+      return "The selected provider is unavailable."
+    }
+    return nil
+  }
+  func submitPlan(newThread: Bool = false) {
+    guard let plan = planFollowUp, let template = selectedThread, let connection,
+      planSendBlockReason == nil, !newThread || pendingPlanSubmission == nil
+    else { return }
+    let command =
+      pendingPlanSubmission
+      ?? PendingPlanSubmission(
+        plan: plan, template: template, draft: drafts[template.id] ?? "", newThread: newThread,
+        defaultRuntimeMode: catalog.defaultRuntimeMode(projectID: template.projectID))
+    planSubmissions[template.id] = command
+    guard flushDrafts() else { return }
+    sending.insert(template.id)
+    error = nil
+    notify()
+    let generation = generation
+    Task {
+      defer {
+        if self.generation == generation {
+          sending.remove(template.id)
+          notify()
+        }
+      }
+      do {
+        for payload in [command.setup, command.message] {
+          _ = try await connection.call("orchestration.dispatchCommand", payload: payload)
+          guard self.generation == generation else { return }
+        }
+        if !command.isNewThread, drafts[template.id] == command.draft { drafts[template.id] = "" }
+        planSubmissions.removeValue(forKey: template.id)
+        _ = flushDrafts()
+        if command.isNewThread, selectedID == template.id { select(command.targetThreadID) }
+      } catch {
+        guard self.generation == generation else { return }
+        self.error =
+          error.localizedDescription
+          + " Your plan send is saved. Retry reuses the same thread and message."
+      }
+    }
   }
   private func respondToQuestions(_ request: PendingRequest) {
     guard canEditThread, request.canRespond, !questionBusy(request), let id = selectedID,
@@ -984,7 +1088,7 @@ import T3Core
   }
   var canAttach: Bool {
     guard selectedThread?.archived == false, !importingAttachments.contains(composerDraftID ?? ""),
-      !(queuedEdit != nil && sending.contains(selectedID ?? ""))
+      !(queuedEdit != nil && sending.contains(selectedID ?? "")), pendingPlanSubmission == nil
     else { return false }
     if let request = questionRequest {
       return request.canRespond && !questionBusy(request) && catalog.attachmentPolicy.questions
@@ -1014,6 +1118,7 @@ import T3Core
       return progress.answer == nil || (progress.isLast && progress.answers == nil)
         ? "Answer the question and finish its uploads before continuing." : nil
     }
+    if planFollowUp != nil { return planSendBlockReason }
     return messageSendBlockReason
   }
   private var messageSendBlockReason: String? {

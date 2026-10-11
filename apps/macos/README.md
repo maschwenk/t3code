@@ -33,6 +33,14 @@ options when focus is outside the text editor. Each answer and its files survive
 restart, separately from the normal message draft, which returns when the request
 closes. Answered files remain available in the conversation.
 
+Enable the optional Plan control from Chat → Enable Plan Mode. This is a saved
+client preference. After a plan finishes, type feedback and choose Refine to stay
+in planning mode, or leave the composer empty and choose Implement. The adjacent
+menu can start implementation in a new thread with the same model and workspace.
+Both paths retain the link to the source plan. If a send loses its connection,
+Retry resumes the saved send; its menu can dismiss the retry without stopping
+work already accepted by the server.
+
 The menu beside Send chooses Auto, Queue next, Steer now, or Interrupt and restart
 when the provider supports them. Queued messages can be edited, removed, reordered,
 or sent as steering. Stop holds the queue; Resume continues interrupted work and
@@ -118,6 +126,9 @@ Use `--question-paging-smoke` for two provider turns covering multiple questions
 per-question attachments, paging and restart recovery, attachment-only answers,
 exact downloaded bytes, and resolution from another client. `--queue-smoke`
 checks queue edits, reorder, cancellation, stop/resume, and draft recovery.
+`--plan-smoke` checks real plan generation and refinement, implementation in the
+same and a new thread, source-plan links, and restart after a partially committed
+send. It uses an isolated plan-mode preference and five short provider turns.
 Add `--manual-question` instead to leave the real question pending for a UI check.
 Add `--tool-output-smoke` to run a diagnostic `printf`, approve only that exact
 command once if requested, and fetch its omitted output through the controller.

@@ -71,6 +71,88 @@ private func event(_ type: String, _ payload: JSON, _ sequence: Int) -> JSON {
   }
 }
 
+@Test func answeredQuestionHistorySurvivesEventOrderAndReconnect() throws {
+  let answered = try decode(
+    """
+    {"id":"r","kind":"user_input","status":"resolved",
+     "answers":{"q":{"answers":["Blue","",{"answers":["Green"]}]}}}
+    """)
+  let item = requestItem("user_input_request")
+  for itemFirst in [true, false] {
+    var thread = ThreadState(id: "t")
+    _ = try thread.apply(snapshot(requests: []))
+    let values = [("turn-item.updated", item), ("runtime-request.updated", answered)]
+    for (index, value) in (itemFirst ? values : values.reversed()).enumerated() {
+      _ = try thread.apply(event(value.0, value.1, index + 6))
+    }
+    #expect(thread.rows[0].text == "Choose a color\nBlue, Green")
+    #expect(thread.rows[0].title == "Answered questions")
+    #expect(thread.rows[0].item == item)
+    _ = try thread.apply(event("runtime-request.updated", request(kind: "user_input"), 6))
+    #expect(thread.rows[0].text == "Choose a color\nBlue, Green")
+    _ = try thread.apply(event("turn-item.updated", item, 8))
+    #expect(thread.rows[0].text == "Choose a color\nBlue, Green")
+    _ = try thread.apply(snapshot(requests: [answered], items: [item]))
+    #expect(thread.rows[0].text == "Choose a color\nBlue, Green")
+    #expect(thread.pendingRequests.isEmpty)
+  }
+}
+
+@Test func pagedQuestionAnswersStayWithinTheirSourceThread() throws {
+  let answered = try decode(
+    """
+    {"id":"r","kind":"user_input","status":"resolved","answers":{"q":"Blue"}}
+    """)
+  let item = requestItem("user_input_request")
+  let rows: [JSON] = ["parent", "t"].enumerated().map { index, source in
+    .object([
+      "item": item, "position": .number(Double(index)), "sourceThreadId": .string(source),
+      "visibility": .string(source == "t" ? "own" : "inherited"),
+    ])
+  }
+  var thread = ThreadState(id: "t")
+  _ = try thread.apply(snapshot(requests: [answered]))
+  try thread.prependHistory(.object(["items": .array(rows)]))
+  #expect(thread.rows.map(\.text) == ["Choose a color", "Choose a color\nBlue"])
+  _ = try thread.apply(event("runtime-request.updated", answered, 6))
+  #expect(thread.rows.map(\.text) == ["Choose a color", "Choose a color\nBlue"])
+  _ = try thread.apply(
+    .object([
+      "kind": .string("snapshot"), "snapshotSequence": .number(7),
+      "projection": .object([
+        "thread": .object(["id": .string("t")]), "runtimeRequests": .array([answered]),
+        "visibleTurnItems": .array(rows),
+      ]),
+    ]))
+  #expect(thread.rows.map(\.text) == ["Choose a color", "Choose a color\nBlue"])
+  for status in ["pending", "expired", "cancelled"] {
+    let unresolved = try decode(
+      """
+      {"id":"r","kind":"user_input","status":"\(status)","answers":{"q":"Blue"}}
+      """)
+    let row = try TimelineRow(item: item, position: 0, sourceID: "t", request: unresolved)
+    #expect(row.text == "Choose a color")
+    #expect(row.title == "Question")
+  }
+}
+
+@Test func recordedQuestionAnswerAndFilesTakePrecedenceOverLegacyRequest() throws {
+  let item = try decode(
+    """
+    {"id":"item","type":"user_input_request","requestId":"r",
+     "questions":[{"id":"q","question":"Which file?"}],
+     "questionAnswer":{"answers":{"q":"Use this file"},
+       "attachmentsByQuestionId":{"q":[{"id":"file","name":"notes.txt"}]}}}
+    """)
+  let answered = try decode(
+    """
+    {"id":"r","kind":"user_input","status":"resolved","answers":{"q":"Legacy answer"}}
+    """)
+  let row = try TimelineRow(item: item, position: 0, sourceID: "t", request: answered)
+  #expect(row.text == "Which file?\nUse this file")
+  #expect(row.attachments.first?["name"].string == "notes.txt")
+}
+
 @Test func stoppedSessionCannotApproveButMessageQuestionsRemainAnswerable() throws {
   let expired = try PendingRequest(
     request: request(capability: "not_resumable"), item: requestItem())
@@ -186,11 +268,22 @@ private func event(_ type: String, _ payload: JSON, _ sequence: Int) -> JSON {
     ]), planModeEnabled: false)
   #expect(
     normalized?["options"].array == [.object(["id": .string("agent"), "value": .string("build")])])
+  catalog.setPlanModeEnabled(true)
   try catalog.apply(
     .object([
       "type": .string("settingsUpdated"),
-      "payload": .object(["settings": .object(["planModeEnabled": .bool(true)])]),
+      "payload": .object([
+        "settings": .object([
+          "defaultRuntimeMode": .string("full-access"),
+          "projectSettingsOverrides": .object([
+            "restricted": .object(["defaultRuntimeMode": .string("approval-required")])
+          ]),
+        ])
+      ]),
     ]))
+  #expect(catalog.planModeEnabled)
+  #expect(catalog.defaultRuntimeMode(projectID: "restricted") == "approval-required")
+  #expect(catalog.defaultRuntimeMode(projectID: "other") == "full-access")
   #expect(catalog.descriptors(for: selection)[0]["options"].array.count == 2)
   #expect(catalog.providers.count == 1)
   try catalog.apply(

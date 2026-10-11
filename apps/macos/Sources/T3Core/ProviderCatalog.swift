@@ -80,24 +80,39 @@ public struct ProviderCatalog: Sendable, Equatable {
   public private(set) var providers: [ProviderEntry] = []
   public private(set) var planModeEnabled = false
   public private(set) var attachmentPolicy = AttachmentPolicy()
-  public init() {}
+  private var defaultMode = "approval-required"
+  private var projectModes: [String: String] = [:]
+  public init(planModeEnabled: Bool = false) { self.planModeEnabled = planModeEnabled }
+  public mutating func setPlanModeEnabled(_ enabled: Bool) { planModeEnabled = enabled }
 
   public mutating func apply(_ event: JSON) throws {
     switch event["type"].string {
     case "snapshot":
       providers = try event["config"]["providers"].array.map(ProviderEntry.init)
-      planModeEnabled = event["config"]["settings"]["planModeEnabled"].bool
+      applySettings(event["config"]["settings"])
       attachmentPolicy = AttachmentPolicy(event["config"]["environment"]["capabilities"])
     case "providerStatuses":
       providers = try event["payload"]["providers"].array.map(ProviderEntry.init)
     case "settingsUpdated":
-      planModeEnabled = event["payload"]["settings"]["planModeEnabled"].bool
+      applySettings(event["payload"]["settings"])
     default: break
     }
   }
 
   public func provider(for selection: JSON) -> ProviderEntry? {
     providers.first { $0.id == selection["instanceId"].string }
+  }
+
+  public func defaultRuntimeMode(projectID: String) -> String {
+    projectModes[projectID] ?? defaultMode
+  }
+  private mutating func applySettings(_ settings: JSON) {
+    defaultMode = settings["defaultRuntimeMode"].string ?? "approval-required"
+    if case .object(let overrides) = settings["projectSettingsOverrides"] {
+      projectModes = overrides.compactMapValues { $0["defaultRuntimeMode"].string }
+    } else {
+      projectModes = [:]
+    }
   }
 
   public func model(for selection: JSON) -> ProviderModel? {

@@ -54,7 +54,7 @@ public struct PendingSubmission: Codable, Sendable, Equatable {
 }
 
 public struct SavedDrafts: Codable, Sendable, Equatable {
-  public var version = 4
+  public var version = 5
   public var messages: [String: String] = [:]
   public var submissions: [String: PendingSubmission] = [:]
   public var questions: [String: [String: QuestionDraft]] = [:]
@@ -63,13 +63,15 @@ public struct SavedDrafts: Codable, Sendable, Equatable {
   public var deliveries: [String: MessageDelivery]?
   public var questionPages: [String: Int]?
   public var questionResponses: [String: PendingQuestionResponse]?
+  public var planSubmissions: [String: PendingPlanSubmission]?
   public init(
     messages: [String: String] = [:], submissions: [String: PendingSubmission] = [:],
     questions: [String: [String: QuestionDraft]] = [:],
     attachments: [String: [DraftAttachment]]? = nil,
     queuedEdits: [String: QueuedEdit]? = nil, deliveries: [String: MessageDelivery]? = nil,
     questionPages: [String: Int]? = nil,
-    questionResponses: [String: PendingQuestionResponse]? = nil
+    questionResponses: [String: PendingQuestionResponse]? = nil,
+    planSubmissions: [String: PendingPlanSubmission]? = nil
   ) {
     self.messages = messages
     self.submissions = submissions
@@ -79,6 +81,7 @@ public struct SavedDrafts: Codable, Sendable, Equatable {
     self.deliveries = deliveries
     self.questionPages = questionPages
     self.questionResponses = questionResponses
+    self.planSubmissions = planSubmissions
   }
 }
 
@@ -109,7 +112,7 @@ public struct DraftRepository: Sendable {
     let file = file(for: endpoint)
     guard FileManager.default.fileExists(atPath: file.path) else { return SavedDrafts() }
     let drafts = try JSONDecoder().decode(SavedDrafts.self, from: Data(contentsOf: file))
-    guard (1...4).contains(drafts.version) else {
+    guard (1...5).contains(drafts.version) else {
       throw T3Error("The saved drafts use a newer format.")
     }
     return drafts

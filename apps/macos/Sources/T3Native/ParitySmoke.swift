@@ -12,7 +12,8 @@ enum ParitySmoke {
     let settings = try ConnectionSettings.load(URL(fileURLWithPath: file))
     let connection = RPCConnection(settings: settings)
     let timeout = Task {
-      try await Task.sleep(for: .seconds(120))
+      try await Task.sleep(
+        for: .seconds(CommandLine.arguments.contains("--plan-smoke") ? 300 : 120))
       await connection.close(error: T3Error("Parity smoke timed out."))
     }
     defer {
@@ -69,6 +70,10 @@ enum ParitySmoke {
       "orchestration.dispatchCommand",
       payload: Commands.newThread(template: template, id: id, title: "Native parity verification"))
     print("Parity thread: \(id)")
+    if CommandLine.arguments.contains("--plan-smoke") {
+      try await plans(settings: settings, connection: connection, threadID: id)
+      return
+    }
     if CommandLine.arguments.contains("--attachment-smoke") {
       try await attachments(settings: settings, connection: connection, threadID: id)
       return
@@ -634,10 +639,13 @@ enum ParitySmoke {
       }
       guard store.questionDrafts[externalRequest.id] == nil,
         !FileManager.default.fileExists(atPath: unusedFile.path),
-        store.composerText == "Separate draft behind the questions."
+        store.composerText == "Separate draft behind the questions.",
+        let answeredRow = store.thread?.rows.first(where: {
+          $0.item["requestId"].string == externalRequest.id
+        }), externalAnswers.values.allSatisfy({ answeredRow.text.contains($0.string ?? "") })
       else {
         throw T3Error(
-          "Cross-client resolution retained obsolete question files or changed the normal draft.")
+          "Cross-client resolution lost an answer, retained obsolete files, or changed the draft.")
       }
       print(
         "PASS: two real questions, separate answer files, backward/forward paging, restart after source deletion, attachment-only response, claimed bytes, provider completion and cross-client cleanup; normal draft preserved."
@@ -923,13 +931,147 @@ enum ParitySmoke {
     }
   }
 
+  @MainActor private static func plans(
+    settings: ConnectionSettings, connection: RPCConnection, threadID: String
+  ) async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "t3-plans-" + UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let preferenceDomain = "t3-native-plan-smoke-" + UUID().uuidString
+    let preferences = UserDefaults(suiteName: preferenceDomain)!
+    defer { preferences.removePersistentDomain(forName: preferenceDomain) }
+    var store = ClientStore(draftDirectory: directory, preferences: preferences)
+    store.setPlanModeEnabled(true)
+    defer { store.disconnect() }
+    var targets = Set([threadID])
+    func projection(_ id: String) async throws -> JSON {
+      try await connection.call(
+        "orchestration.getThreadProjection", payload: .object(["threadId": .string(id)]))
+    }
+    func propose(_ title: String) async throws {
+      store.setInteractionMode("plan")
+      try await waitForStore(store) {
+        store.canEditThread && store.selectedThread?.interactionMode == "plan"
+      }
+      store.composerText =
+        "This is a native plan UI test. Do not use tools, inspect files, or run commands. Return a proposed plan using the native <proposed_plan> format, titled \(title). The plan must have exactly one implementation step: reply exactly NATIVE_PLAN_IMPLEMENTED without doing anything else. Do not implement yet."
+      store.send()
+      try await waitForStore(store, seconds: 60) {
+        !store.sending.contains(threadID) && store.planFollowUp?.title == title
+      }
+    }
+    do {
+      store.connect(settings, selecting: threadID)
+      try await waitForStore(store) { store.canEditThread && store.catalogReady }
+      store.rename(threadID, to: "Native plan verification")
+      try await waitForStore(store) { !store.lifecycleBusy(threadID) }
+      try await propose("Native plan handoff")
+      let initialRun = store.execution.latestRunID
+      store.composerText =
+        "Refine the plan: change its title to Native refined plan. Keep its sole implementation step of replying exactly NATIVE_PLAN_IMPLEMENTED, with no tools, commands, or file changes. Return only the revised proposed plan."
+      store.submitComposer()
+      try await waitForStore(store, seconds: 60) {
+        !store.sending.contains(threadID) && store.planFollowUp?.title == "Native refined plan"
+          && store.execution.latestRunID != initialRun
+      }
+      guard store.selectedThread?.interactionMode == "plan", store.composerText.isEmpty else {
+        throw T3Error("Refining a plan left planning mode or retained the sent draft.")
+      }
+      print("PASS: real proposed plan and composer refinement in planning mode.")
+      for newThread in [true, false] {
+        if !newThread {
+          store.select(threadID)
+          try await waitForStore(store) { store.canEditThread && store.selectedID == threadID }
+          try await propose("Native same thread plan")
+        }
+        guard let plan = store.planFollowUp, let template = store.selectedThread else {
+          throw T3Error("Missing actionable plan.")
+        }
+        let runtime = store.catalog.defaultRuntimeMode(projectID: template.projectID)
+        let command = PendingPlanSubmission(
+          plan: plan, template: template, draft: "", newThread: newThread,
+          defaultRuntimeMode: runtime)
+        targets.insert(command.targetThreadID)
+        store.disconnect()
+        try DraftRepository(directory: directory).save(
+          SavedDrafts(messages: [threadID: ""], planSubmissions: [threadID: command]),
+          for: settings.endpoint)
+        _ = try await connection.call("orchestration.dispatchCommand", payload: command.setup)
+        store = ClientStore(draftDirectory: directory, preferences: preferences)
+        store.connect(settings, selecting: threadID)
+        try await waitForStore(store) {
+          store.canEditThread && store.catalogReady && store.pendingPlanSubmission != nil
+        }
+        guard store.pendingPlanSubmission == command, store.planFollowUp != nil,
+          store.sendBlockReason == nil
+        else {
+          throw T3Error("A partially committed plan send could not be resumed after restart.")
+        }
+        store.submitComposer()
+        try await waitForStore(store, seconds: 60) {
+          store.selectedID == command.targetThreadID && store.thread?.synchronized == true
+            && !store.sending.contains(threadID) && store.execution.activeRunID == nil
+            && store.thread?.rows.contains(where: {
+              $0.kind == "assistant_message" && !$0.streaming
+                && $0.text.contains("NATIVE_PLAN_IMPLEMENTED")
+            }) == true
+        }
+        // Replaying a send whose reply was lost must succeed even though it completed the source plan.
+        for payload in [command.setup, command.message] {
+          _ = try await connection.call("orchestration.dispatchCommand", payload: payload)
+        }
+        let result = try await projection(command.targetThreadID)
+        let source = newThread ? try await projection(threadID) : result
+        guard result["thread"]["interactionMode"].string == "default",
+          result["messages"].array.filter({ $0["id"] == command.message["messageId"] }).count == 1,
+          result["runs"].array.first(where: { $0["userMessageId"] == command.message["messageId"] }
+          )?["sourcePlanRef"]
+            == command.message["sourcePlanRef"],
+          source["plans"].array.first(where: { $0["id"].string == plan.id })?["status"].string
+            == "completed",
+          result["thread"]["modelSelection"] == template.model,
+          result["thread"]["branch"].string == template.branch,
+          result["thread"]["worktreePath"].string == template.worktreePath
+        else {
+          throw T3Error(
+            "Plan implementation lost its source link, workspace, model, or retry identity.")
+        }
+        if newThread {
+          guard result["thread"]["runtimeMode"].string == runtime,
+            source["thread"]["interactionMode"].string == "plan"
+          else {
+            throw T3Error(
+              "New-thread implementation changed the source mode or ignored project defaults.")
+          }
+        }
+        print(
+          "PASS: \(newThread ? "new-thread" : "same-thread") implementation \(command.targetThreadID), partial-send restart, stable message, completed source plan, preserved model/workspace and provider reply."
+        )
+      }
+    } catch {
+      for id in targets {
+        let value = try? await projection(id)
+        for run in value?["runs"].array ?? []
+        where ["preparing", "starting", "running", "waiting"].contains(run["status"].string ?? "") {
+          _ = try? await connection.call(
+            "orchestration.dispatchCommand",
+            payload: .object([
+              "type": .string("run.interrupt"), "commandId": .string(UUID().uuidString),
+              "threadId": .string(id), "runId": run["id"], "holdQueue": .bool(true),
+            ]))
+        }
+      }
+      throw error
+    }
+  }
+
   @MainActor private static func waitForStore(
-    _ store: ClientStore, until predicate: @escaping @MainActor () -> Bool
+    _ store: ClientStore, seconds: Int = 25, until predicate: @escaping @MainActor () -> Bool
   ) async throws {
     let (stream, continuation) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
     store.onChange = { continuation.yield(()) }
     let timeout = Task {
-      try await Task.sleep(for: .seconds(25))
+      try await Task.sleep(for: .seconds(seconds))
       continuation.finish()
     }
     defer {

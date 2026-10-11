@@ -92,6 +92,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
   private let status = NSTextField(labelWithString: "")
   private let errorLabel = NSTextField(wrappingLabelWithString: "")
   private let sendButton = NSButton(title: "Send  ⌘↵", target: nil, action: nil)
+  private let planBanner = NSTextField(wrappingLabelWithString: "")
   private let stopButton = NSButton(title: "Stop", target: nil, action: nil)
   private let olderButton = NSButton(title: "Load earlier activity", target: nil, action: nil)
   private let modelControls: ComposerControls
@@ -254,7 +255,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     sendButton.imagePosition = .imageOnly
     sendButton.contentTintColor = .controlAccentColor
     sendButton.setAccessibilityLabel("Send message")
-    sendButton.widthAnchor.constraint(equalToConstant: 32).isActive = true
+    sendButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 32).isActive = true
     sendButton.heightAnchor.constraint(equalToConstant: 30).isActive = true
     deliveryButton.controlSize = .small
     deliveryButton.bezelStyle = .inline
@@ -270,7 +271,10 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
       attachButton, modelControls, spacer, stopButton, sendButton, deliveryButton,
     ])
     bottom.spacing = 6
-    let composerStack = NSStackView(views: [attachmentTray, composerScroll, bottom])
+    planBanner.font = .systemFont(ofSize: 12, weight: .medium)
+    planBanner.textColor = .secondaryLabelColor
+    planBanner.isHidden = true
+    let composerStack = NSStackView(views: [planBanner, attachmentTray, composerScroll, bottom])
     composerStack.orientation = .vertical
     composerStack.alignment = .leading
     composerStack.spacing = 8
@@ -280,6 +284,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     pin(composerStack, to: composerSurface, inset: 10, top: 4)
     composerScroll.widthAnchor.constraint(equalTo: composerStack.widthAnchor).isActive = true
     attachmentTray.widthAnchor.constraint(equalTo: composerStack.widthAnchor).isActive = true
+    planBanner.widthAnchor.constraint(equalTo: composerStack.widthAnchor).isActive = true
     bottom.widthAnchor.constraint(equalTo: composerStack.widthAnchor).isActive = true
     let header = NSStackView(views: [
       subtitle, NSTextField(labelWithString: "/"), heading, NSView(),
@@ -337,6 +342,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
       (chat, "Attach Files…", #selector(attachFiles), "a", [.command, .shift]),
       (chat, "Steer Next Queued Message", #selector(steerNextQueued), "\r", [.command, .shift]),
       (chat, "Resume", #selector(resume), "", []),
+      (chat, "Enable Plan Mode", #selector(togglePlanModeEnabled), "", []),
       (view, "Toggle Sidebar", #selector(toggleSidebar), "b", [.command]),
     ] {
       let item = parent.addItem(withTitle: title, action: action, keyEquivalent: key)
@@ -351,6 +357,10 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
   }
 
   func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+    if menuItem.action == #selector(togglePlanModeEnabled) {
+      menuItem.state = store.catalog.planModeEnabled ? .on : .off
+      return true
+    }
     if menuItem.action == #selector(chooseModel) {
       return store.canEditThread && store.catalogReady
     }
@@ -366,6 +376,9 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
   }
 
   @objc private func chooseModel() { modelControls.showModels() }
+  @objc private func togglePlanModeEnabled() {
+    store.setPlanModeEnabled(!store.catalog.planModeEnabled)
+  }
   @objc private func toggleSidebar() {
     guard let sidebarItem else { return }
     sidebarItem.isCollapsed.toggle()
@@ -692,12 +705,21 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     sendButton.isEnabled = store.sendBlockReason == nil
     attachButton.isEnabled = store.canAttach
     composer.allowsAttachments = store.canAttach
-    sendButton.title = ""
+    let plan = store.planFollowUp
+    planBanner.isHidden = plan == nil
+    planBanner.stringValue =
+      plan.map {
+        (store.pendingPlanSubmission == nil ? "Plan ready · " : "Plan send pending · ") + $0.title
+      } ?? ""
+    sendButton.title = plan == nil ? "" : sending ? "Sending…" : store.planActionTitle
+    sendButton.imagePosition = plan == nil ? .imageOnly : .noImage
     let label =
       store.questionRequest != nil
       ? (store.activeQuestionProgress?.isLast == true ? "Submit answers" : "Next question")
-      : store.queuedEdit != nil
-        ? "Save queued message" : store.delivery == .auto ? "Send message" : store.delivery.title
+      : plan != nil
+        ? store.planActionTitle
+        : store.queuedEdit != nil
+          ? "Save queued message" : store.delivery == .auto ? "Send message" : store.delivery.title
     sendButton.toolTip = store.sendBlockReason ?? label + " (⌘ Return)"
     sendButton.setAccessibilityLabel(sending ? "Sending message" : label)
     sendButton.image = NSImage(
@@ -705,7 +727,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
       accessibilityDescription: nil)
     let execution = store.execution
     let state =
-      "\(store.delivery):\(execution.canQueue):\(execution.canSteer):\(execution.canRestart):\(execution.steeringInterruptsTools):\(store.queuedEdit != nil):\(sending):\(store.questionRequest != nil)"
+      "\(store.delivery):\(execution.canQueue):\(execution.canSteer):\(execution.canRestart):\(execution.steeringInterruptsTools):\(store.queuedEdit != nil):\(sending):\(store.questionRequest != nil):\(plan != nil):\(store.planActionTitle):\(store.sendBlockReason ?? "")"
     if deliveryState != state {
       deliveryState = state
       deliveryButton.removeAllItems()
@@ -713,20 +735,43 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
       deliveryButton.item(at: 0)?.image = NSImage(
         systemSymbolName: "chevron.down", accessibilityDescription: nil)
       deliveryButton.menu?.autoenablesItems = false
-      for mode in MessageDelivery.allCases {
-        let title =
-          mode == .steer && execution.steeringInterruptsTools
-          ? "Steer now (interrupts tools)" : mode.title
-        let item = ActionMenuItem(title) { [weak store] in store?.setDelivery(mode) }
-        deliveryButton.menu?.addItem(item)
-        item.state = store.delivery == mode ? .on : .off
-        item.isEnabled =
-          mode == .auto || mode == .queue && execution.canQueue
-          || mode == .steer && execution.canSteer || mode == .restart && execution.canRestart
+      if plan != nil {
+        if store.pendingPlanSubmission != nil {
+          let item = ActionMenuItem("Stop retrying this send") { [weak store] in
+            store?.discardPlanRetry()
+          }
+          item.toolTip = "Dismiss the saved retry. Work already accepted by the server continues."
+          item.isEnabled = !sending
+          deliveryButton.menu?.addItem(item)
+        } else {
+          let item = ActionMenuItem("Implement in a new thread") { [weak store] in
+            store?.submitPlan(newThread: true)
+          }
+          deliveryButton.menu?.addItem(item)
+          item.isEnabled = store.sendBlockReason == nil
+        }
+      } else {
+        for mode in MessageDelivery.allCases {
+          let title =
+            mode == .steer && execution.steeringInterruptsTools
+            ? "Steer now (interrupts tools)" : mode.title
+          let item = ActionMenuItem(title) { [weak store] in store?.setDelivery(mode) }
+          deliveryButton.menu?.addItem(item)
+          item.state = store.delivery == mode ? .on : .off
+          item.isEnabled =
+            mode == .auto || mode == .queue && execution.canQueue
+            || mode == .steer && execution.canSteer || mode == .restart && execution.canRestart
+        }
       }
-      deliveryButton.isHidden = store.queuedEdit != nil || store.questionRequest != nil
+      deliveryButton.isHidden =
+        store.queuedEdit != nil || store.questionRequest != nil
+        || (plan != nil && store.pendingPlanSubmission == nil
+          && store.planActionTitle != "Implement")
       deliveryButton.isEnabled = !sending
-      deliveryButton.toolTip = "Message delivery: " + store.delivery.title
+      deliveryButton.toolTip =
+        plan == nil ? "Message delivery: " + store.delivery.title : "Implementation actions"
+      deliveryButton.setAccessibilityLabel(
+        plan == nil ? "Message delivery" : "Implementation actions")
     }
   }
   @objc private func send() { store.submitComposer() }
