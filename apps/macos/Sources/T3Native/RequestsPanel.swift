@@ -25,13 +25,15 @@ import T3Core
 
   func refresh(force: Bool = false) {
     let requests = store.thread?.pendingRequests ?? []
+    let busy = Set(
+      store.commandsInFlight.filter { $0.hasPrefix((store.selectedID ?? "") + ":request:") })
     guard
       force || previous != requests || previousReady != store.canEditThread
-        || previousBusy != store.commandsInFlight
+        || previousBusy != busy
     else { return }
     previous = requests
     previousReady = store.canEditThread
-    previousBusy = store.commandsInFlight
+    previousBusy = busy
     isHidden = requests.isEmpty
     for view in arrangedSubviews {
       removeArrangedSubview(view)

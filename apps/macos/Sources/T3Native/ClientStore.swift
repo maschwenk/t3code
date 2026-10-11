@@ -3,6 +3,9 @@ import T3Core
 
 @MainActor final class ClientStore {
   var shell = ShellState()
+  private(set) var archives = ShellState(archived: true)
+  private(set) var showingArchives = false
+  private(set) var archiveError: String?
   private(set) var sortedThreads: [ThreadSummary] = []
   var thread: ThreadState?
   var selectedID: String?
@@ -23,6 +26,9 @@ import T3Core
   private var lifetime: Task<Void, Never>?
   private var detail: Task<Void, Never>?
   private var configuration: Task<Void, Never>?
+  private var archiveSubscription: Task<Void, Never>?
+  private var visibleVisit: (id: String, stamp: String)?
+  private var suppressVisit: String?
   private var notification: Task<Void, Never>?
   private var generation = UUID()
   private var selectionGeneration = UUID()
@@ -52,6 +58,7 @@ import T3Core
     if self.settings?.endpoint != settings.endpoint || draftEndpoint == nil {
       draftEndpoint = nil
       shell = ShellState()
+      archives = ShellState(archived: true)
       sortedThreads = []
       thread = nil
       selectedID = nil
@@ -87,19 +94,22 @@ import T3Core
           try await connection.open()
           try Task.checkCancellation()
           subscribeConfiguration(connection, generation: generation)
+          if showingArchives { subscribeArchives(connection, generation: generation) }
           let subscription = try await connection.subscribe(
             "orchestration.subscribeShell",
             payload: .object(["requestCompletionMarker": .bool(true)]))
           for try await value in subscription.values {
             guard self.generation == generation else { break }
             try shell.apply(value)
-            sortedThreads = shell.threads.values.sorted { $0.updatedAt > $1.updatedAt }
+            sortedThreads = ThreadGroup.sorted(Array(shell.threads.values), in: .active)
             if shell.synchronized {
               if !ready {
                 ready = true
                 status = "Connected · \(settings.endpoint.host ?? "T3")"
                 error = nil
-                if let selectedID, shell.threads[selectedID] != nil {
+                if let selectedID,
+                  shell.threads[selectedID] != nil || archives.threads[selectedID] != nil
+                {
                   select(selectedID, force: true)
                 } else if let requested = Arguments.value("--thread-id"),
                   shell.threads[requested] != nil
@@ -121,6 +131,7 @@ import T3Core
           ready = false
           detail?.cancel()
           configuration?.cancel()
+          archiveSubscription?.cancel()
           self.error = error.localizedDescription
           await connection.close()
           if (error as? T3Error)?.authentication == true {
@@ -152,6 +163,9 @@ import T3Core
     detail = nil
     configuration?.cancel()
     configuration = nil
+    archiveSubscription?.cancel()
+    archiveSubscription = nil
+    visibleVisit = nil
     if let connection { Task { await connection.close() } }
     connection = nil
     ready = false
@@ -161,6 +175,119 @@ import T3Core
   }
 
   func retry() { if let settings { connect(settings) } }
+
+  func showArchives(_ value: Bool) {
+    showingArchives = value
+    if value, archiveSubscription == nil, let connection, ready {
+      subscribeArchives(connection, generation: generation)
+    }
+    notify()
+  }
+
+  private func subscribeArchives(_ connection: RPCConnection, generation: UUID) {
+    archiveSubscription?.cancel()
+    archiveError = nil
+    archives = ShellState(archived: true)
+    archiveSubscription = Task {
+      do {
+        let stream = try await connection.subscribe("orchestration.subscribeArchivedShell")
+        defer { Task { await connection.cancel(stream.id) } }
+        for try await event in stream.values {
+          try Task.checkCancellation()
+          guard self.generation == generation else { return }
+          try archives.apply(event)
+          notify()
+        }
+        throw T3Error("Archive updates ended. Reconnect to refresh.")
+      } catch {
+        guard !Task.isCancelled, self.generation == generation else { return }
+        archiveError = error.localizedDescription
+        archiveSubscription = nil
+        notify()
+      }
+    }
+  }
+
+  func lifecycleBusy(_ id: String) -> Bool { commandsInFlight.contains(id + ":lifecycle") }
+
+  func rename(_ id: String, to title: String) {
+    let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !title.isEmpty else { return }
+    performThreadCommand(
+      "thread.metadata.update", fields: ["title": .string(title)], key: "lifecycle", threadID: id)
+  }
+
+  func setPinned(_ id: String, _ pinned: Bool) {
+    performThreadCommand(
+      pinned ? "thread.pin" : "thread.unpin", fields: [:], key: "lifecycle", threadID: id)
+  }
+
+  func setSettled(_ id: String, _ settled: Bool) {
+    performThreadCommand(
+      settled ? "thread.settle" : "thread.unsettle",
+      fields: settled ? [:] : ["reason": .string("user")], key: "lifecycle", threadID: id)
+  }
+
+  func setAutoSettle(_ id: String, enabled: Bool) {
+    performThreadCommand(
+      "thread.auto-settle.set", fields: ["enabled": .bool(enabled)], key: "lifecycle", threadID: id)
+  }
+
+  func snooze(_ id: String, until date: Date?) {
+    if let date {
+      guard date > Date(), shell.threads[id]?.lifecycle.canSnooze(at: Date()) == true else {
+        return
+      }
+      performThreadCommand(
+        "thread.snooze", fields: ["snoozedUntil": .string(ThreadDates.string(date))],
+        key: "lifecycle", threadID: id)
+    } else {
+      performThreadCommand(
+        "thread.unsnooze", fields: ["reason": .string("user")], key: "lifecycle", threadID: id)
+    }
+  }
+
+  func setArchived(_ id: String, _ archived: Bool) {
+    performThreadCommand(
+      archived ? "thread.archive" : "thread.unarchive", fields: [:], key: "lifecycle", threadID: id
+    ) { [weak self] in
+      guard let self else { return }
+      if archived, selectedID == id {
+        if let next = sortedThreads.first(where: {
+          $0.id != id && !$0.lifecycle.settled && !$0.lifecycle.snoozed(at: Date())
+        }) {
+          select(next.id)
+        } else {
+          detail?.cancel()
+          selectionGeneration = UUID()
+          selectedID = nil
+          thread = nil
+        }
+      }
+    }
+  }
+
+  func markUnread(_ id: String) {
+    if selectedID == id { suppressVisit = id }
+    performThreadCommand("thread.mark-unread", fields: [:], key: "lifecycle", threadID: id)
+  }
+
+  func markVisibleThreadRead() {
+    guard ready, thread?.synchronized == true, let current = selectedThread,
+      suppressVisit != current.id, ThreadDates.parse(current.updatedAt) != nil,
+      !commandsInFlight.contains(current.id + ":visit"),
+      visibleVisit?.id != current.id || visibleVisit?.stamp != current.updatedAt
+    else { return }
+    visibleVisit = (current.id, current.updatedAt)
+    if let visited = current.lifecycle.lastVisitedAt, let updated = current.lifecycle.updatedAt,
+      visited >= updated
+    {
+      return
+    }
+    performThreadCommand(
+      "thread.visit", fields: ["visitedAt": .string(current.updatedAt)], key: "visit",
+      threadID: current.id)
+  }
 
   func saveDraftsBeforeExit() -> Bool { flushDrafts() }
 
@@ -214,9 +341,13 @@ import T3Core
     }
   }
 
-  var selectedThread: ThreadSummary? { selectedID.flatMap { shell.threads[$0] } }
+  var selectedThread: ThreadSummary? {
+    selectedID.flatMap { shell.threads[$0] ?? archives.threads[$0] }
+  }
   var changingSettings: Bool { commandsInFlight.contains((selectedID ?? "") + ":settings") }
-  var canEditThread: Bool { ready && thread?.synchronized == true && !changingSettings }
+  var canEditThread: Bool {
+    ready && thread?.synchronized == true && selectedThread?.archived == false && !changingSettings
+  }
 
   func setModel(_ selection: JSON) {
     guard catalogReady, let selectedThread, let provider = catalog.provider(for: selection),
@@ -297,8 +428,13 @@ import T3Core
       key: "request:" + request.id)
   }
 
-  private func performThreadCommand(_ type: String, fields: [String: JSON], key: String) {
-    guard canEditThread, let id = selectedID, let connection else { return }
+  private func performThreadCommand(
+    _ type: String, fields: [String: JSON], key: String,
+    threadID: String? = nil, completion: (() -> Void)? = nil
+  ) {
+    guard ready, threadID != nil || canEditThread,
+      let id = threadID ?? selectedID, let connection
+    else { return }
     let operation = id + ":" + key
     guard !commandsInFlight.contains(operation) else { return }
     let generation = generation
@@ -318,6 +454,8 @@ import T3Core
       }
       do {
         _ = try await connection.call("orchestration.dispatchCommand", payload: .object(payload))
+        guard self.generation == generation else { return }
+        completion?()
       } catch {
         guard self.generation == generation else { return }
         self.error = error.localizedDescription
@@ -327,6 +465,10 @@ import T3Core
 
   func select(_ id: String, force: Bool = false) {
     guard id != selectedID || force else { return }
+    if id != selectedID {
+      suppressVisit = nil
+      visibleVisit = nil
+    }
     detail?.cancel()
     selectionGeneration = UUID()
     let selection = selectionGeneration
@@ -396,7 +538,7 @@ import T3Core
   }
 
   func send() {
-    guard let id = selectedID, let connection, ready, thread?.synchronized == true,
+    guard let id = selectedID, let connection, canEditThread,
       let text = drafts[id], !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
       !sending.contains(id)
     else { return }

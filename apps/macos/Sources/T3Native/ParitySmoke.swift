@@ -118,10 +118,83 @@ enum ParitySmoke {
     store.connect(settings, selecting: id)
     try await waitForStore(store) { store.canEditThread && store.catalogReady }
     print("Draft restored in a fresh app controller.")
-    guard CommandLine.arguments.contains("--question-smoke") else {
+    store.rename(id, to: "Native thread lifecycle verification")
+    try await waitForStore(store) {
+      !store.lifecycleBusy(id)
+        && store.selectedThread?.title == "Native thread lifecycle verification"
+    }
+    store.setPinned(id, true)
+    try await waitForStore(store) {
+      !store.lifecycleBusy(id) && store.selectedThread?.lifecycle.pinned == true
+    }
+    store.setSettled(id, true)
+    try await waitForStore(store) {
+      !store.lifecycleBusy(id) && store.selectedThread?.lifecycle.settled == true
+        && store.selectedThread?.lifecycle.pinned == false
+    }
+    store.setSettled(id, false)
+    try await waitForStore(store) {
+      !store.lifecycleBusy(id) && store.selectedThread?.lifecycle.settled == false
+    }
+    let wake = Date().addingTimeInterval(3600)
+    store.snooze(id, until: wake)
+    try await waitForStore(store) {
+      !store.lifecycleBusy(id) && store.selectedThread?.lifecycle.snoozed(at: Date()) == true
+    }
+    store.setPinned(id, true)
+    try await waitForStore(store) {
+      !store.lifecycleBusy(id) && store.selectedThread?.lifecycle.pinned == true
+        && store.selectedThread?.lifecycle.snoozedUntil == nil
+    }
+    store.setPinned(id, false)
+    try await waitForStore(store) {
+      !store.lifecycleBusy(id) && store.selectedThread?.lifecycle.pinned == false
+    }
+    store.setAutoSettle(id, enabled: false)
+    try await waitForStore(store) {
+      !store.lifecycleBusy(id) && store.selectedThread?.lifecycle.autoSettleDisabled == true
+    }
+    store.setAutoSettle(id, enabled: true)
+    try await waitForStore(store) {
+      !store.lifecycleBusy(id) && store.selectedThread?.lifecycle.autoSettleDisabled == false
+    }
+    store.markVisibleThreadRead()
+    try await waitForStore(store) { store.selectedThread?.lifecycle.lastVisitedAt != nil }
+    store.showArchives(true)
+    try await waitForStore(store) { store.archives.synchronized }
+    store.setArchived(id, true)
+    try await waitForStore(store) {
+      !store.lifecycleBusy(id) && store.shell.threads[id] == nil
+        && store.archives.threads[id] != nil
+    }
+    store.select(id)
+    try await waitForStore(store) { store.thread?.synchronized == true }
+    guard !store.canEditThread else { throw T3Error("Archived composer remained editable.") }
+    store.setArchived(id, false)
+    try await waitForStore(store) {
+      !store.lifecycleBusy(id) && store.shell.threads[id] != nil
+        && store.archives.threads[id] == nil
+    }
+    store.showArchives(false)
+    store.select(id, force: true)
+    try await waitForStore(store) { store.canEditThread }
+    guard store.drafts[id] == "Draft survives reconnect" else {
+      throw T3Error("Thread lifecycle lost the draft.")
+    }
+    print(
+      "Thread rename, pin/settle/snooze, auto-settle, visit, archive/restore, and draft retention round trips passed."
+    )
+    let manualQuestion = CommandLine.arguments.contains("--manual-question")
+    guard CommandLine.arguments.contains("--question-smoke") || manualQuestion else {
       try await dispatch(
         "thread.interaction-mode.set", fields: ["interactionMode": .string("default")])
       return
+    }
+    if manualQuestion {
+      store.rename(id, to: "Native question UI verification")
+      try await waitForStore(store) {
+        !store.lifecycleBusy(id) && store.selectedThread?.title == "Native question UI verification"
+      }
     }
     let stream = try await connection.subscribe(
       "orchestration.subscribeThread",
@@ -143,6 +216,12 @@ enum ParitySmoke {
       _ = try state.apply(event)
       for request in state.pendingRequests
       where request.isQuestion && request.canRespond && !answered.contains(request.id) {
+        if manualQuestion {
+          print(
+            "Real provider question is pending in Native question UI verification. Complete it in the app."
+          )
+          return
+        }
         var drafts: [String: QuestionDraft] = [:]
         for question in request.questions {
           guard let questionID = question["id"].string else { continue }

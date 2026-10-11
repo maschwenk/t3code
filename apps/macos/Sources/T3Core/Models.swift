@@ -11,6 +11,9 @@ public struct ThreadSummary: Sendable, Equatable, Identifiable {
   public let runtimeMode: String
   public let interactionMode: String
   public let archived: Bool
+  public let lifecycle: ThreadLifecycle
+  public let branch: String?
+  public let deleted: Bool
 
   public init(_ value: JSON) throws {
     id = try value.requiredString("id")
@@ -23,15 +26,20 @@ public struct ThreadSummary: Sendable, Equatable, Identifiable {
     runtimeMode = value["runtimeMode"].string ?? "approval-required"
     interactionMode = value["interactionMode"].string ?? "default"
     archived = value["archivedAt"].string != nil
+    lifecycle = ThreadLifecycle(value)
+    branch = value["branch"].string
+    deleted = value["deletedAt"].string != nil
   }
 }
 
 public struct ShellState: Sendable {
   public private(set) var threads: [String: ThreadSummary] = [:]
   public private(set) var projects: [String: String] = [:]
+  public private(set) var projectDetails: [String: JSON] = [:]
   public private(set) var sequence = -1
   public private(set) var synchronized = false
-  public init() {}
+  public let archived: Bool
+  public init(archived: Bool = false) { self.archived = archived }
 
   public mutating func apply(_ value: JSON) throws {
     switch value["kind"].string {
@@ -43,7 +51,7 @@ public struct ShellState: Sendable {
       var next: [String: ThreadSummary] = [:]
       for item in snapshot["threads"].array {
         let thread = try ThreadSummary(item)
-        next[thread.id] = thread
+        if !thread.deleted && thread.archived == archived { next[thread.id] = thread }
       }
       threads = next
       projects = Dictionary(
@@ -51,8 +59,12 @@ public struct ShellState: Sendable {
           guard let id = project["id"].string else { return nil }
           return (id, project["title"].string ?? project["name"].string ?? "Project")
         }, uniquingKeysWith: { _, new in new })
+      projectDetails = Dictionary(
+        snapshot["projects"].array.compactMap { project in
+          project["id"].string.map { ($0, project) }
+        }, uniquingKeysWith: { _, new in new })
       sequence = nextSequence
-      synchronized = false
+      synchronized = archived
     case "synchronized": synchronized = true
     default:
       let nextSequence = try value.requiredInt("sequence")
@@ -60,7 +72,8 @@ public struct ShellState: Sendable {
       switch value["kind"].string {
       case "thread.updated":
         let thread = try ThreadSummary(value["thread"])
-        if value["location"].string == "archive" || thread.archived {
+        let isArchived = value["location"].string.map { $0 == "archive" } ?? thread.archived
+        if thread.deleted || isArchived != archived {
           threads.removeValue(forKey: thread.id)
         } else {
           threads[thread.id] = thread
@@ -68,9 +81,14 @@ public struct ShellState: Sendable {
       case "thread.removed": threads.removeValue(forKey: try value.requiredString("threadId"))
       case "project.updated":
         let project = value["project"]
-        projects[try project.requiredString("id")] =
+        let id = try project.requiredString("id")
+        projectDetails[id] = project
+        projects[id] =
           project["title"].string ?? project["name"].string ?? "Project"
-      case "project.removed": projects.removeValue(forKey: try value.requiredString("projectId"))
+      case "project.removed":
+        let id = try value.requiredString("projectId")
+        projects.removeValue(forKey: id)
+        projectDetails.removeValue(forKey: id)
       default: break
       }
       sequence = nextSequence

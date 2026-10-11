@@ -5,7 +5,9 @@ native tables and text controls; it embeds neither Electron nor a web view. Agen
 SQLite, Git, terminals, and remote access still belong to the existing server.
 Closing this app does not stop that server or its agents.
 
-This first slice supports the active thread sidebar, search, bounded conversation
+The client supports grouped active/pinned/settled/snoozed threads, project filtering,
+search, archived history and restore, rename, pin, settle, snooze, and shared unread
+state. Snoozes wake on the same attention and time rules as Electron. It also supports bounded conversation
 history with older pages, streamed text and activity, per-thread drafts, new threads
 using the selected thread's project/model, message submission, and stopping a run.
 New threads use the project's workspace root; they do not create a worktree.
@@ -16,7 +18,7 @@ another client answers them. Questions support choices, multiple selections,
 custom answers, and dismissal when the server advertises it.
 
 The integrated browser, interactive terminal, full diff views, attachments, model
-search, archived threads, provider setup, question attachments, and T3 Connect
+search, provider setup, question attachments, and T3 Connect
 account/relay discovery remain in the existing app. Markdown supports inline formatting;
 full block layout and syntax highlighting are outside this slice.
 
@@ -43,7 +45,7 @@ the pairing option to use an existing bearer token. HTTPS direct endpoints and
 HTTP loopback endpoints are supported. When the session expires, pair again.
 
 The native client does not open a database or launch a server. Connecting it to a
-live environment makes Send, New thread, and Stop operate on that environment.
+live environment makes all thread actions operate on that environment.
 Use a separately running server with a pruned database copy for development; see
 the root AGENTS.md test-data procedure.
 

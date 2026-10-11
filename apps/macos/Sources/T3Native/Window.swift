@@ -14,13 +14,12 @@ import T3Core
 
 @MainActor
 final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDelegate,
-  NSTextViewDelegate, NSSearchFieldDelegate
+  NSTextViewDelegate, NSWindowDelegate
 {
   let store: ClientStore
-  private let sidebar = NSTableView()
+  private let sidebar: SidebarView
   private let timeline = NSTableView()
   private let timelineScroll = NSScrollView()
-  private let search = NSSearchField()
   private let composer = Composer()
   private let heading = NSTextField(labelWithString: "T3 Native")
   private let subtitle = NSTextField(labelWithString: "A native Mac client for T3")
@@ -31,16 +30,15 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
   private let olderButton = NSButton(title: "Load earlier activity", target: nil, action: nil)
   private let modelControls: ComposerControls
   private let requestsPanel: RequestsPanel
-  private var threads: [ThreadSummary] = []
   private var rows: [TimelineRow] = []
   private var rendered:
     [String: (row: TimelineRow, text: NSAttributedString, width: CGFloat, height: CGFloat)] = [:]
   private var renderedThread: String?
   private var lastWidth: CGFloat = 0
-  private var restoringSelection = false
 
   init(store: ClientStore) {
     self.store = store
+    sidebar = SidebarView(store: store)
     modelControls = ComposerControls(store: store)
     requestsPanel = RequestsPanel(store: store)
     let window = NSWindow(
@@ -53,6 +51,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     window.setFrameAutosaveName("T3NativeMain")
     window.center()
     super.init(window: window)
+    window.delegate = self
     construct()
     store.onChange = { [weak self] in self?.refresh() }
     refresh()
@@ -87,24 +86,17 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     brand.font = .systemFont(ofSize: 16, weight: .semibold)
     let newButton = button("New thread", #selector(newThread))
     newButton.toolTip = "Create a thread in the selected thread’s project, using the same model"
-    search.placeholderString = "Search threads"
-    search.stringValue = Arguments.value("--filter") ?? ""
-    search.delegate = self
-    let sideScroll = configure(sidebar)
-    sidebar.rowHeight = 61
-    sidebar.style = .sourceList
-    sidebar.setAccessibilityLabel("Threads")
     let connectButton = button("Connect…", #selector(connect))
     let retryButton = button("Reconnect", #selector(retry))
     let controls = NSStackView(views: [connectButton, retryButton])
     controls.spacing = 6
-    let leftStack = NSStackView(views: [brand, newButton, search, sideScroll, controls])
+    let leftStack = NSStackView(views: [brand, newButton, sidebar, controls])
     leftStack.orientation = .vertical
     leftStack.alignment = .leading
     leftStack.spacing = 12
     left.addSubview(leftStack)
     pin(leftStack, to: left, inset: 14, top: 46)
-    for view in [search, sideScroll, controls] {
+    for view in [sidebar, controls] {
       view.widthAnchor.constraint(equalTo: leftStack.widthAnchor).isActive = true
     }
 
@@ -247,24 +239,12 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
   }
 
   func refresh() {
-    let query = search.stringValue
-    let nextThreads = store.sortedThreads.filter {
-      query.isEmpty || $0.title.localizedCaseInsensitiveContains(query)
-    }
-    if nextThreads != threads {
-      threads = nextThreads
-      restoringSelection = true
-      sidebar.reloadData()
-      if let index = threads.firstIndex(where: { $0.id == store.selectedID }) {
-        sidebar.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
-      }
-      restoringSelection = false
-    }
-    let selected = store.selectedID.flatMap { store.shell.threads[$0] }
+    sidebar.refresh()
+    let selected = store.selectedThread
     heading.stringValue = selected?.title ?? "T3 Native"
     subtitle.stringValue =
       selected.map {
-        store.shell.projects[$0.projectID] ?? "Project"
+        store.shell.projects[$0.projectID] ?? store.archives.projects[$0.projectID] ?? "Project"
       } ?? "Connect to an existing T3 server to get started"
     status.stringValue = store.status
     errorLabel.stringValue = store.error ?? store.storageError ?? ""
@@ -275,6 +255,8 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     let draft = store.selectedID.flatMap { store.drafts[$0] } ?? ""
     if composer.string != draft { composer.string = draft }
     updateComposerControls()
+    composer.isEditable = selected?.archived != true
+    if window?.isKeyWindow == true { store.markVisibleThreadRead() }
     modelControls.refresh()
     requestsPanel.refresh()
     stopButton.isHidden = selected?.activeRunID == nil
@@ -373,11 +355,11 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
   }
 
   func numberOfRows(in tableView: NSTableView) -> Int {
-    tableView === sidebar ? threads.count : rows.count
+    rows.count
   }
 
   func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
-    tableView === sidebar ? 61 : render(rows[row]).1
+    render(rows[row]).1
   }
 
   func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row index: Int)
@@ -389,23 +371,15 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     title.font = .systemFont(ofSize: 11, weight: .semibold)
     title.textColor = .secondaryLabelColor
     body.font = .systemFont(ofSize: 13)
-    if tableView === sidebar {
-      let thread = threads[index]
-      title.stringValue = store.shell.projects[thread.projectID] ?? "Project"
-      body.stringValue = (thread.activeRunID == nil ? "" : "● ") + thread.title
-      body.maximumNumberOfLines = 2
-      body.lineBreakMode = .byTruncatingTail
-    } else {
-      let row = rows[index]
-      title.stringValue =
-        row.title + (row.inherited ? " · inherited" : "") + (row.streaming ? " · streaming" : "")
-      title.textColor = row.kind == "user_message" ? .controlAccentColor : .secondaryLabelColor
-      body.attributedStringValue = render(row).0
-      body.isSelectable = true
-      body.allowsEditingTextAttributes = true
-      body.maximumNumberOfLines = 0
-      body.preferredMaxLayoutWidth = max(120, timeline.bounds.width - 36)
-    }
+    let row = rows[index]
+    title.stringValue =
+      row.title + (row.inherited ? " · inherited" : "") + (row.streaming ? " · streaming" : "")
+    title.textColor = row.kind == "user_message" ? .controlAccentColor : .secondaryLabelColor
+    body.attributedStringValue = render(row).0
+    body.isSelectable = true
+    body.allowsEditingTextAttributes = true
+    body.maximumNumberOfLines = 0
+    body.preferredMaxLayoutWidth = max(120, timeline.bounds.width - 36)
     let stack = NSStackView(views: [title, body])
     stack.orientation = .vertical
     stack.alignment = .leading
@@ -421,13 +395,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     return cell
   }
 
-  func tableViewSelectionDidChange(_ notification: Notification) {
-    guard notification.object as? NSTableView === sidebar, !restoringSelection,
-      threads.indices.contains(sidebar.selectedRow)
-    else { return }
-    store.select(threads[sidebar.selectedRow].id)
-  }
-  func controlTextDidChange(_ obj: Notification) { refresh() }
+  func windowDidBecomeKey(_ notification: Notification) { store.markVisibleThreadRead() }
   func textDidChange(_ notification: Notification) {
     if let id = store.selectedID { store.drafts[id] = composer.string }
     updateComposerControls()
@@ -435,9 +403,11 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
   private func updateComposerControls() {
     let sending = store.sending.contains(store.selectedID ?? "")
     sendButton.isEnabled =
-      store.ready && store.thread?.synchronized == true
+      store.canEditThread
       && !composer.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !sending
-    sendButton.title = sending ? "Sending…" : "Send  ⌘↵"
+    sendButton.title = ""
+    sendButton.toolTip = sending ? "Sending…" : "Send message (⌘ Return)"
+    sendButton.setAccessibilityLabel(sending ? "Sending message" : "Send message")
   }
   @objc private func send() { store.send() }
   @objc private func stop() { store.stop() }
