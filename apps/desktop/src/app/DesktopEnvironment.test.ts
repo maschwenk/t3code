@@ -1,12 +1,16 @@
 import * as NodePath from "@effect/platform-node/NodePath";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
+import { DesktopAppBrandingSchema } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 import * as DesktopConfig from "./DesktopConfig.ts";
+
+const encodeAppBranding = Schema.encodeEffect(DesktopAppBrandingSchema);
 
 const defaultInput = {
   dirname: "/repo/apps/desktop/dist-electron",
@@ -39,6 +43,22 @@ const makeEnvironment = (
 ) => DesktopEnvironment.DesktopEnvironment.pipe(Effect.provide(layerEnvironment(overrides, env)));
 
 describe("DesktopEnvironment", () => {
+  it.effect("serializes packaged fork branding for the renderer bootstrap", () =>
+    Effect.gen(function* () {
+      const environment = yield* makeEnvironment({
+        isPackaged: true,
+        appVersion: "0.0.45-fork.20261011.274ecce33748",
+      });
+
+      const branding = yield* encodeAppBranding(environment.branding);
+      assert.deepEqual(branding, {
+        baseName: "T3 Code",
+        stageLabel: "Fork",
+        displayName: "T3 Code (Fork)",
+      });
+    }),
+  );
+
   it.effect("derives state paths and development identity inside Effect", () =>
     Effect.gen(function* () {
       const environment = yield* makeEnvironment(

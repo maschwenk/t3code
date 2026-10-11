@@ -81,30 +81,29 @@ function resolveSigningIdentity(): string | undefined {
 
 const outputDir = NodePath.join(repoRoot, "release", "fork");
 
+// Agent shells inherit the hosting app's runner environment. Clear it for
+// both building and launching: macOS `open` forwards ELECTRON_RUN_AS_NODE,
+// which makes the installed app exit without opening a window.
+const env = { ...process.env };
+delete env.T3CODE_DESKTOP_UPDATE_REPOSITORY;
+delete env.GITHUB_REPOSITORY;
+delete env.ELECTRON_RUN_AS_NODE;
+for (const key of Object.keys(env)) {
+  if (
+    key.startsWith("T3CODE_DESKTOP_") ||
+    key.startsWith("T3CODE_DEV_") ||
+    key.startsWith("VITE_") ||
+    key === "T3CODE_HOME" ||
+    key === "T3CODE_PORT" ||
+    key === "PORT"
+  ) {
+    delete env[key];
+  }
+}
+
 if (!skipBuild) {
   const version = resolveForkVersion();
   NodeFS.rmSync(outputDir, { recursive: true, force: true });
-  // A configured update repository would stamp an update feed into the build,
-  // and a shell spawned by a running dev app carries that app's runner
-  // variables: T3CODE_DESKTOP_DEV=1 makes the desktop build launch Electron
-  // after packing and never return. Build from a clean slate; the artifact
-  // script reloads the repo's .env itself.
-  const env = { ...process.env };
-  delete env.T3CODE_DESKTOP_UPDATE_REPOSITORY;
-  delete env.GITHUB_REPOSITORY;
-  delete env.ELECTRON_RUN_AS_NODE;
-  for (const key of Object.keys(env)) {
-    if (
-      key.startsWith("T3CODE_DESKTOP_") ||
-      key.startsWith("T3CODE_DEV_") ||
-      key.startsWith("VITE_") ||
-      key === "T3CODE_HOME" ||
-      key === "T3CODE_PORT" ||
-      key === "PORT"
-    ) {
-      delete env[key];
-    }
-  }
   console.log(`[fork-install] Building ${PRODUCT_NAME} ${version}`);
   run(
     process.execPath,
@@ -164,7 +163,7 @@ try {
   console.log(`[fork-install] Installed ${installedApp}`);
 
   if (launch) {
-    run("open", ["-a", installedApp]);
+    run("open", ["-a", installedApp], { env });
   }
 } finally {
   NodeFS.rmSync(extractDir, { recursive: true, force: true });
