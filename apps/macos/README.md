@@ -9,11 +9,15 @@ This first slice supports the active thread sidebar, search, bounded conversatio
 history with older pages, streamed text and activity, per-thread drafts, new threads
 using the selected thread's project/model, message submission, and stopping a run.
 New threads use the project's workspace root; they do not create a worktree.
+The composer discovers provider instances, models, and model options from the
+server. Runtime modes and enabled plan mode are editable there. Pending approvals
+and agent questions can be answered directly; resolved requests disappear when
+another client answers them. Questions support choices, multiple selections,
+custom answers, and dismissal when the server advertises it.
 
 The integrated browser, interactive terminal, full diff views, attachments, model
-selection, archived threads, provider setup, approval responses, and T3 Connect
-account/relay discovery remain in the existing app. Pending approval/input requests
-are shown with a direction to respond there. Markdown supports inline formatting;
+search, archived threads, provider setup, question attachments, and T3 Connect
+account/relay discovery remain in the existing app. Markdown supports inline formatting;
 full block layout and syntax highlighting are outside this slice.
 
 ## Build and run
@@ -62,6 +66,20 @@ real provider reply and idempotent submission, create a disposable project roote
 in an isolated workspace, then add `--send-smoke --sandbox-project PROJECT_ID`.
 This submits a short prompt to the server's authenticated Codex provider. It must
 not target a project containing ongoing work.
+
+The parity integration check creates a new thread in the isolated project, checks
+model/options and runtime-mode mutations against fresh server reads, and exercises
+the app controller's configuration subscription and reconnect behavior:
+
+```sh
+apps/macos/.build/release/T3Native --parity-smoke \
+  --connection-file /private/path/connection.json --sandbox-project PROJECT_ID
+```
+
+Add `--question-smoke` to ask the real Codex provider for a question, answer through
+the app controller, and verify the resolved request and completed reply. This
+requires an authenticated Codex instance and consumes one short provider turn.
+UI runs can use `--thread-id ID` and `--filter TEXT` to select an isolated thread.
 
 ## Measure
 

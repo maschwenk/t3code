@@ -79,6 +79,7 @@ public struct ShellState: Sendable {
 }
 
 public struct TimelineRow: Sendable, Equatable, Identifiable {
+  public let item: JSON
   public let id: String
   public let sourceID: String
   public let kind: String
@@ -89,6 +90,7 @@ public struct TimelineRow: Sendable, Equatable, Identifiable {
   public let inherited: Bool
 
   public init(item: JSON, position: Int, sourceID: String, inherited: Bool = false) throws {
+    self.item = item
     self.sourceID = sourceID
     id = sourceID + ":" + (try item.requiredString("id"))
     kind = try item.requiredString("type")
@@ -114,11 +116,21 @@ public struct TimelineRow: Sendable, Equatable, Identifiable {
     case "file_change":
       title = "File change"
       text = item["fileName"].string ?? ""
-    case "approval_request", "user_input_request", "secret_request":
-      title = "Needs your attention"
-      text =
-        (item["prompt"].string ?? item["reason"].string ?? item["title"].string
-          ?? "An agent needs your response.") + "\nRespond in the existing T3 app."
+    case "approval_request":
+      title = "Approval request"
+      text = item["prompt"].string ?? item["appName"].string ?? "Agent requested approval"
+    case "user_input_request":
+      title = "Question"
+      text = item["questions"].array.compactMap { $0["question"].string }.joined(separator: "\n")
+    case "todo_list":
+      title = "Plan"
+      text = item["steps"].array.map {
+        ($0["status"].string == "completed" ? "✓ " : "○ ")
+          + ($0["step"].string ?? $0["title"].string ?? "")
+      }.joined(separator: "\n")
+    case "system_notice", "run_interrupt_request", "run_interrupt_result":
+      title = "Notice"
+      text = item["message"].string ?? ""
     default:
       title = kind.replacingOccurrences(of: "_", with: " ").capitalized
       text = item["title"].string ?? item["toolName"].string ?? item["progress"].string ?? title
@@ -133,6 +145,9 @@ public struct ThreadState: Sendable {
   public private(set) var cursor: String?
   public private(set) var hasMore = false
   public private(set) var synchronized = false
+  public private(set) var pendingRequests: [PendingRequest] = []
+  private var requests: [String: JSON] = [:]
+  private var requestItems: [String: JSON] = [:]
   private var indices: [String: Int] = [:]
 
   public init(id: String) { self.id = id }
@@ -148,6 +163,14 @@ public struct ThreadState: Sendable {
         throw T3Error("Snapshot belongs to another thread.")
       }
       let nextSequence = try value.requiredInt("snapshotSequence")
+      var nextRequests: [String: JSON] = [:]
+      for request in projection["runtimeRequests"].array {
+        nextRequests[try request.requiredString("id")] = request
+      }
+      var nextRequestItems: [String: JSON] = [:]
+      for item in projection["turnItems"].array {
+        if let id = item["requestId"].string { nextRequestItems[id] = item }
+      }
       var next: [TimelineRow] = []
       for visible in projection["visibleTurnItems"].array {
         next.append(try Self.projectedRow(visible))
@@ -159,6 +182,12 @@ public struct ThreadState: Sendable {
         }
       }
       rows = next.sorted { $0.position < $1.position }
+      requests = nextRequests
+      requestItems = nextRequestItems
+      for row in rows where !row.inherited {
+        if let id = row.item["requestId"].string { requestItems[id] = row.item }
+      }
+      try rebuildRequests()
       reindex()
       sequence = nextSequence
       cursor = value["historyCursor"].string
@@ -189,6 +218,16 @@ public struct ThreadState: Sendable {
           indices[row.id] = rows.count
           rows.append(row)
         }
+        if let id = item["requestId"].string {
+          requestItems[id] = item
+          try rebuildRequests()
+        }
+      } else if type == "runtime-request.updated" {
+        let request = event["payload"]
+        let requestID = try request.requiredString("id")
+        _ = try request.requiredString("kind")
+        requests[requestID] = request
+        try rebuildRequests()
       }
       sequence = nextSequence
     default: break
@@ -219,6 +258,17 @@ public struct ThreadState: Sendable {
   private mutating func reindex() {
     indices = Dictionary(
       rows.enumerated().map { ($0.element.id, $0.offset) }, uniquingKeysWith: { _, new in new })
+  }
+
+  private mutating func rebuildRequests() throws {
+    pendingRequests = try requests.values.compactMap { request in
+      guard request["status"].string == "pending",
+        !["auth_refresh", "dynamic_tool_call"].contains(request["kind"].string ?? "")
+      else { return nil }
+      let item = requestItems[try request.requiredString("id")] ?? .null
+      if request["kind"].string == "user_input", item == .null { return nil }
+      return try PendingRequest(request: request, item: item)
+    }.sorted { ($0.createdAt, $0.id) < ($1.createdAt, $1.id) }
   }
 }
 

@@ -37,10 +37,15 @@ enum Arguments {
 
 @main enum Main {
   @MainActor static func main() {
-    if CommandLine.arguments.contains("--smoke") {
+    if CommandLine.arguments.contains("--smoke") || CommandLine.arguments.contains("--parity-smoke")
+    {
       Task {
         do {
-          try await Smoke.run()
+          if CommandLine.arguments.contains("--parity-smoke") {
+            try await ParitySmoke.run()
+          } else {
+            try await Smoke.run()
+          }
           exit(0)
         } catch {
           fputs("Native smoke failed: \(error.localizedDescription)\n", stderr)

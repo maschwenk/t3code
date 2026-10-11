@@ -29,6 +29,8 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
   private let sendButton = NSButton(title: "Send  ⌘↵", target: nil, action: nil)
   private let stopButton = NSButton(title: "Stop", target: nil, action: nil)
   private let olderButton = NSButton(title: "Load earlier activity", target: nil, action: nil)
+  private let modelControls: ComposerControls
+  private let requestsPanel: RequestsPanel
   private var threads: [ThreadSummary] = []
   private var rows: [TimelineRow] = []
   private var rendered:
@@ -36,17 +38,18 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
   private var renderedThread: String?
   private var lastWidth: CGFloat = 0
   private var restoringSelection = false
-  private var wroteSnapshot = false
 
   init(store: ClientStore) {
     self.store = store
+    modelControls = ComposerControls(store: store)
+    requestsPanel = RequestsPanel(store: store)
     let window = NSWindow(
       contentRect: NSRect(x: 0, y: 0, width: 1220, height: 840),
       styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
       backing: .buffered, defer: false)
     window.title = "T3 Native"
     window.titlebarAppearsTransparent = true
-    window.minSize = NSSize(width: 760, height: 500)
+    window.minSize = NSSize(width: 900, height: 640)
     window.setFrameAutosaveName("T3NativeMain")
     window.center()
     super.init(window: window)
@@ -62,16 +65,14 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     let splitController = NSSplitViewController()
     splitController.splitView.isVertical = true
     splitController.splitView.dividerStyle = .thin
-    let left = NSVisualEffectView()
-    left.material = .sidebar
-    left.blendingMode = .behindWindow
-    let right = NSView()
+    let left = SurfaceView(sidebar: true)
+    let right = SurfaceView()
     let sidebarController = NSViewController()
     sidebarController.view = left
     let contentController = NSViewController()
     contentController.view = right
     let sidebarItem = NSSplitViewItem(sidebarWithViewController: sidebarController)
-    sidebarItem.minimumThickness = 230
+    sidebarItem.minimumThickness = 220
     sidebarItem.maximumThickness = 360
     sidebarItem.canCollapse = false
     sidebarItem.holdingPriority = .defaultHigh
@@ -82,8 +83,8 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     window.contentViewController = splitController
     splitController.splitView.setPosition(285, ofDividerAt: 0)
 
-    let brand = NSTextField(labelWithString: "T3  Native")
-    brand.font = .systemFont(ofSize: 20, weight: .semibold)
+    let brand = NSTextField(labelWithString: "T3 Code")
+    brand.font = .systemFont(ofSize: 16, weight: .semibold)
     let newButton = button("New thread", #selector(newThread))
     newButton.toolTip = "Create a thread in the selected thread’s project, using the same model"
     search.placeholderString = "Search threads"
@@ -107,7 +108,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
       view.widthAnchor.constraint(equalTo: leftStack.widthAnchor).isActive = true
     }
 
-    heading.font = .systemFont(ofSize: 20, weight: .semibold)
+    heading.font = .systemFont(ofSize: 14, weight: .semibold)
     heading.lineBreakMode = .byTruncatingTail
     subtitle.font = .systemFont(ofSize: 12)
     subtitle.textColor = .secondaryLabelColor
@@ -121,17 +122,19 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     timeline.setAccessibilityLabel("Conversation")
     timeline.selectionHighlightStyle = .none
     timeline.intercellSpacing = NSSize(width: 0, height: 4)
-    timeline.backgroundColor = .windowBackgroundColor
+    timeline.backgroundColor = .clear
     timelineScroll.contentView.postsBoundsChangedNotifications = true
     NotificationCenter.default.addObserver(
       self, selector: #selector(resized), name: NSView.boundsDidChangeNotification,
       object: timelineScroll.contentView)
 
     let composerScroll = NSScrollView()
-    composerScroll.borderType = .bezelBorder
+    composerScroll.borderType = .noBorder
+    composerScroll.drawsBackground = false
     composerScroll.hasVerticalScroller = true
     composerScroll.documentView = composer
     composer.isRichText = false
+    composer.drawsBackground = false
     composer.isAutomaticQuoteSubstitutionEnabled = false
     composer.isAutomaticDashSubstitutionEnabled = false
     composer.font = .systemFont(ofSize: 14)
@@ -143,32 +146,71 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     composer.delegate = self
     composer.setAccessibilityLabel("Message")
     composer.submit = { [weak store] in store?.send() }
-    composerScroll.heightAnchor.constraint(equalToConstant: 102).isActive = true
+    composerScroll.heightAnchor.constraint(equalToConstant: 88).isActive = true
     sendButton.target = self
     sendButton.action = #selector(send)
-    sendButton.bezelStyle = .rounded
+    sendButton.bezelStyle = .inline
+    sendButton.image = NSImage(
+      systemSymbolName: "arrow.up.circle.fill", accessibilityDescription: "Send message")
+    sendButton.imagePosition = .imageOnly
+    sendButton.contentTintColor = .controlAccentColor
+    sendButton.setAccessibilityLabel("Send message")
+    sendButton.widthAnchor.constraint(equalToConstant: 32).isActive = true
+    sendButton.heightAnchor.constraint(equalToConstant: 30).isActive = true
     stopButton.target = self
     stopButton.action = #selector(stop)
-    let hint = NSTextField(labelWithString: "⌘ Return to send · Return for a new line")
+    let hint = NSTextField(labelWithString: "⌘ Return to send")
     hint.font = .systemFont(ofSize: 11)
     hint.textColor = .secondaryLabelColor
     let spacer = NSView()
-    let bottom = NSStackView(views: [hint, spacer, stopButton, sendButton])
-    bottom.spacing = 10
+    let bottom = NSStackView(views: [modelControls, spacer, stopButton, sendButton])
+    bottom.spacing = 6
+    let composerStack = NSStackView(views: [composerScroll, bottom])
+    composerStack.orientation = .vertical
+    composerStack.alignment = .leading
+    composerStack.spacing = 8
+    let composerSurface = SurfaceView(raised: true)
+    composerSurface.layer?.cornerRadius = 16
+    composerSurface.addSubview(composerStack)
+    pin(composerStack, to: composerSurface, inset: 10, top: 4)
+    composerScroll.widthAnchor.constraint(equalTo: composerStack.widthAnchor).isActive = true
+    bottom.widthAnchor.constraint(equalTo: composerStack.widthAnchor).isActive = true
+    let header = NSStackView(views: [
+      subtitle, NSTextField(labelWithString: "/"), heading, NSView(),
+    ])
+    header.spacing = 10
+    right.addSubview(header)
+    header.translatesAutoresizingMaskIntoConstraints = false
+    NSLayoutConstraint.activate([
+      header.leadingAnchor.constraint(equalTo: right.leadingAnchor, constant: 24),
+      header.trailingAnchor.constraint(equalTo: right.trailingAnchor, constant: -24),
+      header.topAnchor.constraint(equalTo: right.topAnchor, constant: 46),
+    ])
+    let footer = NSStackView(views: [status, NSView(), hint])
     let stack = NSStackView(views: [
-      heading, subtitle, olderButton, timelineScroll, errorLabel, composerScroll, bottom, status,
+      olderButton, timelineScroll, errorLabel, requestsPanel, composerSurface, footer,
     ])
     stack.orientation = .vertical
     stack.alignment = .leading
     stack.spacing = 9
     right.addSubview(stack)
-    pin(stack, to: right, inset: 24, top: 46)
-    for view in [heading, subtitle, timelineScroll, errorLabel, composerScroll, bottom, status] {
+    stack.translatesAutoresizingMaskIntoConstraints = false
+    let preferredWidth = stack.widthAnchor.constraint(equalTo: right.widthAnchor, constant: -48)
+    preferredWidth.priority = .defaultHigh
+    NSLayoutConstraint.activate([
+      stack.centerXAnchor.constraint(equalTo: right.centerXAnchor),
+      stack.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 16),
+      stack.bottomAnchor.constraint(equalTo: right.bottomAnchor, constant: -16),
+      stack.widthAnchor.constraint(lessThanOrEqualToConstant: 820),
+      stack.widthAnchor.constraint(lessThanOrEqualTo: right.widthAnchor, constant: -32),
+      preferredWidth,
+    ])
+    for view in [timelineScroll, errorLabel, requestsPanel, composerSurface, footer] {
       view.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
     }
     timelineScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 120).isActive = true
     heading.setContentCompressionResistancePriority(.required, for: .vertical)
-    composerScroll.setContentCompressionResistancePriority(.required, for: .vertical)
+    composerSurface.setContentCompressionResistancePriority(.required, for: .vertical)
     window.setContentSize(NSSize(width: 1220, height: 840))
     splitController.splitView.setPosition(285, ofDividerAt: 0)
   }
@@ -222,7 +264,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     heading.stringValue = selected?.title ?? "T3 Native"
     subtitle.stringValue =
       selected.map {
-        "\(store.shell.projects[$0.projectID] ?? "Project")  ·  \($0.model["model"].string ?? "Existing model")"
+        store.shell.projects[$0.projectID] ?? "Project"
       } ?? "Connect to an existing T3 server to get started"
     status.stringValue = store.status
     errorLabel.stringValue = store.error ?? ""
@@ -233,26 +275,14 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     let draft = store.selectedID.flatMap { store.drafts[$0] } ?? ""
     if composer.string != draft { composer.string = draft }
     updateComposerControls()
+    modelControls.refresh()
+    requestsPanel.refresh()
     stopButton.isHidden = selected?.activeRunID == nil
     stopButton.isEnabled = store.ready
-    updateRows(store.thread?.rows ?? [])
-    if !wroteSnapshot, store.thread?.synchronized == true, !rows.isEmpty,
-      let path = Arguments.value("--snapshot-file")
-    {
-      wroteSnapshot = true
-      Task {
-        try? await Task.sleep(for: .milliseconds(200))
-        guard let view = window?.contentView else { return }
-        view.layoutSubtreeIfNeeded()
-        view.effectiveAppearance.performAsCurrentDrawingAppearance {
-          if let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
-            view.cacheDisplay(in: view.bounds, to: bitmap)
-            try? bitmap.representation(using: .png, properties: [:])?.write(
-              to: URL(fileURLWithPath: path))
-          }
-        }
-      }
-    }
+    updateRows(
+      (store.thread?.rows ?? []).filter {
+        $0.kind != "checkpoint" || !$0.item["files"].array.isEmpty
+      })
   }
 
   private func updateRows(_ next: [TimelineRow]) {
