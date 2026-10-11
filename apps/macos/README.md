@@ -17,7 +17,9 @@ and agent questions can be answered directly; resolved requests disappear when
 another client answers them. Questions support choices, multiple selections,
 custom answers, and dismissal when the server advertises it. Command and tool
 results omitted from the live feed can be loaded on demand; stale fetches cannot
-replace a newer streaming revision.
+replace a newer streaming revision. Commands, searches, file changes, and reasoning
+collapse into expandable work groups. Expanding preserves the full activity text;
+errors and pending questions or approvals stay outside collapsed groups.
 
 The integrated browser, interactive terminal, full diff views, attachments, model
 search, provider setup, question attachments, and T3 Connect

@@ -31,7 +31,8 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
   private let olderButton = NSButton(title: "Load earlier activity", target: nil, action: nil)
   private let modelControls: ComposerControls
   private let requestsPanel: RequestsPanel
-  private var rows: [TimelineRow] = []
+  private var rows: [ConversationEntry] = []
+  private var expandedWork: [String: Set<String>] = [:]
   private var rendered:
     [String: (row: TimelineRow, markdown: RenderedMarkdown, width: CGFloat, height: CGFloat)] = [:]
   private var renderedThread: String?
@@ -246,6 +247,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
   }
 
   func refresh() {
+    let anchor = scrollAnchor()
     sidebar.refresh()
     let selected = store.selectedThread
     heading.stringValue = selected?.title ?? "T3 Native"
@@ -268,28 +270,60 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     requestsPanel.refresh()
     stopButton.isHidden = selected?.activeRunID == nil
     stopButton.isEnabled = store.ready
-    updateRows(
-      (store.thread?.rows ?? []).filter {
-        $0.kind != "checkpoint" || !$0.item["files"].array.isEmpty
-      })
+    window?.contentView?.layoutSubtreeIfNeeded()
+    updateRows(conversationEntries(), anchor: anchor)
     let requests = Set(store.commandsInFlight.filter { $0.hasSuffix(":output") })
     if requests != outputRequests {
       outputRequests = requests
       timeline.reloadData(
-        forRowIndexes: IndexSet(rows.indices.filter { rows[$0].item["outputOmitted"].bool }),
+        forRowIndexes: IndexSet(
+          rows.indices.filter { rows[$0].item?.item["outputOmitted"].bool == true }),
         columnIndexes: IndexSet(integer: 0))
     }
   }
 
-  private func updateRows(_ next: [TimelineRow]) {
+  private func conversationEntries() -> [ConversationEntry] {
+    ConversationTimeline.entries(
+      from: store.thread?.rows ?? [], activeRunID: store.selectedThread?.activeRunID,
+      expandedItemIDs: expandedWork[store.selectedID ?? ""] ?? [])
+  }
+
+  private func toggleWork(_ group: TimelineWorkGroup) {
+    guard let id = store.selectedID else { return }
+    if group.expanded {
+      expandedWork[id, default: []].subtract(group.entries.map(\.id))
+    } else {
+      expandedWork[id, default: []].formUnion(group.entries.map(\.id))
+    }
+    updateRows(conversationEntries(), followsBottom: false)
+  }
+
+  private func updateRows(
+    _ next: [ConversationEntry], anchor savedAnchor: ScrollAnchor? = nil,
+    followsBottom: Bool? = nil
+  ) {
     let changedThread = renderedThread != store.selectedID
-    guard changedThread || next != rows else { return }
-    var anchor = scrollAnchor()
+    guard changedThread || next != rows else {
+      if let savedAnchor { restoreScroll(savedAnchor) }
+      return
+    }
+    var anchor = savedAnchor ?? scrollAnchor()
+    if let followsBottom { anchor.followsBottom = followsBottom }
     if changedThread { anchor.followsBottom = true }
     let oldCount = rows.count
     let samePrefix = next.count >= rows.count && zip(rows, next).allSatisfy { $0.id == $1.id }
     let changes = IndexSet(next.indices.filter { $0 < oldCount && next[$0] != rows[$0] })
     rows = next
+    if let id = anchor.id, !next.contains(where: { $0.id == id }) {
+      // Collapsing a group keeps an output row's position at its disclosure header.
+      if let group = next.first(where: {
+        if case .work(let group) = $0 { return group.entries.contains { $0.id == id } }
+        return false
+      }) {
+        anchor.id = group.id
+        anchor.offset = 0
+      }
+    }
     renderedThread = store.selectedID
     if changedThread || !samePrefix {
       rendered.removeAll(keepingCapacity: true)
@@ -367,20 +401,27 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
   }
 
   func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
-    render(rows[row]).1
+    switch rows[row] {
+    case .item(let item): render(item).1
+    case .work: 36
+    }
   }
 
   func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row index: Int)
     -> NSView?
   {
+    if case .work(let group) = rows[index] { return workCell(group) }
+    guard case .item(let row) = rows[index] else { return nil }
     let cell = NSView()
     let title = NSTextField(labelWithString: "")
     title.font = .systemFont(ofSize: 11, weight: .semibold)
     title.textColor = .secondaryLabelColor
-    let row = rows[index]
     title.stringValue =
-      row.title + (row.inherited ? " · inherited" : "") + (row.streaming ? " · streaming" : "")
-    title.textColor = row.kind == "user_message" ? .controlAccentColor : .secondaryLabelColor
+      row.title + (row.inherited ? " · inherited" : "")
+      + (row.failed ? " · failed" : row.streaming ? " · streaming" : "")
+    title.textColor =
+      row.failed
+      ? .systemRed : row.kind == "user_message" ? .controlAccentColor : .secondaryLabelColor
     let (markdown, height) = render(row)
     let body = MessageTextView(
       rendered: markdown, width: max(120, timeline.bounds.width - 36), height: height - 45)
@@ -416,6 +457,32 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
       body.widthAnchor.constraint(equalTo: stack.widthAnchor),
       body.heightAnchor.constraint(equalToConstant: max(20, height - 45)),
       header.widthAnchor.constraint(equalTo: stack.widthAnchor),
+    ])
+    return cell
+  }
+
+  private func workCell(_ group: TimelineWorkGroup) -> NSView {
+    let cell = NSView()
+    let button = ActionButton(group.summary) { [weak self] in self?.toggleWork(group) }
+    button.isBordered = false
+    button.alignment = .left
+    button.font = .systemFont(ofSize: 12)
+    button.contentTintColor = group.active ? .labelColor : .secondaryLabelColor
+    button.image = NSImage(
+      systemSymbolName: group.expanded ? "chevron.down" : "chevron.right",
+      accessibilityDescription: nil)
+    button.imagePosition = .imageLeading
+    button.cell?.lineBreakMode = .byTruncatingTail
+    button.toolTip = group.summary
+    button.setAccessibilityLabel(
+      (group.expanded ? "Collapse work: " : "Expand work: ") + group.summary)
+    cell.addSubview(button)
+    button.translatesAutoresizingMaskIntoConstraints = false
+    NSLayoutConstraint.activate([
+      button.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 12),
+      button.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -12),
+      button.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+      button.heightAnchor.constraint(equalToConstant: 28),
     ])
     return cell
   }
