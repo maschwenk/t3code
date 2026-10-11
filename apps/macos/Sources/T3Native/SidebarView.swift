@@ -17,6 +17,8 @@ final class SidebarView: NSStackView, NSTableViewDataSource, NSTableViewDelegate
     case thread(ThreadSummary)
   }
   private let store: ClientStore
+  var onShowUsage: (() -> Void)?
+  var onThreadChosen: (() -> Void)?
   private let table = ThreadTable()
   private let search = NSSearchField()
   private let projects = NSPopUpButton()
@@ -52,6 +54,7 @@ final class SidebarView: NSStackView, NSTableViewDataSource, NSTableViewDelegate
     table.dataSource = self
     table.delegate = self
     table.target = self
+    table.action = #selector(threadClicked)
     table.doubleAction = #selector(renameSelected)
     table.contextMenu = { [weak self] row in self?.contextMenu(for: row) }
     table.setAccessibilityLabel("Threads")
@@ -65,7 +68,13 @@ final class SidebarView: NSStackView, NSTableViewDataSource, NSTableViewDelegate
     archiveButton.target = self
     archiveButton.action = #selector(toggleArchives)
     archiveButton.bezelStyle = .inline
-    for view in [search, projects, scroll, message, archiveButton] {
+    let usage = ActionButton("Usage") { [weak self] in self?.onShowUsage?() }
+    usage.image = NSImage(systemSymbolName: "chart.bar", accessibilityDescription: nil)
+    usage.bezelStyle = .inline
+    usage.setAccessibilityLabel("Usage")
+    usage.toolTip = "Usage (⌘⇧U)"
+    let footer = NSStackView(views: [archiveButton, NSView(), usage])
+    for view in [search, projects, scroll, message, footer] {
       addArrangedSubview(view)
       view.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
     }
@@ -237,6 +246,13 @@ final class SidebarView: NSStackView, NSTableViewDataSource, NSTableViewDelegate
       case .thread(let thread) = rows[table.selectedRow]
     else { return }
     store.select(thread.id)
+    onThreadChosen?()
+  }
+  @objc private func threadClicked() {
+    guard rows.indices.contains(table.clickedRow), case .thread = rows[table.clickedRow] else {
+      return
+    }
+    onThreadChosen?()
   }
   func controlTextDidChange(_ obj: Notification) { refresh() }
   @objc private func projectChanged() {

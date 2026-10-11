@@ -89,6 +89,10 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
   private let review: ReviewPanel
   private var reviewItem: NSSplitViewItem?
   private let sidebar: SidebarView
+  private let usage: UsagePageController
+  private var conversationView: NSView?
+  private var showingUsage = false
+  private var usageThreadID: String?
   private let timeline = NSTableView()
   private let timelineScroll = NSScrollView()
   private let composer = Composer()
@@ -142,6 +146,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     workspace = WorkspacePanel(store: store)
     review = ReviewPanel(store: store)
     sidebar = SidebarView(store: store)
+    usage = UsagePageController(store: store)
     modelControls = ComposerControls(store: store)
     requestsPanel = RequestsPanel(store: store)
     attachmentTray = AttachmentTray(store: store, previews: attachmentPreviews)
@@ -200,7 +205,20 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
       self?.window?.makeFirstResponder(self?.composer)
     }
     terminal.onOpenLink = { [weak self] url, location in self?.openMarkdownLink(url, at: location) }
-    let contentItem = NSSplitViewItem(viewController: conversationSplit)
+    let pages = NSViewController()
+    pages.view = NSView()
+    pages.addChild(conversationSplit)
+    pages.addChild(usage)
+    for page in [conversationSplit.view, usage.view] {
+      pages.view.addSubview(page)
+      pin(page, to: pages.view, inset: 0, top: 0)
+    }
+    conversationView = conversationSplit.view
+    usage.view.isHidden = true
+    usage.model.onClose = { [weak self] in self?.showConversation() }
+    sidebar.onShowUsage = { [weak self] in self?.showUsage() }
+    sidebar.onThreadChosen = { [weak self] in self?.showConversation() }
+    let contentItem = NSSplitViewItem(viewController: pages)
     contentItem.minimumThickness = 480
     splitController.addSplitViewItem(sidebarItem)
     splitController.addSplitViewItem(contentItem)
@@ -287,8 +305,9 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     composer.delegate = self
     composer.setAccessibilityLabel("Message")
     composer.submit = { [weak store] in store?.submitComposer() }
-    (window as? ConversationWindow)?.questionShortcut = { [weak requestsPanel] in
-      requestsPanel?.handleNumberKey($0) ?? false
+    (window as? ConversationWindow)?.questionShortcut = { [weak self, weak requestsPanel] in
+      guard self?.showingUsage != true else { return false }
+      return requestsPanel?.handleNumberKey($0) ?? false
     }
     composer.editLatestQueued = { [weak store] in
       guard let store, store.queuedEdit == nil, !store.queueBusy,
@@ -414,6 +433,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
       (view, "Save Workspace File", #selector(saveWorkspaceFile), "s", [.command]),
       (view, "Find in File or Diff", #selector(findWorkspaceFile), "f", [.command]),
       (view, "Toggle Sidebar", #selector(toggleSidebar), "b", [.command]),
+      (view, "Usage", #selector(showUsage), "u", [.command, .shift]),
     ] {
       let item = parent.addItem(withTitle: title, action: action, keyEquivalent: key)
       item.keyEquivalentModifierMask = modifiers
@@ -462,6 +482,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
   }
 
   @objc private func toggleWorkspace() {
+    showConversation()
     guard let workspaceItem else { return }
     workspaceItem.isCollapsed.toggle()
     if workspaceItem.isCollapsed { workspace.closeEditor() }
@@ -478,6 +499,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     }
   }
   @objc private func toggleReview() {
+    showConversation()
     guard let reviewItem else { return }
     reviewItem.isCollapsed.toggle()
     if !reviewItem.isCollapsed {
@@ -494,12 +516,37 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     if reviewItem.isCollapsed { window?.makeFirstResponder(composer) } else { review.focus() }
   }
   @objc private func toggleTerminal() {
+    showConversation()
     guard let terminalItem else { return }
     terminalItem.isCollapsed.toggle()
     terminal.refresh(active: !terminalItem.isCollapsed)
     if terminalItem.isCollapsed { window?.makeFirstResponder(composer) } else { terminal.focus() }
   }
   @objc private func saveWorkspaceFile() { workspace.saveFile() }
+  @objc private func showUsage() {
+    guard !showingUsage else { return }
+    showingUsage = true
+    usageThreadID = store.selectedID
+    workspace.closeEditor()
+    workspaceItem?.isCollapsed = true
+    reviewItem?.isCollapsed = true
+    workspace.refreshContext(active: false)
+    review.refreshContext(active: false)
+    terminal.refresh(active: false)
+    conversationView?.isHidden = true
+    usage.view.isHidden = false
+    window?.makeFirstResponder(usage.view)
+    usage.model.synchronize(active: true)
+  }
+  private func showConversation() {
+    guard showingUsage else { return }
+    showingUsage = false
+    usage.view.isHidden = true
+    conversationView?.isHidden = false
+    usage.model.synchronize(active: false)
+    terminal.refresh(active: terminalItem?.isCollapsed == false)
+    window?.makeFirstResponder(composer)
+  }
   private func openMarkdownLink(_ url: URL, at location: WorkspaceLocation?) {
     if url.isFileURL {
       guard let location, store.workspaceLocation == location else { return }
@@ -542,11 +589,13 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
   }
 
   func refresh() {
+    if showingUsage, store.selectedID != usageThreadID { showConversation() }
+    usage.model.synchronize(active: showingUsage)
     let anchor = scrollAnchor()
     sidebar.refresh()
     workspace.refreshContext(active: workspaceItem?.isCollapsed == false)
     review.refreshContext(active: reviewItem?.isCollapsed == false)
-    terminal.refresh(active: terminalItem?.isCollapsed == false)
+    terminal.refresh(active: !showingUsage && terminalItem?.isCollapsed == false)
     let selected = store.selectedThread
     heading.stringValue = selected?.title ?? "T3 Native"
     subtitle.stringValue =

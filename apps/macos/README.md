@@ -130,6 +130,18 @@ by the server. Syntax coloring and line
 annotations remain incomplete. Older pairing sessions need a new pairing token
 for review access.
 
+Open Usage from the sidebar or ⌘⇧U. Limits groups subscription windows by provider,
+with individual account bars, reset times, pace and the quota restored by the next
+reset. Duplicate accounts from provider instances and usage sources count once;
+the freshest read supplies their limits. Click a bar for account details and any
+available reset credits; redemption requires confirmation. Failed probes remain
+visible as notices. Cost and Tokens show provider charts and model/time breakdowns
+for the past 24 hours or 7, 30 and 90 days. Model details separate input, cache and
+output tokens; reasoning is included in output. Costs are API equivalents, with
+missing prices and incomplete source coverage identified. The metric and period
+are saved locally. Refresh updates the selected view; Escape returns to chat.
+Usage currently covers the connected environment and its configured accounts.
+
 The integrated browser, provider setup, and T3 Connect
 account/relay discovery remain in the existing app. Markdown supports native headings,
 lists, task lists, quotes, code blocks, tables, and selectable links. Copy-message

@@ -35,6 +35,8 @@ import T3Core
   private var uploadJobs: [String: (token: UUID, task: Task<Void, Never>)] = [:]
   var catalog = ProviderCatalog() { didSet { questionProgressCache = nil } }
   private(set) var catalogReady = false
+  private(set) var usageLimits = UsageLimitsSnapshot()
+  private(set) var usageSessionID = UUID()
   var questionDrafts: [String: [String: QuestionDraft]] = [:] {
     didSet {
       questionProgressCache = nil
@@ -146,6 +148,8 @@ import T3Core
         catalogReady = false
         notify()
         let connection = RPCConnection(settings: settings)
+        usageSessionID = UUID()
+        usageLimits = UsageLimitsSnapshot()
         self.connection = connection
         let started = Date()
         do {
@@ -215,6 +219,8 @@ import T3Core
   func disconnect() {
     _ = flushDrafts()
     generation = UUID()
+    usageSessionID = UUID()
+    usageLimits = UsageLimitsSnapshot()
     selectionGeneration = UUID()
     lifetime?.cancel()
     lifetime = nil
@@ -396,12 +402,14 @@ import T3Core
     configuration?.cancel()
     configuration = Task {
       do {
-        let stream = try await connection.subscribe("subscribeServerConfig", payload: .object([:]))
+        let stream = try await connection.subscribe(
+          "subscribeServerConfig", payload: .object(["usageLimitSources": .bool(true)]))
         defer { Task { await connection.cancel(stream.id) } }
         for try await event in stream.values {
           try Task.checkCancellation()
           guard self.generation == generation else { return }
           try catalog.apply(event)
+          usageLimits.apply(event)
           if event["type"].string == "snapshot" { catalogReady = true }
           startAttachmentUploads()
           notify()
@@ -420,6 +428,16 @@ import T3Core
     selectedID.flatMap { shell.threads[$0] ?? archives.threads[$0] }
   }
   var environmentKey: String { settings?.endpoint.absoluteString ?? "disconnected" }
+  func usageCall(_ method: String, payload: JSON = .object([:]), session: UUID) async throws -> JSON
+  {
+    guard ready, catalogReady, let connection, session == usageSessionID else {
+      throw T3Error("Connect to load usage.")
+    }
+    let result = try await connection.call(method, payload: payload)
+    try Task.checkCancellation()
+    guard ready, session == usageSessionID else { throw T3Error("The usage connection changed.") }
+    return result
+  }
   var fileOpenCapabilities: FileOpenCapabilities {
     ready && catalogReady ? catalog.fileOpen : FileOpenCapabilities()
   }
