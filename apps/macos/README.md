@@ -73,9 +73,16 @@ the original workspace even after navigation. Save checks for intervening server
 changes; conflicts retain your edits to copy or retry. Reload can discard them and
 load the server version. Completed agent commands, file changes, and checkpoints
 refresh visited folders and the open file without replacing unsaved text. Truncated
-previews and absolute host paths are read-only. Binary previews, syntax coloring,
-rendered file previews, file context actions, and workspace content search remain
-incomplete.
+previews and absolute host paths are read-only.
+
+Markdown files offer Source and Preview; editable checklists save when clicked.
+Relative file links open against the file’s directory on the connected server.
+CSV and TSV files open as tables, with quoted delimiters and multiline cells preserved.
+Table display is limited to 100 rows, 30 columns, and 2,000 characters per cell;
+Source retains the complete loaded text. Markdown and table display preferences
+are saved separately. ⌘F opens source for searching without changing that preference.
+Media/HTML/PDF previews, syntax coloring, source-line and heading links,
+file context actions, and workspace content search remain incomplete.
 
 The integrated browser, interactive terminal, full diff views,
 provider setup, and T3 Connect

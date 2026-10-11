@@ -3,6 +3,48 @@ import Testing
 
 @testable import T3Markdown
 
+@MainActor @Test func editableTasksLocateExactSourceMarkersAcrossUnicodeAndNestedLists() throws {
+  for newline in ["\n", "\r\n", "\r"] {
+    let source = [
+      "# 🦉 café", "", "- [ ] first", "  - [X] second", "", "> 1. [x] quoted", "",
+      "```md", "- [ ] code, never editable", "```", "", "- [ ] fourth with [ ] literal",
+    ].joined(separator: newline)
+    let rendered = MarkdownRenderer.render(source, width: 360, taskLinks: true)
+    #expect(
+      rendered.tasks.count == 4,
+      "newline=\(newline.debugDescription), tasks=\(rendered.tasks.map(\.sourceOffset)), text=\(rendered.text.string.debugDescription)"
+    )
+    for (marker, checked) in [
+      ("[ ] first", false), ("[X] second", true), ("[x] quoted", true), ("[ ] fourth", false),
+    ] {
+      let expected = (source as NSString).range(of: marker).location
+      let task = try #require(rendered.tasks.first(where: { $0.sourceOffset == expected }))
+      #expect(task.checked == checked)
+      #expect(rendered.text.attributedSubstring(from: task.range).string == (checked ? "☑" : "☐"))
+      #expect(
+        (rendered.text.attribute(.link, at: task.range.location, effectiveRange: nil) as? URL)?
+          .lastPathComponent == String(expected))
+    }
+    let readonly = MarkdownRenderer.render(source, width: 360)
+    #expect(readonly.tasks.isEmpty)
+    #expect(readonly.text.string == rendered.text.string)
+  }
+}
+
+@MainActor @Test func workspaceLinkResolutionControlsTheRenderedDestination() {
+  let rendered = MarkdownRenderer.render("[sibling](../notes.md) [blocked](custom:run)", width: 400)
+  { destination in
+    destination == "../notes.md" ? URL(fileURLWithPath: "/repo/notes.md") : nil
+  }
+  let text = rendered.text.string as NSString
+  #expect(
+    (rendered.text.attribute(.link, at: text.range(of: "sibling").location, effectiveRange: nil)
+      as? URL)?.path == "/repo/notes.md")
+  #expect(
+    rendered.text.attribute(.link, at: text.range(of: "blocked").location, effectiveRange: nil)
+      == nil)
+}
+
 @MainActor @Test func blocksKeepTheirContentAndStructure() throws {
   let source = """
     # Heading

@@ -16,6 +16,11 @@ final class WorkspacePanel: NSViewController, NSOutlineViewDataSource,
   private let search = NSSearchField()
   private let editor = NSTextView()
   private let editorScroll = NSScrollView()
+  private let renderedPreview = WorkspaceRenderedPreview()
+  private let previewPreferences = FilePreviewPreferences()
+  private let mode = NSSegmentedControl(
+    labels: ["Source", "Preview"], trackingMode: .selectOne, target: nil, action: nil)
+  private var forcedSource: WorkspaceFileID?
   private let path = NSTextField(labelWithString: "Select a file")
   private let info = NSTextField(wrappingLabelWithString: "")
   private let saveButton = NSButton(title: "Save  ⌘S", target: nil, action: nil)
@@ -32,6 +37,18 @@ final class WorkspacePanel: NSViewController, NSOutlineViewDataSource,
     files = WorkspaceFiles(store: store)
     super.init(nibName: nil, bundle: nil)
     files.onChange = { [weak self] in self?.refresh() }
+    renderedPreview.onTask = { [weak self] id, source, offset, checked in
+      guard let self, self.files.selected == id, self.files.document?.contents == source,
+        self.files.canEditDocument
+      else { return }
+      self.files.edit(WorkspaceMarkdown.settingTask(source, offset: offset, checked: checked))
+    }
+    renderedPreview.onFileLink = { [weak self] id, url in
+      guard let self, self.files.selected == id,
+        let path = WorkspaceMarkdown.workspacePath(url, root: id.root)
+      else { return }
+      self.files.open(path)
+    }
   }
   required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
@@ -102,14 +119,28 @@ final class WorkspacePanel: NSViewController, NSOutlineViewDataSource,
     info.maximumNumberOfLines = 3
     info.font = .systemFont(ofSize: 11)
     info.textColor = .secondaryLabelColor
-    let preview = NSStackView(views: [draftsButton, actions, info, editorScroll])
+    mode.target = self
+    mode.action = #selector(changePreviewMode)
+    mode.setAccessibilityLabel("File presentation")
+    let content = NSView()
+    for child in [editorScroll, renderedPreview] {
+      content.addSubview(child)
+      child.translatesAutoresizingMaskIntoConstraints = false
+      NSLayoutConstraint.activate([
+        child.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+        child.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+        child.topAnchor.constraint(equalTo: content.topAnchor),
+        child.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+      ])
+    }
+    let preview = NSStackView(views: [draftsButton, actions, mode, info, content])
     preview.orientation = .vertical
     preview.alignment = .leading
     preview.spacing = 8
-    for child in [draftsButton, actions, info, editorScroll] {
+    for child in [draftsButton, actions, info, content] {
       child.widthAnchor.constraint(equalTo: preview.widthAnchor).isActive = true
     }
-    editorScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 130).isActive = true
+    content.heightAnchor.constraint(greaterThanOrEqualToConstant: 130).isActive = true
     let split = NSSplitView()
     split.isVertical = false
     split.dividerStyle = .thin
@@ -142,6 +173,8 @@ final class WorkspacePanel: NSViewController, NSOutlineViewDataSource,
   func finishSaving() async -> Bool { await files.finishSaving() }
   func focusSearch() { view.window?.makeFirstResponder(search) }
   func findInFile() {
+    forcedSource = files.selected
+    refresh()
     view.window?.makeFirstResponder(editor)
     let item = NSMenuItem()
     item.tag = Int(NSFindPanelAction.showFindPanel.rawValue)
@@ -189,7 +222,27 @@ final class WorkspacePanel: NSViewController, NSOutlineViewDataSource,
     }
     let changedFile = displayedFile != files.selected
     displayedFile = files.selected
+    if changedFile, let selected = files.selected, let node = nodes[selected.path] {
+      let row = outline.row(forItem: node)
+      if row >= 0 {
+        outline.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        outline.scrollRowToVisible(row)
+      }
+    }
     let document = files.document
+    if changedFile { forcedSource = nil }
+    let kind = FilePreviewKind(path: files.selected?.path ?? "")
+    let showRendered =
+      document != nil && kind != .source && forcedSource != files.selected
+      && previewPreferences.rendered(kind)
+    mode.isHidden = document == nil || kind == .source
+    mode.selectedSegment = showRendered ? 1 : 0
+    mode.setLabel(kind == .markdown ? "Preview" : "Table", forSegment: 1)
+    editorScroll.isHidden = showRendered
+    renderedPreview.isHidden = !showRendered
+    if showRendered, let document, let id = files.selected {
+      renderedPreview.show(document, id: id, editable: files.canEditDocument)
+    }
     if changedFile { editor.undoManager?.removeAllActions() }
     let contents = document?.contents ?? ""
     if editor.string != contents {
@@ -350,6 +403,13 @@ final class WorkspacePanel: NSViewController, NSOutlineViewDataSource,
     }
     files.open(path, reload: true)
   }
+  @objc private func changePreviewMode() {
+    forcedSource = nil
+    let kind = FilePreviewKind(path: files.selected?.path ?? "")
+    previewPreferences.setRendered(mode.selectedSegment == 1, for: kind)
+    refresh()
+  }
+
   @objc private func copyContents() {
     guard let document = files.document else { return }
     NSPasteboard.general.clearContents()

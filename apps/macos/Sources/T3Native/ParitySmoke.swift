@@ -1,5 +1,6 @@
 import Foundation
 import T3Core
+import T3Markdown
 
 enum ParitySmoke {
   @MainActor static func run() async throws {
@@ -1280,6 +1281,9 @@ enum ParitySmoke {
     else {
       throw T3Error("Undo during an in-flight write did not restore the original server content.")
     }
+    try await workspacePreviews(store: store, files: restored, location: location, folder: folder)
+    restored.open(path)
+    try await waitForFiles(restored) { !restored.loadingFile && restored.document?.path == path }
     let alternateRoot = location.root + "/" + folder + "/alternate"
     try await write(folder + "/alternate/.keep", "isolated workspace fixture\n")
     let alternateID = UUID().uuidString
@@ -1337,6 +1341,65 @@ enum ParitySmoke {
     }
     print(
       "PASS: lazy/ignored folder listing, path search, 500ms autosave, exact UTF-8/CRLF, switch/close flush, disconnected draft recovery, serialized typing and undo during save, captured workspace across navigation, conflict and pending-refresh preservation, mutation-triggered refresh with injected tokens, lost-reply retry, truncated/binary handling, no inference in source thread; fixture \(folder), alternate thread \(alternateID)."
+    )
+  }
+
+  @MainActor private static func workspacePreviews(
+    store: ClientStore, files: WorkspaceFiles, location: WorkspaceLocation, folder: String
+  ) async throws {
+    let markdownPath = folder + "/previews/readme.md"
+    let markdown = [
+      "# Native file previews", "", "🦉 Exact Unicode and line endings.", "",
+      "- [ ] Verify autosave", "  - [x] Preserve source bytes", "", "1. [ ] Ordered task", "",
+      "| Feature | State |", "| --- | --- |", "| Markdown | Preview |", "| CSV and TSV | Table |",
+      "",
+      "[Open the data](data.csv)", "", "```swift", "let answer = 42", "```", "",
+    ].joined(separator: "\r\n")
+    let csv = "Name,Note\r\n\"🦉, café\",\"First\r\nSecond \"\"quoted\"\"\"\r\n,\r\n"
+    let tsv = "Name\tNote\nT3\t\"Multiple\nlines\"\n"
+    for (path, contents) in [
+      (markdownPath, markdown), (folder + "/previews/data.csv", csv),
+      (folder + "/previews/data.tsv", tsv),
+    ] {
+      _ = try await store.workspaceCall(
+        "projects.writeFile", at: location,
+        fields: [
+          "relativePath": .string(path), "contents": .string(contents),
+        ])
+    }
+    files.open(markdownPath)
+    try await waitForFiles(files) { !files.loadingFile && files.document?.path == markdownPath }
+    guard let document = files.document, document.contents == markdown, files.canEditDocument else {
+      throw T3Error("Markdown preview source was not preserved or editable.")
+    }
+    let rendered = MarkdownRenderer.render(document.contents, width: 400, taskLinks: true) {
+      WorkspaceMarkdown.link($0, filePath: markdownPath, root: location.root)
+    }
+    let offset = (markdown as NSString).range(of: "[ ] Verify autosave").location
+    guard rendered.tasks.count == 3,
+      rendered.tasks.contains(where: { $0.sourceOffset == offset && !$0.checked })
+    else {
+      throw T3Error("Rendered Markdown lost a task or its source position.")
+    }
+    let changed = WorkspaceMarkdown.settingTask(markdown, offset: offset, checked: true)
+    files.edit(changed)
+    try await waitForFiles(files) { !files.pendingSave && files.document?.original == changed }
+    guard try await store.readWorkspaceFile(markdownPath, at: location).contents == changed,
+      let link = WorkspaceMarkdown.link("data.csv", filePath: markdownPath, root: location.root),
+      let csvPath = WorkspaceMarkdown.workspacePath(link, root: location.root),
+      csvPath == folder + "/previews/data.csv"
+    else { throw T3Error("Markdown task autosave or contextual file link failed.") }
+    files.open(csvPath)
+    try await waitForFiles(files) { !files.loadingFile && files.document?.path == csvPath }
+    let table = DelimitedFilePreview(files.document?.contents ?? "", delimiter: 44)
+    guard table.rows == [["Name", "Note"], ["🦉, café", "First\r\nSecond \"quoted\""], ["", ""]],
+      !table.truncated, try await store.readWorkspaceFile(csvPath, at: location).contents == csv,
+      DelimitedFilePreview(tsv, delimiter: 9).rows == [
+        ["Name", "Note"], ["T3", "Multiple\nlines"],
+      ]
+    else { throw T3Error("Table preview changed quoted cells or its original source.") }
+    print(
+      "PASS: Markdown task source offsets and exact CRLF/Unicode autosave, relative file link, CSV/TSV quoted table previews with unchanged source; fixtures \(folder)/previews."
     )
   }
 

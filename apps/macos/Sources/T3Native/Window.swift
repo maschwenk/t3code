@@ -181,6 +181,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     splitController.addSplitViewItem(contentItem)
     let workspaceItem = NSSplitViewItem(viewController: workspace)
     workspaceItem.minimumThickness = 420
+    workspaceItem.holdingPriority = .defaultHigh
     workspaceItem.canCollapse = true
     workspaceItem.isCollapsed = true
     self.workspaceItem = workspaceItem

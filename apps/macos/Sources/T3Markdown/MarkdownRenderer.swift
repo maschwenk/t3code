@@ -7,22 +7,36 @@ public struct RenderedCodeBlock {
   public let language: String?
 }
 
+public struct RenderedMarkdownTask {
+  public let range: NSRange
+  public let sourceOffset: Int
+  public let checked: Bool
+}
+
 public struct RenderedMarkdown {
   public let text: NSAttributedString
   public let codeBlocks: [RenderedCodeBlock]
-  public init(text: NSAttributedString, codeBlocks: [RenderedCodeBlock]) {
+  public let tasks: [RenderedMarkdownTask]
+  public init(
+    text: NSAttributedString, codeBlocks: [RenderedCodeBlock], tasks: [RenderedMarkdownTask] = []
+  ) {
     self.text = text
     self.codeBlocks = codeBlocks
+    self.tasks = tasks
   }
 }
 
 @MainActor public enum MarkdownRenderer {
-  public static func render(_ source: String, width: CGFloat, headingLevelOffset: Int = 0)
-    -> RenderedMarkdown
-  {
-    let renderer = Renderer(width: width, headingLevelOffset: headingLevelOffset)
+  public static func render(
+    _ source: String, width: CGFloat, headingLevelOffset: Int = 0,
+    taskLinks: Bool = false, resolveLink: ((String) -> URL?)? = nil
+  ) -> RenderedMarkdown {
+    let renderer = Renderer(
+      source: source, width: width, headingLevelOffset: headingLevelOffset,
+      taskLinks: taskLinks, resolveLink: resolveLink)
     for block in Document(parsing: source).children { renderer.block(block) }
-    return RenderedMarkdown(text: renderer.output, codeBlocks: renderer.codeBlocks)
+    return RenderedMarkdown(
+      text: renderer.output, codeBlocks: renderer.codeBlocks, tasks: renderer.tasks)
   }
 
   public static func height(of text: NSAttributedString, width: CGFloat) -> CGFloat {
@@ -50,7 +64,28 @@ public struct RenderedMarkdown {
   let headingLevelOffset: Int
   let output = NSMutableAttributedString(string: "")
   var codeBlocks: [RenderedCodeBlock] = []
-  init(width: CGFloat, headingLevelOffset: Int) {
+  var tasks: [RenderedMarkdownTask] = []
+  private let source: NSString
+  private var lineStarts: [Int] = []
+  private let taskLinks: Bool
+  private let resolveLink: ((String) -> URL?)?
+  init(
+    source: String, width: CGFloat, headingLevelOffset: Int, taskLinks: Bool,
+    resolveLink: ((String) -> URL?)?
+  ) {
+    self.source = source as NSString
+    self.taskLinks = taskLinks
+    self.resolveLink = resolveLink
+    lineStarts = [0]
+    var previous: UInt16 = 0
+    for (index, unit) in source.utf16.enumerated() {
+      if unit == 10 && previous == 13 {
+        lineStarts[lineStarts.count - 1] = index + 1
+      } else if unit == 10 || unit == 13 {
+        lineStarts.append(index + 1)
+      }
+      previous = unit
+    }
     self.width = max(120, width)
     self.headingLevelOffset = min(5, max(0, headingLevelOffset))
   }
@@ -119,18 +154,65 @@ public struct RenderedMarkdown {
   private func list(_ node: any Markup, style: Style, start: UInt?) {
     for (index, child) in node.children.enumerated() {
       guard let item = child as? ListItem else { continue }
+      let sourceTask = item.checkbox != nil || start != nil ? taskMarker(item) : nil
+      let checkbox = item.checkbox ?? (start != nil ? sourceTask?.checkbox : nil)
       let marker: String
-      switch item.checkbox {
+      switch checkbox {
       case .checked: marker = "☑"
       case .unchecked: marker = "☐"
       case nil: marker = start.map { "\($0 + UInt(index))." } ?? "•"
       }
       var itemStyle = style
       itemStyle.indent = min(width - 60, itemStyle.indent + 22)
+      let start = output.length
       for (blockIndex, child) in item.children.enumerated() {
-        block(child, style: itemStyle, prefix: blockIndex == 0 ? marker + "\t" : "")
+        if blockIndex == 0, item.checkbox == nil, checkbox != nil,
+          let paragraph = child as? Paragraph
+        {
+          // swift-markdown recognizes unordered tasks; GFM also permits ordered tasks.
+          let text = NSMutableAttributedString(
+            attributedString: inline(paragraph, style: itemStyle))
+          let prefix = (text.string as NSString).range(
+            of: #"^\[[ xX]\](?:[ \t]+|$)"#, options: .regularExpression)
+          if prefix.location == 0 { text.deleteCharacters(in: prefix) }
+          self.paragraph(text, style: itemStyle, prefix: marker + "\t")
+        } else {
+          block(child, style: itemStyle, prefix: blockIndex == 0 ? marker + "\t" : "")
+        }
+      }
+      if taskLinks, let checkbox, let offset = sourceTask?.offset,
+        output.length > start
+      {
+        let range = NSRange(location: start, length: 1)
+        tasks.append(
+          RenderedMarkdownTask(range: range, sourceOffset: offset, checked: checkbox == .checked))
+        output.addAttribute(
+          .link, value: URL(string: "t3-markdown-task://toggle/\(offset)")!, range: range)
       }
     }
+  }
+
+  private static let taskPattern = try! NSRegularExpression(
+    pattern: #"^(?:[-+*]|[0-9]{1,9}[.)])[ \t]+(\[[ xX]\])(?:[ \t]+|$)"#)
+
+  private func taskMarker(_ item: ListItem) -> (offset: Int, checkbox: Checkbox)? {
+    guard let location = item.range?.lowerBound, location.line > 0,
+      location.line <= lineStarts.count
+    else { return nil }
+    let start = lineStarts[location.line - 1]
+    let end = location.line < lineStarts.count ? lineStarts[location.line] : source.length
+    let line = source.substring(with: NSRange(location: start, length: end - start))
+    let bytes = Array(line.utf8)
+    let column = max(0, location.column - 1)
+    guard column < bytes.count else { return nil }
+    let prefix = String(decoding: bytes.prefix(column), as: UTF8.self).utf16.count
+    let remainder = String(decoding: bytes.dropFirst(column), as: UTF8.self) as NSString
+    guard
+      let match = Self.taskPattern.firstMatch(
+        in: remainder as String, range: NSRange(location: 0, length: remainder.length))
+    else { return nil }
+    let offset = start + prefix + match.range(at: 1).location
+    return (offset, source.character(at: offset + 1) == 32 ? .unchecked : .checked)
   }
 
   private func paragraph(
@@ -199,13 +281,18 @@ public struct RenderedMarkdown {
       case let link as Link:
         let text = NSMutableAttributedString(attributedString: inline(link, style: style))
         if let destination = link.destination, let url = safeURL(destination) {
-          text.addAttribute(.link, value: url, range: NSRange(location: 0, length: text.length))
+          text.addAttributes(
+            [.link: url, .underlineStyle: NSUnderlineStyle.single.rawValue],
+            range: NSRange(location: 0, length: text.length))
         }
         result.append(text)
       case let image as Markdown.Image:
         let label = image.plainText.isEmpty ? "Image" : image.plainText
         var attrs = attributes(style)
-        if let source = image.source, let url = safeURL(source) { attrs[.link] = url }
+        if let source = image.source, let url = safeURL(source) {
+          attrs[.link] = url
+          attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue
+        }
         result.append(NSAttributedString(string: "[" + label + "]", attributes: attrs))
       case let html as InlineHTML:
         result.append(NSAttributedString(string: html.rawHTML, attributes: attributes(style)))
@@ -216,6 +303,7 @@ public struct RenderedMarkdown {
   }
 
   private func safeURL(_ destination: String) -> URL? {
+    if let resolveLink { return resolveLink(destination) }
     guard let url = URL(string: destination), let scheme = url.scheme?.lowercased(),
       ["http", "https", "mailto", "file"].contains(scheme)
     else { return nil }
