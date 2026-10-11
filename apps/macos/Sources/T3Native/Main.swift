@@ -24,11 +24,14 @@ import T3Core
 
   func applicationWillTerminate(_ notification: Notification) { store.disconnect() }
   func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-    guard !store.saveDraftsBeforeExit() else { return .terminateNow }
+    let messagesSaved = store.saveDraftsBeforeExit()
+    let filesSaved = controller?.saveWorkspaceDraftsBeforeExit() ?? true
+    guard !messagesSaved || !filesSaved else { return .terminateNow }
     let alert = NSAlert()
     alert.messageText = "Drafts could not be saved"
     alert.informativeText =
-      store.storageError ?? "Keep the app open to preserve your unsent drafts."
+      controller?.workspaceStorageError ?? store.storageError
+      ?? "Keep the app open to preserve your unsent drafts."
     alert.addButton(withTitle: "Keep open")
     alert.addButton(withTitle: "Quit without saving")
     return alert.runModal() == .alertSecondButtonReturn ? .terminateNow : .terminateCancel

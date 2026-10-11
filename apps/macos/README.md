@@ -62,6 +62,16 @@ Received files can be downloaded from the conversation with a native save dialog
 Image attachments have thumbnails, and files open in a Quick Look gallery with
 navigation and Save controls.
 
+Open the thread’s Files panel from its header or ⌘⇧E. Folders load as you expand
+them, including ignored files; Search files also finds paths in unopened folders.
+Text files open in a native editor with ⌘F find and ⌘S Save. Unsaved edits survive
+file, thread, and server switches and app restarts; use Unsaved files to return to
+them. Save checks the current server contents for intervening changes. A conflict
+keeps your edits available to copy; Reload can discard them and load the server
+version. Truncated previews and absolute host paths are read-only. Binary previews,
+autosave, syntax coloring, rendered file previews, file context actions, and
+workspace content search remain incomplete.
+
 The integrated browser, interactive terminal, full diff views,
 provider setup, and T3 Connect
 account/relay discovery remain in the existing app. Markdown supports native headings,
@@ -179,3 +189,10 @@ pending submission IDs are stored atomically under Application Support/T3 Native
 separated by server address. The files are private to the current macOS user.
 Switching servers or quitting does not discard a draft that failed to save without
 an explicit choice to quit without saving.
+
+Use `--parity-smoke --workspace-thread THREAD_ID` with an existing isolated
+“Native plan verification” thread to check workspace files without inference.
+It creates a uniquely named fixture directory under that project, then checks lazy
+folder listing, ignored entries, path search, exact text saves, recovery after
+restart, concurrent typing, conflict handling, reconnect retry, and truncated and
+binary preview behavior. Fixture files remain available for UI verification.

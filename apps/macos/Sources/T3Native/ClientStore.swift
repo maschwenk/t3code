@@ -436,6 +436,43 @@ import T3Core
       payload: location.writeInput(relativePath: relativePath, contents: document.contents))
     return try result.requiredString("relativePath")
   }
+  func workspaceCall(_ method: String, at location: WorkspaceLocation, fields: [String: JSON])
+    async throws -> JSON
+  {
+    guard ready, let connection else { throw T3Error("Connect to load workspace files.") }
+    guard workspaceLocation == location else { throw T3Error("The workspace changed.") }
+    let generation = generation
+    var payload = fields
+    payload["cwd"] = .string(location.root)
+    let result = try await connection.call(method, payload: .object(payload))
+    guard self.generation == generation, workspaceLocation == location else {
+      throw T3Error("The workspace changed while the file operation was running.")
+    }
+    return result
+  }
+
+  func readWorkspaceFile(_ path: String, at location: WorkspaceLocation) async throws
+    -> WorkspaceFileDocument
+  {
+    try await WorkspaceFileDocument(
+      workspaceCall(
+        "projects.readFile", at: location, fields: ["relativePath": .string(path)]))
+  }
+
+  func saveWorkspaceFile(_ document: WorkspaceFileDocument, at location: WorkspaceLocation)
+    async throws
+  {
+    let latest = try await readWorkspaceFile(document.path, at: location)
+    try document.validateSave(against: latest)
+    // An acknowledged write may have lost its reply; retrying identical content is already done.
+    if latest.contents == document.contents { return }
+    _ = try await workspaceCall(
+      "projects.writeFile", at: location,
+      fields: [
+        "relativePath": .string(document.path), "contents": .string(document.contents),
+      ])
+  }
+
   var changingSettings: Bool { commandsInFlight.contains((selectedID ?? "") + ":settings") }
   var canEditThread: Bool {
     ready && thread?.synchronized == true && selectedThread?.archived == false && !changingSettings

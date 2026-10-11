@@ -130,7 +130,7 @@ import T3Markdown
     CATransaction.begin()
     CATransaction.setDisableActions(true)
     fade?.frame = bounds
-    fade?.locations = [0, NSNumber(value: max(0, 1 - 96 / max(1, bounds.height))), 1]
+    fade?.locations = [0, NSNumber(value: max(0, 1 - 96 / max(1, Double(bounds.height)))), 1]
     CATransaction.commit()
   }
   required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }

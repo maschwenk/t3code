@@ -84,6 +84,8 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
   NSTextViewDelegate, NSWindowDelegate, NSMenuItemValidation
 {
   let store: ClientStore
+  private let workspace: WorkspacePanel
+  private var workspaceItem: NSSplitViewItem?
   private let sidebar: SidebarView
   private let timeline = NSTableView()
   private let timelineScroll = NSScrollView()
@@ -131,6 +133,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
 
   init(store: ClientStore) {
     self.store = store
+    workspace = WorkspacePanel(store: store)
     sidebar = SidebarView(store: store)
     modelControls = ComposerControls(store: store)
     requestsPanel = RequestsPanel(store: store)
@@ -176,6 +179,13 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     contentItem.minimumThickness = 480
     splitController.addSplitViewItem(sidebarItem)
     splitController.addSplitViewItem(contentItem)
+    let workspaceItem = NSSplitViewItem(viewController: workspace)
+    workspaceItem.minimumThickness = 420
+    workspaceItem.canCollapse = true
+    workspaceItem.isCollapsed = true
+    self.workspaceItem = workspaceItem
+    workspace.onClose = { [weak self] in self?.workspaceItem?.isCollapsed = true }
+    splitController.addSplitViewItem(workspaceItem)
     window.contentViewController = splitController
     splitController.splitView.setPosition(285, ofDividerAt: 0)
 
@@ -298,6 +308,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     bottom.widthAnchor.constraint(equalTo: composerStack.widthAnchor).isActive = true
     let header = NSStackView(views: [
       subtitle, NSTextField(labelWithString: "/"), heading, NSView(),
+      button("Files", #selector(toggleWorkspace)),
     ])
     header.spacing = 10
     right.addSubview(header)
@@ -353,6 +364,9 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
       (chat, "Steer Next Queued Message", #selector(steerNextQueued), "\r", [.command, .shift]),
       (chat, "Resume", #selector(resume), "", []),
       (chat, "Enable Plan Mode", #selector(togglePlanModeEnabled), "", []),
+      (view, "Toggle Files", #selector(toggleWorkspace), "e", [.command, .shift]),
+      (view, "Save Workspace File", #selector(saveWorkspaceFile), "s", [.command]),
+      (view, "Find in Workspace File", #selector(findWorkspaceFile), "f", [.command]),
       (view, "Toggle Sidebar", #selector(toggleSidebar), "b", [.command]),
     ] {
       let item = parent.addItem(withTitle: title, action: action, keyEquivalent: key)
@@ -370,6 +384,12 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     if menuItem.action == #selector(togglePlanModeEnabled) {
       menuItem.state = store.catalog.planModeEnabled ? .on : .off
       return true
+    }
+    if menuItem.action == #selector(saveWorkspaceFile) {
+      return workspaceItem?.isCollapsed == false && workspace.files.canSave
+    }
+    if menuItem.action == #selector(findWorkspaceFile) {
+      return workspaceItem?.isCollapsed == false && workspace.files.document != nil
     }
     if menuItem.action == #selector(chooseModel) {
       return store.canEditThread && store.catalogReady
@@ -393,6 +413,24 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     guard let sidebarItem else { return }
     sidebarItem.isCollapsed.toggle()
   }
+
+  @objc private func toggleWorkspace() {
+    guard let workspaceItem else { return }
+    workspaceItem.isCollapsed.toggle()
+    if !workspaceItem.isCollapsed {
+      if let window, window.frame.width < 1220 {
+        var frame = window.frame
+        frame.size.width = 1220
+        window.setFrame(frame, display: true)
+      }
+      workspace.refreshContext()
+      workspace.focusSearch()
+    }
+  }
+  @objc private func saveWorkspaceFile() { workspace.saveFile() }
+  @objc private func findWorkspaceFile() { workspace.findInFile() }
+  func saveWorkspaceDraftsBeforeExit() -> Bool { workspace.saveDraftsBeforeExit() }
+  var workspaceStorageError: String? { workspace.storageError }
 
   private func pin(_ child: NSView, to parent: NSView, inset: CGFloat, top: CGFloat) {
     child.translatesAutoresizingMaskIntoConstraints = false
@@ -422,6 +460,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
   func refresh() {
     let anchor = scrollAnchor()
     sidebar.refresh()
+    if workspaceItem?.isCollapsed == false { workspace.refreshContext() }
     let selected = store.selectedThread
     heading.stringValue = selected?.title ?? "T3 Native"
     subtitle.stringValue =

@@ -21,6 +21,11 @@ enum ParitySmoke {
       Task { await connection.close() }
     }
     try await connection.open()
+    if let threadID = Arguments.value("--workspace-thread") {
+      try await workspaceFiles(
+        settings: settings, connection: connection, threadID: threadID, projectID: project)
+      return
+    }
     if let threadID = Arguments.value("--plan-card-thread") {
       try await planCard(
         settings: settings, connection: connection, threadID: threadID, projectID: project)
@@ -1068,6 +1073,188 @@ enum ParitySmoke {
       }
       throw error
     }
+  }
+
+  @MainActor private static func workspaceFiles(
+    settings: ConnectionSettings, connection: RPCConnection, threadID: String, projectID: String
+  ) async throws {
+    let original = try await connection.call(
+      "orchestration.getThreadProjection",
+      payload: .object(["threadId": .string(threadID)]))
+    guard original["thread"]["projectId"].string == projectID,
+      original["thread"]["title"].string == "Native plan verification"
+    else {
+      throw T3Error("Workspace checks require an isolated plan verification thread.")
+    }
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "t3-files-" + UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let store = ClientStore(draftDirectory: directory.appendingPathComponent("chat"))
+    store.connect(settings, selecting: threadID)
+    defer { store.disconnect() }
+    try await waitForStore(store) { store.canEditThread }
+    guard let location = store.workspaceLocation else { throw T3Error("No workspace.") }
+    let folder = "native-files-" + UUID().uuidString.lowercased()
+    let path = folder + "/nested/日本語 file.txt"
+    let originalContents = "First line\r\n🦉 exact UTF-8\r\n"
+    func write(_ path: String, _ contents: String) async throws {
+      _ = try await store.workspaceCall(
+        "projects.writeFile", at: location,
+        fields: [
+          "relativePath": .string(path), "contents": .string(contents),
+        ])
+    }
+    try await write(path, originalContents)
+    try await write(folder + "/.gitignore", "ignored/\n")
+    try await write(folder + "/ignored/hidden.txt", "ignored but browsable\n")
+    let files = WorkspaceFiles(store: store, directory: directory.appendingPathComponent("files"))
+    files.refreshContext()
+    try await waitForFiles(files) { files.directories[""] != nil && !files.loadingTree }
+    guard files.directories.count == 1,
+      files.directories[""]?.contains(where: { $0.path == folder && $0.isDirectory }) == true
+    else {
+      throw T3Error("Root listing was missing its fixture or recursively loaded folders.")
+    }
+    files.loadDirectory(folder)
+    files.loadDirectory(folder)
+    try await waitForFiles(files) { files.directories[folder] != nil && !files.loadingTree }
+    guard files.directories.count == 2,
+      files.directories[folder]?.contains(where: { $0.path == folder + "/ignored" && $0.ignored })
+        == true
+    else {
+      throw T3Error("Lazy listing lost ignored directories or loaded descendants.")
+    }
+    files.loadDirectory(folder + "/nested")
+    try await waitForFiles(files) {
+      files.directories[folder + "/nested"]?.contains(where: { $0.path == path }) == true
+    }
+    files.search("日本語 file")
+    files.search(folder + "/nested")
+    try await waitForFiles(files) { files.searchResults.contains(where: { $0.path == path }) }
+    files.search("")
+    files.open(path)
+    try await waitForFiles(files) { !files.loadingFile && files.document != nil }
+    guard files.document?.contents == originalContents else {
+      throw T3Error("Read changed Unicode or CRLF bytes.")
+    }
+    let firstEdit = originalContents + "First edit\n"
+    let secondEdit = firstEdit + "Typed while saving\n"
+    files.edit(firstEdit)
+    guard files.flush() else { throw T3Error("Could not save recovery data.") }
+    files.open(folder + "/.gitignore")
+    try await waitForFiles(files) {
+      !files.loadingFile && files.document?.path == folder + "/.gitignore"
+    }
+    guard files.drafts.count == 1 else { throw T3Error("Switching files discarded edits.") }
+    let restored = WorkspaceFiles(
+      store: store, directory: directory.appendingPathComponent("files"))
+    restored.refreshContext()
+    restored.open(path)
+    guard restored.document?.contents == firstEdit, restored.document?.isDirty == true else {
+      throw T3Error("Restart did not recover unsaved file content.")
+    }
+    var editedDuringSave = false
+    restored.onChange = {
+      if !restored.saving.isEmpty && !editedDuringSave {
+        editedDuringSave = true
+        restored.edit(secondEdit)
+      }
+    }
+    try await restored.save()
+    restored.onChange = nil
+    guard editedDuringSave, restored.document?.original == firstEdit,
+      restored.document?.contents == secondEdit, restored.document?.isDirty == true
+    else {
+      throw T3Error("A completed save replaced newer typing.")
+    }
+    try await restored.save()
+    let saved = try await store.readWorkspaceFile(path, at: location)
+    guard saved.contents == secondEdit, restored.document?.isDirty == false else {
+      throw T3Error("Saving changed bytes or left the confirmed version dirty.")
+    }
+    restored.edit(secondEdit + "local conflicting edit\n")
+    let remoteEdit = secondEdit + "agent edit\n"
+    try await write(path, remoteEdit)
+    var rejected = false
+    do { try await restored.save() } catch {
+      rejected = error.localizedDescription.contains("changed on the server")
+    }
+    let preserved = try await store.readWorkspaceFile(path, at: location)
+    guard rejected, restored.document?.isDirty == true, preserved.contents == remoteEdit else {
+      throw T3Error("A conflicting edit overwrote the server file or lost the local draft.")
+    }
+    restored.open(path, reload: true)
+    try await waitForFiles(restored) {
+      !restored.loadingFile && restored.document?.contents == remoteEdit
+    }
+    let retriedContents = remoteEdit + "accepted before reply lost\n"
+    restored.edit(retriedContents)
+    try await write(path, retriedContents)
+    store.disconnect()
+    restored.refreshContext()
+    guard !restored.canSave else { throw T3Error("Disconnected editor could save.") }
+    store.connect(settings, selecting: threadID)
+    try await waitForStore(store) { store.canEditThread }
+    restored.refreshContext()
+    restored.open(path)
+    try await restored.save()
+    guard restored.document?.isDirty == false else {
+      throw T3Error("Retry did not recognize the accepted content.")
+    }
+    let large = folder + "/large.txt"
+    try await write(large, String(repeating: "x", count: 1_048_577))
+    restored.open(large)
+    try await waitForFiles(restored) { !restored.loadingFile && restored.document?.path == large }
+    guard restored.document?.truncated == true, restored.document?.canEdit == false else {
+      throw T3Error("Truncated file was editable.")
+    }
+    restored.edit("must not replace a partial file")
+    guard restored.document?.isDirty == false else {
+      throw T3Error("Truncated preview accepted an edit.")
+    }
+    let binary = folder + "/binary.bin"
+    try await write(binary, "binary\u{0}data")
+    restored.open(binary)
+    try await waitForFiles(restored) { !restored.loadingFile }
+    guard restored.document == nil, !restored.message.isEmpty else {
+      throw T3Error("Binary content was offered as editable text.")
+    }
+    restored.open(path)
+    try await waitForFiles(restored) { !restored.loadingFile && restored.document?.path == path }
+    guard restored.document?.contents == retriedContents else {
+      throw T3Error("Reconnect lost saved file bytes.")
+    }
+    let final = try await connection.call(
+      "orchestration.getThreadProjection",
+      payload: .object(["threadId": .string(threadID)]))
+    guard final["runs"] == original["runs"] else {
+      throw T3Error("Workspace edits changed inference state.")
+    }
+    print(
+      "PASS: lazy/ignored folder listing, path search, exact UTF-8/CRLF reads and saves, file switching, private draft recovery, typing during save, conflict preservation, reconnect/lost-reply retry, truncated/binary read-only handling, no inference; fixture \(folder)."
+    )
+  }
+
+  @MainActor private static func waitForFiles(
+    _ files: WorkspaceFiles, until predicate: @escaping @MainActor () -> Bool
+  ) async throws {
+    let (stream, continuation) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+    files.onChange = { continuation.yield(()) }
+    let timeout = Task {
+      try await Task.sleep(for: .seconds(15))
+      continuation.finish()
+    }
+    defer {
+      files.onChange = nil
+      timeout.cancel()
+      continuation.finish()
+    }
+    continuation.yield(())
+    for await _ in stream {
+      if predicate() { return }
+      if let error = files.storageError { throw T3Error(error) }
+    }
+    throw T3Error("Timed out waiting for workspace files: \(files.message)")
   }
 
   @MainActor private static func planCard(
