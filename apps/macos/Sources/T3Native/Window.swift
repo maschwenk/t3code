@@ -1,5 +1,6 @@
 import AppKit
 import T3Core
+import T3Markdown
 
 @MainActor final class Composer: NSTextView {
   var submit: (() -> Void)?
@@ -32,9 +33,14 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
   private let requestsPanel: RequestsPanel
   private var rows: [TimelineRow] = []
   private var rendered:
-    [String: (row: TimelineRow, text: NSAttributedString, width: CGFloat, height: CGFloat)] = [:]
+    [String: (row: TimelineRow, markdown: RenderedMarkdown, width: CGFloat, height: CGFloat)] = [:]
   private var renderedThread: String?
   private var lastWidth: CGFloat = 0
+  private struct ScrollAnchor {
+    var id: String?
+    var offset: CGFloat
+    var followsBottom: Bool
+  }
 
   init(store: ClientStore) {
     self.store = store
@@ -270,12 +276,11 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
   private func updateRows(_ next: [TimelineRow]) {
     let changedThread = renderedThread != store.selectedID
     guard changedThread || next != rows else { return }
-    let wasAtBottom = timeline.visibleRect.maxY >= timeline.bounds.maxY - 70
+    var anchor = scrollAnchor()
+    if changedThread { anchor.followsBottom = true }
     let oldCount = rows.count
     let samePrefix = next.count >= rows.count && zip(rows, next).allSatisfy { $0.id == $1.id }
     let changes = IndexSet(next.indices.filter { $0 < oldCount && next[$0] != rows[$0] })
-    let oldTop = timeline.row(at: timeline.visibleRect.origin)
-    let anchor = rows.indices.contains(oldTop) ? rows[oldTop].id : nil
     rows = next
     renderedThread = store.selectedID
     if changedThread || !samePrefix {
@@ -289,69 +294,64 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
       timeline.noteHeightOfRows(withIndexesChanged: changes)
       timeline.reloadData(forRowIndexes: changes, columnIndexes: IndexSet(integer: 0))
     }
-    if (changedThread || wasAtBottom) && !rows.isEmpty {
-      timeline.scrollRowToVisible(rows.count - 1)
-    } else if !samePrefix, let anchor, let index = rows.firstIndex(where: { $0.id == anchor }) {
-      timeline.scrollRowToVisible(index)
+    restoreScroll(anchor)
+  }
+
+  private func scrollAnchor() -> ScrollAnchor {
+    let visible = timeline.visibleRect
+    let index = timeline.row(at: NSPoint(x: visible.minX + 1, y: visible.minY + 1))
+    return ScrollAnchor(
+      id: rows.indices.contains(index) ? rows[index].id : nil,
+      offset: rows.indices.contains(index) ? visible.minY - timeline.rect(ofRow: index).minY : 0,
+      followsBottom: visible.maxY >= timeline.bounds.maxY - 70)
+  }
+
+  private func restoreScroll(_ anchor: ScrollAnchor) {
+    timeline.layoutSubtreeIfNeeded()
+    let limit = max(0, timeline.bounds.height - timelineScroll.contentView.bounds.height)
+    let target: CGFloat
+    if anchor.followsBottom {
+      target = limit
+    } else if let id = anchor.id, let index = rows.firstIndex(where: { $0.id == id }) {
+      target = timeline.rect(ofRow: index).minY + anchor.offset
+    } else {
+      return
     }
+    timelineScroll.contentView.scroll(to: NSPoint(x: 0, y: max(0, min(target, limit))))
+    timelineScroll.reflectScrolledClipView(timelineScroll.contentView)
   }
 
   @objc private func resized() {
     let width = timelineScroll.contentSize.width
     guard abs(width - lastWidth) > 1 else { return }
+    let anchor = scrollAnchor()
     lastWidth = width
     rendered.removeAll(keepingCapacity: true)
     timeline.noteHeightOfRows(withIndexesChanged: IndexSet(rows.indices))
+    timeline.reloadData(forRowIndexes: IndexSet(rows.indices), columnIndexes: IndexSet(integer: 0))
+    restoreScroll(anchor)
   }
 
-  private func render(_ row: TimelineRow) -> (NSAttributedString, CGFloat) {
+  private func render(_ row: TimelineRow) -> (RenderedMarkdown, CGFloat) {
     let width = max(120, timeline.bounds.width - 36)
     if let cached = rendered[row.id], cached.row == row, cached.width == width {
-      return (cached.text, cached.height)
+      return (cached.markdown, cached.height)
     }
-    let font =
-      row.kind == "command_execution"
-      ? NSFont.monospacedSystemFont(ofSize: 12, weight: .regular) : NSFont.systemFont(ofSize: 14)
-    let text = NSMutableAttributedString(
-      string: row.text, attributes: [.font: font, .foregroundColor: NSColor.labelColor])
-    if ["user_message", "assistant_message", "reasoning", "proposed_plan"].contains(row.kind),
-      let markdown = try? AttributedString(
-        markdown: row.text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))
-    {
-      let rich = NSMutableAttributedString(string: "")
-      for run in markdown.runs {
-        var runFont = font
-        if run.inlinePresentationIntent?.contains(.code) == true {
-          runFont = .monospacedSystemFont(ofSize: 13, weight: .regular)
-        }
-        if run.inlinePresentationIntent?.contains(.stronglyEmphasized) == true {
-          runFont = NSFontManager.shared.convert(runFont, toHaveTrait: .boldFontMask)
-        }
-        if run.inlinePresentationIntent?.contains(.emphasized) == true {
-          runFont = NSFontManager.shared.convert(runFont, toHaveTrait: .italicFontMask)
-        }
-        var attributes: [NSAttributedString.Key: Any] = [
-          .font: runFont, .foregroundColor: NSColor.labelColor,
-        ]
-        if let link = run.link { attributes[.link] = link }
-        rich.append(
-          NSAttributedString(string: String(markdown[run.range].characters), attributes: attributes)
-        )
-      }
-      text.setAttributedString(rich)
+    let markdown: RenderedMarkdown
+    if ["user_message", "assistant_message", "reasoning", "proposed_plan"].contains(row.kind) {
+      markdown = MarkdownRenderer.render(row.text, width: width)
+    } else {
+      let font =
+        row.kind == "command_execution"
+        ? NSFont.monospacedSystemFont(ofSize: 12, weight: .regular) : NSFont.systemFont(ofSize: 14)
+      markdown = RenderedMarkdown(
+        text: NSAttributedString(
+          string: row.text,
+          attributes: [.font: font, .foregroundColor: NSColor.labelColor]), codeBlocks: [])
     }
-    let paragraph = NSMutableParagraphStyle()
-    paragraph.lineSpacing = 4
-    text.addAttribute(
-      .paragraphStyle, value: paragraph, range: NSRange(location: 0, length: text.length))
-    let height =
-      ceil(
-        text.boundingRect(
-          with: NSSize(width: width, height: .greatestFiniteMagnitude),
-          options: [.usesLineFragmentOrigin, .usesFontLeading]
-        ).height) + 49
-    rendered[row.id] = (row, text, width, max(65, height))
-    return (text, max(65, height))
+    let height = max(65, MarkdownRenderer.height(of: markdown.text, width: width) + 45)
+    rendered[row.id] = (row, markdown, width, height)
+    return (markdown, height)
   }
 
   func numberOfRows(in tableView: NSTableView) -> Int {
@@ -367,20 +367,26 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
   {
     let cell = NSView()
     let title = NSTextField(labelWithString: "")
-    let body = NSTextField(wrappingLabelWithString: "")
     title.font = .systemFont(ofSize: 11, weight: .semibold)
     title.textColor = .secondaryLabelColor
-    body.font = .systemFont(ofSize: 13)
     let row = rows[index]
     title.stringValue =
       row.title + (row.inherited ? " · inherited" : "") + (row.streaming ? " · streaming" : "")
     title.textColor = row.kind == "user_message" ? .controlAccentColor : .secondaryLabelColor
-    body.attributedStringValue = render(row).0
-    body.isSelectable = true
-    body.allowsEditingTextAttributes = true
-    body.maximumNumberOfLines = 0
-    body.preferredMaxLayoutWidth = max(120, timeline.bounds.width - 36)
-    let stack = NSStackView(views: [title, body])
+    let (markdown, height) = render(row)
+    let body = MessageTextView(
+      rendered: markdown, width: max(120, timeline.bounds.width - 36), height: height - 45)
+    let copy = ActionButton("") {
+      NSPasteboard.general.clearContents()
+      NSPasteboard.general.setString(row.text, forType: .string)
+    }
+    copy.image = NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: "Copy message")
+    copy.imagePosition = .imageOnly
+    copy.bezelStyle = .inline
+    copy.toolTip = "Copy message"
+    copy.setAccessibilityLabel("Copy message")
+    let header = NSStackView(views: [title, NSView(), copy])
+    let stack = NSStackView(views: [header, body])
     stack.orientation = .vertical
     stack.alignment = .leading
     stack.spacing = 6
@@ -391,6 +397,8 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
       stack.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -12),
       stack.topAnchor.constraint(equalTo: cell.topAnchor, constant: 8),
       body.widthAnchor.constraint(equalTo: stack.widthAnchor),
+      body.heightAnchor.constraint(equalToConstant: max(20, height - 45)),
+      header.widthAnchor.constraint(equalTo: stack.widthAnchor),
     ])
     return cell
   }

@@ -5,9 +5,12 @@ let package = Package(
   name: "T3Native",
   platforms: [.macOS(.v14)],
   products: [.executable(name: "T3Native", targets: ["T3Native"])],
+  dependencies: [.package(url: "https://github.com/swiftlang/swift-markdown.git", exact: "0.9.0")],
   targets: [
     .target(name: "T3Core"),
-    .executableTarget(name: "T3Native", dependencies: ["T3Core"]),
+    .target(name: "T3Markdown", dependencies: [.product(name: "Markdown", package: "swift-markdown")]),
+    .executableTarget(name: "T3Native", dependencies: ["T3Core", "T3Markdown"]),
     .testTarget(name: "T3CoreTests", dependencies: ["T3Core"]),
+    .testTarget(name: "T3MarkdownTests", dependencies: ["T3Markdown"]),
   ]
 )

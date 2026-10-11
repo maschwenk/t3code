@@ -19,13 +19,15 @@ custom answers, and dismissal when the server advertises it.
 
 The integrated browser, interactive terminal, full diff views, attachments, model
 search, provider setup, question attachments, and T3 Connect
-account/relay discovery remain in the existing app. Markdown supports inline formatting;
-full block layout and syntax highlighting are outside this slice.
+account/relay discovery remain in the existing app. Markdown supports native headings,
+lists, task lists, quotes, code blocks, tables, and selectable links. Copy-message
+actions preserve the original Markdown; code blocks have a Copy code context action.
+Syntax highlighting, inline images, file/citation chips, math, and diagrams remain incomplete.
 
 ## Build and run
 
-Requires Xcode with Swift 6. No third-party Swift packages or JavaScript build are
-needed for the native client.
+Requires Xcode with Swift 6.2 or later. Swift Package Manager fetches the pinned
+Swift Markdown and cmark parser dependencies; the native client needs no JavaScript build.
 
 ```sh
 swift test --package-path apps/macos
