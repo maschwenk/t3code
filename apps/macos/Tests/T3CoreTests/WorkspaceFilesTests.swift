@@ -93,3 +93,45 @@ struct WorkspaceFilesTests {
     #expect(try String(contentsOf: repository.file, encoding: .utf8) == "invalid recovery")
   }
 }
+
+@Test func undoDuringAnUncertainSaveSurvivesRestart() throws {
+  let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+  defer { try? FileManager.default.removeItem(at: directory) }
+  let repository = WorkspaceDraftRepository(directory: directory)
+  let thread = try ThreadSummary(
+    .object([
+      "id": .string("thread"), "projectId": .string("project"), "title": .string("Test"),
+    ]))
+  let location = WorkspaceLocation(
+    environment: "server", thread: thread,
+    project: .object(["workspaceRoot": .string("/workspace")]))!
+  let id = WorkspaceFileID(location: location, path: "file.txt")
+  func document(_ text: String) throws -> WorkspaceFileDocument {
+    try WorkspaceFileDocument(
+      .object([
+        "relativePath": .string("file.txt"), "contents": .string(text),
+        "byteLength": .number(Double(text.utf8.count)), "truncated": .bool(false),
+      ]))
+  }
+  var local = try document("original")
+  local.contents = "first edit"
+  local.recordSaveAttempt("first edit")
+  local.contents = "original"
+  #expect(!local.isDirty && local.requiresRecovery)
+  try repository.save([id: local])
+  var recovered = try #require(repository.load()[id])
+  try recovered.validateSave(against: document("first edit"))
+  #expect(recovered.contents == "original")
+  #expect(throws: T3Error.self) {
+    try recovered.validateSave(against: document("another client's edit"))
+  }
+  recovered.acknowledgeSave("first edit")
+  recovered.recordSaveAttempt("original")
+  try repository.save([id: recovered])
+  recovered = try #require(repository.load()[id])
+  try recovered.validateSave(against: document("original"))
+  recovered.acknowledgeSave("original")
+  #expect(!recovered.requiresRecovery)
+  try repository.save([id: recovered])
+  #expect(try repository.load().isEmpty)
+}

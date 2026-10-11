@@ -21,6 +21,12 @@ enum ParitySmoke {
       Task { await connection.close() }
     }
     try await connection.open()
+    if let threadID = Arguments.value("--workspace-resume-thread") {
+      try await workspaceProvider(
+        settings: settings, connection: connection, threadID: threadID,
+        projectID: project, sendPrompt: false)
+      return
+    }
     if let threadID = Arguments.value("--workspace-thread") {
       try await workspaceFiles(
         settings: settings, connection: connection, threadID: threadID, projectID: project)
@@ -1138,69 +1144,104 @@ enum ParitySmoke {
       throw T3Error("Read changed Unicode or CRLF bytes.")
     }
     let firstEdit = originalContents + "First edit\n"
-    let secondEdit = firstEdit + "Typed while saving\n"
+    files.edit(originalContents + "temporary typing")
     files.edit(firstEdit)
-    guard files.flush() else { throw T3Error("Could not save recovery data.") }
+    try await waitForFiles(files) { !files.pendingSave && files.document?.original == firstEdit }
+    guard try await store.readWorkspaceFile(path, at: location).contents == firstEdit else {
+      throw T3Error("Debounced autosave did not persist the latest bytes.")
+    }
+    let switchedEdit = firstEdit + "Flush when changing files\n"
+    files.edit(switchedEdit)
     files.open(folder + "/.gitignore")
     try await waitForFiles(files) {
-      !files.loadingFile && files.document?.path == folder + "/.gitignore"
+      !files.loadingFile && files.saving.isEmpty && files.drafts.isEmpty
     }
-    guard files.drafts.count == 1 else { throw T3Error("Switching files discarded edits.") }
+    guard try await store.readWorkspaceFile(path, at: location).contents == switchedEdit else {
+      throw T3Error("Switching files did not flush the debounce window.")
+    }
+    files.open(path)
+    try await waitForFiles(files) { !files.loadingFile && files.document?.path == path }
+    let recoveryEdit = switchedEdit + "Recover after a disconnected write\n"
+    files.edit(recoveryEdit)
+    store.disconnect()
+    files.refreshContext()
+    guard await files.finishSaving() else { throw T3Error("Could not persist disconnected edits.") }
+    store.connect(settings, selecting: threadID)
+    try await waitForStore(store) { store.canEditThread }
     let restored = WorkspaceFiles(
       store: store, directory: directory.appendingPathComponent("files"))
     restored.refreshContext()
     restored.open(path)
-    guard restored.document?.contents == firstEdit, restored.document?.isDirty == true else {
-      throw T3Error("Restart did not recover unsaved file content.")
+    guard restored.document?.contents == recoveryEdit, restored.document?.requiresRecovery == true
+    else {
+      throw T3Error("Restart did not recover disconnected file edits.")
     }
+    let secondEdit = recoveryEdit + "Typed while saving\n"
     var editedDuringSave = false
+    var sawIntermediateConfirmation = false
     restored.onChange = {
       if !restored.saving.isEmpty && !editedDuringSave {
         editedDuringSave = true
         restored.edit(secondEdit)
       }
+      if restored.document?.original == recoveryEdit && restored.document?.contents == secondEdit {
+        sawIntermediateConfirmation = true
+      }
     }
     try await restored.save()
     restored.onChange = nil
-    guard editedDuringSave, restored.document?.original == firstEdit,
-      restored.document?.contents == secondEdit, restored.document?.isDirty == true
+    guard editedDuringSave, sawIntermediateConfirmation, restored.document?.contents == secondEdit,
+      !restored.pendingSave,
+      try await store.readWorkspaceFile(path, at: location).contents == secondEdit
     else {
-      throw T3Error("A completed save replaced newer typing.")
+      throw T3Error("Flushing lost or failed to serialize edits made during a write.")
     }
-    try await restored.save()
-    let saved = try await store.readWorkspaceFile(path, at: location)
-    guard saved.contents == secondEdit, restored.document?.isDirty == false else {
-      throw T3Error("Saving changed bytes or left the confirmed version dirty.")
-    }
-    restored.edit(secondEdit + "local conflicting edit\n")
     let remoteEdit = secondEdit + "agent edit\n"
     try await write(path, remoteEdit)
+    restored.edit(secondEdit + "local conflicting edit\n")
+    restored.receiveWorkspaceMutation("conflicting-fixture-mutation")
     var rejected = false
     do { try await restored.save() } catch {
       rejected = error.localizedDescription.contains("changed on the server")
     }
     let preserved = try await store.readWorkspaceFile(path, at: location)
     guard rejected, restored.document?.isDirty == true, preserved.contents == remoteEdit else {
-      throw T3Error("A conflicting edit overwrote the server file or lost the local draft.")
+      throw T3Error("A conflict or pending mutation replaced unsaved edits.")
     }
     restored.open(path, reload: true)
     try await waitForFiles(restored) {
       !restored.loadingFile && restored.document?.contents == remoteEdit
     }
-    let retriedContents = remoteEdit + "accepted before reply lost\n"
+    let refreshed = remoteEdit + "refresh after a workspace mutation\n"
+    try await write(path, refreshed)
+    restored.receiveWorkspaceMutation("clean-fixture-mutation")
+    try await waitForFiles(restored) {
+      !restored.loadingFile && restored.document?.contents == refreshed
+    }
+    let retriedContents = refreshed + "accepted before reply lost\n"
     restored.edit(retriedContents)
     try await write(path, retriedContents)
     store.disconnect()
     restored.refreshContext()
     guard !restored.canSave else { throw T3Error("Disconnected editor could save.") }
+    guard await restored.finishSaving() else {
+      throw T3Error("Could not preserve an uncertain save.")
+    }
     store.connect(settings, selecting: threadID)
     try await waitForStore(store) { store.canEditThread }
     restored.refreshContext()
     restored.open(path)
     try await restored.save()
-    guard restored.document?.isDirty == false else {
-      throw T3Error("Retry did not recognize the accepted content.")
+    guard !restored.pendingSave else { throw T3Error("Retry did not recognize accepted content.") }
+    let closingEdit = retriedContents + "Close before debounce expires\n"
+    restored.edit(closingEdit)
+    restored.closeEditor()
+    guard await restored.finishSaving(),
+      try await store.readWorkspaceFile(path, at: location).contents == closingEdit
+    else {
+      throw T3Error("Closing did not finish the latest write.")
     }
+    restored.refreshContext()
     let large = folder + "/large.txt"
     try await write(large, String(repeating: "x", count: 1_048_577))
     restored.open(large)
@@ -1221,9 +1262,73 @@ enum ParitySmoke {
     }
     restored.open(path)
     try await waitForFiles(restored) { !restored.loadingFile && restored.document?.path == path }
-    guard restored.document?.contents == retriedContents else {
-      throw T3Error("Reconnect lost saved file bytes.")
+    guard restored.document?.contents == closingEdit else {
+      throw T3Error("Closing lost saved file bytes.")
     }
+    var undoneDuringWrite = false
+    restored.onChange = {
+      if !restored.saving.isEmpty && !undoneDuringWrite {
+        undoneDuringWrite = true
+        restored.edit(closingEdit)
+      }
+    }
+    restored.edit(closingEdit + "temporary edit to undo")
+    try await restored.save()
+    restored.onChange = nil
+    guard undoneDuringWrite, !restored.pendingSave,
+      try await store.readWorkspaceFile(path, at: location).contents == closingEdit
+    else {
+      throw T3Error("Undo during an in-flight write did not restore the original server content.")
+    }
+    let alternateRoot = location.root + "/" + folder + "/alternate"
+    try await write(folder + "/alternate/.keep", "isolated workspace fixture\n")
+    let alternateID = UUID().uuidString
+    let alternate = try ThreadSummary(
+      .object([
+        "id": .string(alternateID), "projectId": .string(projectID),
+        "title": .string("Native workspace switch verification"),
+        "modelSelection": store.selectedThread?.model ?? .null,
+        "worktreePath": .string(alternateRoot), "runtimeMode": .string("approval-required"),
+      ]))
+    _ = try await connection.call(
+      "orchestration.dispatchCommand",
+      payload:
+        Commands.newThread(
+          template: alternate, id: alternateID,
+          title: "Native workspace switch verification", inheritWorkspace: true))
+    try await waitForStore(store) { store.shell.threads[alternateID] != nil }
+    let originalAccess = try store.workspaceFileAccess(at: location)
+    let scopedEdit = closingEdit + "Saved while navigating to another workspace\n"
+    restored.edit(scopedEdit)
+    store.select(alternateID)
+    restored.refreshContext()
+    try await waitForStore(store) { store.canEditThread && store.selectedID == alternateID }
+    guard await restored.finishSaving(),
+      try await originalAccess.read(path).contents == scopedEdit,
+      let alternateLocation = store.workspaceLocation, alternateLocation.root == alternateRoot
+    else {
+      throw T3Error("Navigating workspaces lost the pending save or its original root.")
+    }
+    var missingInOtherWorkspace = false
+    do { _ = try await store.readWorkspaceFile(path, at: alternateLocation) } catch {
+      missingInOtherWorkspace = (error as? T3Error)?.remoteCode == "ProjectReadFileError"
+    }
+    guard missingInOtherWorkspace else {
+      throw T3Error("A delayed save reached the other workspace.")
+    }
+    if CommandLine.arguments.contains("--workspace-provider-smoke") {
+      _ = try await store.workspaceCall(
+        "projects.writeFile", at: alternateLocation,
+        fields: [
+          "relativePath": .string("observed.txt"), "contents": .string("Before provider change\n"),
+        ])
+      try await workspaceProvider(
+        settings: settings, connection: connection, threadID: alternateID,
+        projectID: projectID, sendPrompt: true)
+    }
+    store.select(threadID)
+    try await waitForStore(store) { store.canEditThread && store.selectedID == threadID }
+    restored.refreshContext()
     let final = try await connection.call(
       "orchestration.getThreadProjection",
       payload: .object(["threadId": .string(threadID)]))
@@ -1231,17 +1336,97 @@ enum ParitySmoke {
       throw T3Error("Workspace edits changed inference state.")
     }
     print(
-      "PASS: lazy/ignored folder listing, path search, exact UTF-8/CRLF reads and saves, file switching, private draft recovery, typing during save, conflict preservation, reconnect/lost-reply retry, truncated/binary read-only handling, no inference; fixture \(folder)."
+      "PASS: lazy/ignored folder listing, path search, 500ms autosave, exact UTF-8/CRLF, switch/close flush, disconnected draft recovery, serialized typing and undo during save, captured workspace across navigation, conflict and pending-refresh preservation, mutation-triggered refresh with injected tokens, lost-reply retry, truncated/binary handling, no inference in source thread; fixture \(folder), alternate thread \(alternateID)."
+    )
+  }
+
+  @MainActor private static func workspaceProvider(
+    settings: ConnectionSettings, connection: RPCConnection, threadID: String,
+    projectID: String, sendPrompt: Bool
+  ) async throws {
+    FileHandle.standardOutput.write(Data("Workspace provider thread: \(threadID)\n".utf8))
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "t3-file-provider-" + UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let store = ClientStore(draftDirectory: directory.appendingPathComponent("chat"))
+    store.connect(settings, selecting: threadID)
+    defer { store.disconnect() }
+    try await waitForStore(store) { store.canEditThread }
+    guard store.selectedThread?.projectID == projectID,
+      store.selectedThread?.title == "Native workspace switch verification",
+      let root = store.workspaceLocation?.root, root.contains("/native-files-"),
+      root.hasSuffix("/alternate")
+    else {
+      throw T3Error("Provider workspace verification requires its isolated switch-test thread.")
+    }
+    let files = WorkspaceFiles(store: store, directory: directory.appendingPathComponent("files"))
+    files.refreshContext()
+    files.open("observed.txt")
+    try await waitForFiles(files) { !files.loadingFile && files.document != nil }
+    let initialMutation = store.thread?.workspaceMutationToken
+    var approved: Set<String> = []
+    var unexpectedApproval = false
+    let script = #"printf 'NATIVE_AUTOSAVE_REFRESH\n' > observed.txt"#
+    let wrappedScript = #"printf 'NATIVE_AUTOSAVE_REFRESH\\n' > observed.txt"#
+    let allowed = Set([
+      script, #"/bin/zsh -lc ""# + wrappedScript + #"""#,
+      #"/bin/bash -lc ""# + wrappedScript + #"""#,
+    ])
+    func update() {
+      files.refreshContext()
+      for request in store.thread?.pendingRequests ?? [] where !approved.contains(request.id) {
+        guard request.kind == "command", request.canRespond, allowed.contains(request.detail),
+          request.options.contains(where: { $0["decision"].string == "accept" })
+        else {
+          unexpectedApproval = true
+          continue
+        }
+        approved.insert(request.id)
+        store.respond(request, decision: "accept")
+      }
+      files.onChange?()
+    }
+    store.onChange = { update() }
+    defer { store.onChange = nil }
+    update()
+    if sendPrompt {
+      _ = try await connection.call(
+        "orchestration.dispatchCommand",
+        payload: Commands.message(
+          threadID: threadID,
+          text:
+            "Sandbox verification: use a shell command to replace observed.txt in the current workspace with exactly NATIVE_AUTOSAVE_REFRESH followed by one newline. Do not modify any other file. Then reply NATIVE_AUTOSAVE_REFRESH_DONE.",
+          commandID: UUID().uuidString, messageID: UUID().uuidString))
+    }
+    try await waitForFiles(files, seconds: 90) {
+      unexpectedApproval
+        || (files.document?.contents == "NATIVE_AUTOSAVE_REFRESH\n"
+          && store.execution.activeRunID == nil
+          && store.thread?.rows.contains(where: {
+            $0.kind == "assistant_message" && !$0.streaming
+              && $0.text.contains("NATIVE_AUTOSAVE_REFRESH_DONE")
+          }) == true)
+    }
+    guard !unexpectedApproval else {
+      throw T3Error("Workspace test stopped at an unexpected approval request.")
+    }
+    guard store.thread?.workspaceMutationToken != initialMutation,
+      store.thread?.pendingRequests.isEmpty == true
+    else {
+      throw T3Error("Provider refresh had no settled mutation or left a pending request.")
+    }
+    print(
+      "PASS: a real provider command changed the open file; its settled tool/checkpoint events automatically refreshed the native document. Approved \(approved.count) exact fixture command(s); no active or pending test run remains."
     )
   }
 
   @MainActor private static func waitForFiles(
-    _ files: WorkspaceFiles, until predicate: @escaping @MainActor () -> Bool
+    _ files: WorkspaceFiles, seconds: Int = 15, until predicate: @escaping @MainActor () -> Bool
   ) async throws {
     let (stream, continuation) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
     files.onChange = { continuation.yield(()) }
     let timeout = Task {
-      try await Task.sleep(for: .seconds(15))
+      try await Task.sleep(for: .seconds(seconds))
       continuation.finish()
     }
     defer {

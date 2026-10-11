@@ -137,7 +137,9 @@ final class WorkspacePanel: NSViewController, NSOutlineViewDataSource,
     refresh()
   }
 
-  func refreshContext() { files.refreshContext() }
+  func refreshContext(active: Bool = true) { files.refreshContext(active: active) }
+  func closeEditor() { files.closeEditor() }
+  func finishSaving() async -> Bool { await files.finishSaving() }
   func focusSearch() { view.window?.makeFirstResponder(search) }
   func findInFile() {
     view.window?.makeFirstResponder(editor)
@@ -200,11 +202,12 @@ final class WorkspacePanel: NSViewController, NSOutlineViewDataSource,
           : NSRange(location: min(selection.location, length), length: 0))
       if changedFile { editor.scrollRangeToVisible(NSRange(location: 0, length: 0)) }
     }
-    editor.isEditable = document?.canEdit == true && !files.loadingFile
+    editor.isEditable = files.canEditDocument
     path.stringValue =
-      (files.selected?.path ?? "Select a file") + (document?.isDirty == true ? " •" : "")
+      (files.selected?.path ?? "Select a file") + (files.pendingSave ? " •" : "")
     path.toolTip = files.selected.map { $0.root + "/" + $0.path }
     saveButton.isEnabled = files.canSave
+    saveButton.title = files.selectedSaveError == nil ? "Save  ⌘S" : "Retry  ⌘S"
     reloadButton.isEnabled =
       document != nil && !files.loadingFile
       && files.selected.map { !files.saving.contains($0) } == true
@@ -223,6 +226,8 @@ final class WorkspacePanel: NSViewController, NSOutlineViewDataSource,
     draftsButton.isHidden = draftIDs.isEmpty
     if let error = files.storageError {
       info.stringValue = "Recovery could not be saved: " + error
+    } else if let error = files.selectedSaveError {
+      info.stringValue = error
     } else if files.loadingFile {
       info.stringValue = "Loading file…"
     } else if !files.message.isEmpty {
@@ -231,8 +236,8 @@ final class WorkspacePanel: NSViewController, NSOutlineViewDataSource,
       info.stringValue = "Truncated preview • \(document!.byteLength) bytes on disk • read-only"
     } else if document?.canEdit == false {
       info.stringValue = "Host file • read-only"
-    } else if document?.isDirty == true {
-      info.stringValue = "Unsaved changes • Save to write to the workspace"
+    } else if files.pendingSave {
+      info.stringValue = files.isConnected ? "Saving changes…" : "Saved locally • Reconnect to sync"
     } else if files.loadingTree {
       info.stringValue = "Loading folder…"
     } else {
@@ -335,7 +340,7 @@ final class WorkspacePanel: NSViewController, NSOutlineViewDataSource,
   }
   @objc private func reloadFile() {
     guard let path = files.selected?.path else { return }
-    if files.document?.isDirty == true {
+    if files.pendingSave {
       let alert = NSAlert()
       alert.messageText = "Discard unsaved changes to this file?"
       alert.informativeText = "Reload replaces your local edits with the current server file."

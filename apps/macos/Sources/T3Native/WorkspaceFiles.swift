@@ -4,12 +4,25 @@ import T3Core
 @MainActor final class WorkspaceFiles {
   private let store: ClientStore
   private let repository: WorkspaceDraftRepository
+  private let writeQueue = WorkspaceWriteQueue()
   private var documents: [WorkspaceFileID: WorkspaceFileDocument]
   private var context = UUID()
   private var directoryTask: Task<Void, Never>?
   private var fileTask: Task<Void, Never>?
+  private var readingFile = false
   private var searchTask: Task<Void, Never>?
   private var persistTask: Task<Void, Never>?
+  private var saveSchedules: [WorkspaceFileID: FileSaveSchedule] = [:]
+  private var saveTimers: [WorkspaceFileID: Task<Void, Never>] = [:]
+  private var writes: [WorkspaceFileID: Task<Void, Never>] = [:]
+  private var saveAccess: [WorkspaceFileID: WorkspaceFileAccess] = [:]
+  private var finishSignals: [UUID: AsyncStream<Void>.Continuation] = [:]
+  private(set) var saveErrors: [WorkspaceFileID: String] = [:]
+  private var active = true
+  private var failedReads: Set<WorkspaceFileID> = []
+  private var mutationToken: String?
+  private var refreshedTreeToken: String?
+  private var refreshedFileTokens: [WorkspaceFileID: String] = [:]
   private var pendingDirectories: [String] = []
   private var requestedDirectories: Set<String> = []
   private var connected = false
@@ -27,15 +40,24 @@ import T3Core
   private(set) var storageError: String?
   var onChange: (() -> Void)?
   var document: WorkspaceFileDocument? { selected.flatMap { documents[$0] } }
+  var canEditDocument: Bool {
+    document?.canEdit == true && !loadingFile && selected.map { !failedReads.contains($0) } == true
+  }
+  var pendingSave: Bool {
+    document?.requiresRecovery == true
+      || selected.map { saveSchedules[$0]?.pending == true } == true
+  }
+  var isConnected: Bool { connected }
+  var selectedSaveError: String? { selected.flatMap { saveErrors[$0] } }
   var isSearching: Bool { !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
   var canSave: Bool {
-    connected && !loadingFile && document?.isDirty == true && document?.canEdit == true
+    connected && !loadingFile && pendingSave && document?.canEdit == true
       && selected.map { !saving.contains($0) } == true
   }
   var drafts: [WorkspaceFileID] {
     documents.keys.filter {
       $0.environment == location?.environment && $0.root == location?.root
-        && documents[$0]?.isDirty == true
+        && (documents[$0]?.requiresRecovery == true || saveSchedules[$0]?.pending == true)
     }.sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
   }
 
@@ -52,15 +74,25 @@ import T3Core
     }
   }
 
-  func refreshContext() {
+  func refreshContext(active: Bool = true) {
+    self.active = active
     let next = store.workspaceLocation
     let connectionChanged = connected != store.ready
     let reconnect = !connected && store.ready
     connected = store.ready
     guard next != location else {
-      if reconnect { refresh() } else if connectionChanged { onChange?() }
+      if reconnect {
+        refresh()
+        if let selected, let location, saveSchedules[selected]?.pending == true {
+          saveAccess[selected] = try? store.workspaceFileAccess(at: location)
+        }
+      } else if connectionChanged {
+        onChange?()
+      }
+      receiveWorkspaceMutation(store.thread?.workspaceMutationToken)
       return
     }
+    if let selected { requestSave(selected) }
     _ = flush()
     context = UUID()
     directoryTask?.cancel()
@@ -78,10 +110,15 @@ import T3Core
     requestedDirectories = []
     loadingTree = false
     loadingFile = false
+    readingFile = false
     message = ""
+    mutationToken = nil
+    refreshedTreeToken = nil
+    refreshedFileTokens = [:]
     treeRevision += 1
     pruneCleanDocuments()
-    if next != nil && connected { loadDirectory("") }
+    if next != nil && connected && active { loadDirectory("") }
+    receiveWorkspaceMutation(store.thread?.workspaceMutationToken)
     onChange?()
   }
 
@@ -136,7 +173,7 @@ import T3Core
   }
 
   func refresh() {
-    guard location != nil, connected else { return }
+    guard location != nil, connected, active else { return }
     // Reload visited folders sequentially; never recursively crawl a repository.
     let paths = Set(directories.keys).union([""])
     directories = [:]
@@ -181,43 +218,72 @@ import T3Core
     }
   }
 
-  func open(_ path: String, reload: Bool = false) {
+  func open(_ path: String, reload: Bool = false, background: Bool = false) {
     guard let location else { return }
     fileTask?.cancel()
+    readingFile = false
     let id = WorkspaceFileID(location: location, path: path)
+    if let selected, selected != id { requestSave(selected) }
+    if reload && !saving.contains(id) {
+      saveTimers.removeValue(forKey: id)?.cancel()
+      saveSchedules.removeValue(forKey: id)
+      saveErrors.removeValue(forKey: id)
+    }
     selected = id
+    if !saving.contains(id) { saveAccess[id] = try? store.workspaceFileAccess(at: location) }
     message = ""
-    if !reload, documents[id]?.isDirty == true {
+    if !reload, documents[id]?.requiresRecovery == true || saveSchedules[id]?.pending == true {
       loadingFile = false
       onChange?()
       return
     }
     let context = context
-    loadingFile = true
+    let requestedMutation = mutationToken
+    let readRevision = saveSchedules[id]?.revision ?? 0
+    loadingFile = !background
+    readingFile = true
     onChange?()
     fileTask = Task { [weak self] in
       guard let self else { return }
       do {
         let document = try await store.readWorkspaceFile(path, at: location)
         guard !Task.isCancelled, self.context == context, selected == id else { return }
-        documents[id] = document
-        pruneCleanDocuments()
-        _ = flush()
+        if !background
+          || ((saveSchedules[id]?.revision ?? 0) == readRevision
+            && documents[id]?.requiresRecovery != true)
+        {
+          documents[id] = document
+          if let requestedMutation { refreshedFileTokens[id] = requestedMutation }
+          failedReads.remove(id)
+          pruneCleanDocuments()
+          _ = flush()
+        }
       } catch {
         guard !Task.isCancelled, self.context == context, selected == id else { return }
+        if let requestedMutation { refreshedFileTokens[id] = requestedMutation }
+        if documents[id]?.requiresRecovery != true { failedReads.insert(id) }
         message = error.localizedDescription
       }
+      readingFile = false
       loadingFile = false
+      applyPendingMutation()
       onChange?()
     }
   }
 
   func edit(_ contents: String) {
-    guard let selected, var document = documents[selected], document.canEdit, !loadingFile else {
+    guard let selected, var document = documents[selected], canEditDocument else {
       return
     }
     document.contents = contents
     documents[selected] = document
+    saveErrors.removeValue(forKey: selected)
+    saveSchedules[selected, default: FileSaveSchedule()].change(
+      at: ProcessInfo.processInfo.systemUptime)
+    if let location, !saving.contains(selected) {
+      saveAccess[selected] = try? store.workspaceFileAccess(at: location)
+    }
+    scheduleSave(selected)
     message = ""
     persistTask?.cancel()
     persistTask = Task { [weak self] in
@@ -230,28 +296,146 @@ import T3Core
   }
 
   func save() async throws {
-    guard canSave, let selected, let document, let location else { return }
-    // Persist recovery content before sending a write whose reply may be lost.
-    guard flush() else { throw T3Error(storageError ?? "The file draft could not be saved.") }
-    saving.insert(selected)
-    onChange?()
+    guard let selected, let document, document.canEdit, connected, !loadingFile else { return }
+    if saveSchedules[selected]?.pending != true && document.requiresRecovery {
+      saveSchedules[selected, default: FileSaveSchedule()].change(
+        at: ProcessInfo.processInfo.systemUptime)
+    }
+    if let location, !saving.contains(selected) {
+      saveAccess[selected] = try store.workspaceFileAccess(at: location)
+    }
+    requestSave(selected)
+    await waitForWrites(selected)
+    if let error = saveErrors[selected] { throw T3Error(error) }
+  }
+
+  func closeEditor() {
+    active = false
+    if let selected { requestSave(selected) }
+    _ = flush()
+  }
+
+  func finishSaving() async -> Bool {
+    active = false
+    let id = UUID()
+    let (events, signal) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+    finishSignals[id] = signal
+    for id in Array(saveSchedules.keys) { requestSave(id) }
+    let timeout = Task {
+      do { try await Task.sleep(for: .seconds(5)) } catch { return }
+      signal.finish()
+    }
     defer {
-      saving.remove(selected)
-      onChange?()
+      timeout.cancel()
+      signal.finish()
+      finishSignals.removeValue(forKey: id)
     }
-    do {
-      try await store.saveWorkspaceFile(document, at: location)
-      documents[selected]?.acknowledgeSave(document.contents)
-      guard flush() else { throw T3Error(storageError ?? "The file draft could not be saved.") }
-      if self.selected == selected {
-        message =
-          documents[selected]?.isDirty == true
-          ? "Previous edits saved • New changes unsaved" : "Saved"
-      }
-    } catch {
-      if self.selected == selected { message = error.localizedDescription }
-      throw error
+    signal.yield(())
+    for await _ in events where writes.isEmpty { break }
+    // A slow or disconnected host must not prevent quitting. Uncertain writes remain recoverable.
+    return flush()
+  }
+
+  private func waitForWrites(_ id: WorkspaceFileID) async {
+    while let write = writes[id] { await write.value }
+  }
+
+  private func requestSave(_ id: WorkspaceFileID) {
+    saveTimers.removeValue(forKey: id)?.cancel()
+    saveSchedules[id]?.flush(at: ProcessInfo.processInfo.systemUptime)
+    startSave(id)
+  }
+
+  private func scheduleSave(_ id: WorkspaceFileID) {
+    saveTimers.removeValue(forKey: id)?.cancel()
+    guard !saving.contains(id), let deadline = saveSchedules[id]?.deadline else { return }
+    let delay = max(0, deadline - ProcessInfo.processInfo.systemUptime)
+    saveTimers[id] = Task { [weak self] in
+      do { try await Task.sleep(for: .seconds(delay)) } catch { return }
+      guard let self else { return }
+      saveTimers.removeValue(forKey: id)
+      startSave(id)
     }
+  }
+
+  private func startSave(_ id: WorkspaceFileID) {
+    guard writes[id] == nil, let document = documents[id], document.canEdit,
+      let revision = saveSchedules[id]?.begin(at: ProcessInfo.processInfo.systemUptime)
+    else { return }
+    guard let access = saveAccess[id], flush() else {
+      completeSave(
+        id, revision: revision, contents: document.contents,
+        error: storageError ?? "Connect and retry saving this file.")
+      return
+    }
+    saving.insert(id)
+    // Install the task before notifying observers, which may edit or navigate synchronously.
+    writes[id] = Task { [weak self] in
+      guard let self else { return }
+      var failure: String?
+      do {
+        try await writeQueue.save(document, access: access) { [weak self] baseline in
+          guard let self else { throw T3Error("The file editor closed before saving.") }
+          try await self.prepareWrite(id, baseline: baseline, contents: document.contents)
+        }
+      } catch { failure = error.localizedDescription }
+      writes.removeValue(forKey: id)
+      completeSave(id, revision: revision, contents: document.contents, error: failure)
+    }
+    onChange?()
+  }
+
+  private func prepareWrite(_ id: WorkspaceFileID, baseline: String, contents: String) throws {
+    documents[id]?.acknowledgeSave(baseline)
+    documents[id]?.recordSaveAttempt(contents)
+    guard flush() else { throw T3Error(storageError ?? "Recovery could not be saved.") }
+  }
+
+  private func completeSave(_ id: WorkspaceFileID, revision: Int, contents: String, error: String?)
+  {
+    saving.remove(id)
+    if let error {
+      saveErrors[id] = error
+    } else {
+      documents[id]?.acknowledgeSave(contents)
+      saveErrors.removeValue(forKey: id)
+    }
+    saveSchedules[id]?.complete(
+      revision, succeeded: error == nil, at: ProcessInfo.processInfo.systemUptime)
+    _ = flush()
+    if selected == id {
+      message = error ?? (documents[id]?.isDirty == true ? "Saving changes…" : "Saved")
+    }
+    if let deadline = saveSchedules[id]?.deadline, deadline <= ProcessInfo.processInfo.systemUptime
+    {
+      startSave(id)
+    } else {
+      scheduleSave(id)
+    }
+    pruneCleanDocuments()
+    applyPendingMutation()
+    for signal in finishSignals.values { signal.yield(()) }
+    onChange?()
+  }
+
+  func receiveWorkspaceMutation(_ token: String?) {
+    mutationToken = token
+    applyPendingMutation()
+  }
+
+  private func applyPendingMutation() {
+    guard active, connected, location == store.workspaceLocation else { return }
+    if directories.isEmpty && !loadingTree { loadDirectory("") }
+    guard let token = mutationToken else { return }
+    if refreshedTreeToken != token {
+      refreshedTreeToken = token
+      refresh()
+    }
+    guard let selected, let document, !document.requiresRecovery,
+      saveSchedules[selected]?.pending != true, !saving.contains(selected), !readingFile,
+      refreshedFileTokens[selected] != token
+    else { return }
+    open(selected.path, background: true)
   }
 
   @discardableResult func flush() -> Bool {
@@ -273,7 +457,29 @@ import T3Core
 
   private func pruneCleanDocuments() {
     documents = documents.filter {
-      $0.key == selected || $0.value.isDirty || saving.contains($0.key)
+      $0.key == selected || $0.value.requiresRecovery || saveSchedules[$0.key]?.pending == true
+        || saving.contains($0.key)
     }
+    saveAccess = saveAccess.filter { documents[$0.key] != nil }
+    saveSchedules = saveSchedules.filter { documents[$0.key] != nil }
+    saveErrors = saveErrors.filter { documents[$0.key] != nil }
+    failedReads = failedReads.filter { documents[$0] != nil }
+    refreshedFileTokens = refreshedFileTokens.filter { documents[$0.key] != nil }
+  }
+}
+
+private actor WorkspaceWriteQueue {
+  private var running = 0
+  private var waiting: [CheckedContinuation<Void, Never>] = []
+
+  func save(
+    _ document: WorkspaceFileDocument, access: WorkspaceFileAccess,
+    beforeWrite: @Sendable (String) async throws -> Void
+  ) async throws {
+    if running == 4 { await withCheckedContinuation { waiting.append($0) } } else { running += 1 }
+    defer {
+      if waiting.isEmpty { running -= 1 } else { waiting.removeFirst().resume() }
+    }
+    try await access.save(document, beforeWrite: beforeWrite)
   }
 }

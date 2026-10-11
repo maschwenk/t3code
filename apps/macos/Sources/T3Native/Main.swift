@@ -4,6 +4,7 @@ import T3Core
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate {
   private let store = ClientStore()
   private var controller: ChatWindow?
+  private var finishingTermination = false
 
   func applicationDidFinishLaunching(_ notification: Notification) {
     let controller = ChatWindow(store: store)
@@ -24,18 +25,29 @@ import T3Core
 
   func applicationWillTerminate(_ notification: Notification) { store.disconnect() }
   func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-    let messagesSaved = store.saveDraftsBeforeExit()
-    let filesSaved = controller?.saveWorkspaceDraftsBeforeExit() ?? true
-    guard !messagesSaved || !filesSaved else { return .terminateNow }
-    let alert = NSAlert()
-    alert.messageText = "Drafts could not be saved"
-    alert.informativeText =
-      controller?.workspaceStorageError ?? store.storageError
-      ?? "Keep the app open to preserve your unsent drafts."
-    alert.addButton(withTitle: "Keep open")
-    alert.addButton(withTitle: "Quit without saving")
-    return alert.runModal() == .alertSecondButtonReturn ? .terminateNow : .terminateCancel
+    guard !finishingTermination else { return .terminateLater }
+    finishingTermination = true
+    Task {
+      let filesSaved = await controller?.finishWorkspaceSaving() ?? true
+      let messagesSaved = store.saveDraftsBeforeExit()
+      var shouldQuit = messagesSaved && filesSaved
+      if !shouldQuit {
+        let alert = NSAlert()
+        alert.messageText = "Drafts could not be saved"
+        alert.informativeText =
+          controller?.workspaceStorageError ?? store.storageError
+          ?? "Keep the app open to preserve your unsent drafts."
+        alert.addButton(withTitle: "Keep open")
+        alert.addButton(withTitle: "Quit without saving")
+        shouldQuit = alert.runModal() == .alertSecondButtonReturn
+      }
+      finishingTermination = false
+      if !shouldQuit { controller?.showWindow(nil) }
+      sender.reply(toApplicationShouldTerminate: shouldQuit)
+    }
+    return .terminateLater
   }
+
   func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 }
 

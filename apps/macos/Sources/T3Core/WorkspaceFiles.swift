@@ -41,6 +41,8 @@ public struct WorkspaceFileDocument: Codable, Equatable, Sendable {
   public var contents: String
   public let byteLength: Int
   public let truncated: Bool
+  public private(set) var uncertainSaveContents: String?
+  public var requiresRecovery: Bool { isDirty || uncertainSaveContents != nil }
   public var isDirty: Bool { contents != original }
   public var canEdit: Bool {
     !truncated && !path.hasPrefix("/") && !path.split(separator: "/").contains("..")
@@ -58,12 +60,19 @@ public struct WorkspaceFileDocument: Codable, Equatable, Sendable {
     guard canEdit, latest.canEdit, latest.path == path else {
       throw T3Error("This preview is read-only. Open the complete workspace file to edit it.")
     }
-    guard latest.contents == original || latest.contents == contents else {
+    guard
+      latest.contents == original || latest.contents == contents
+        || latest.contents == uncertainSaveContents
+    else {
       throw T3Error("This file changed on the server. Copy your edits, then reload before saving.")
     }
   }
 
-  public mutating func acknowledgeSave(_ saved: String) { original = saved }
+  public mutating func recordSaveAttempt(_ contents: String) { uncertainSaveContents = contents }
+  public mutating func acknowledgeSave(_ saved: String) {
+    original = saved
+    if uncertainSaveContents == saved { uncertainSaveContents = nil }
+  }
 }
 
 public struct WorkspaceDraftRepository: Sendable {
@@ -78,7 +87,7 @@ public struct WorkspaceDraftRepository: Sendable {
     let directory = file.deletingLastPathComponent()
     try FileManager.default.createDirectory(
       at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-    let dirty = documents.filter { $0.value.isDirty && $0.value.canEdit }
+    let dirty = documents.filter { $0.value.requiresRecovery && $0.value.canEdit }
     try JSONEncoder().encode(dirty).write(to: file, options: [.atomic])
     try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
   }

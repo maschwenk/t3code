@@ -459,18 +459,16 @@ import T3Core
         "projects.readFile", at: location, fields: ["relativePath": .string(path)]))
   }
 
+  func workspaceFileAccess(at location: WorkspaceLocation) throws -> WorkspaceFileAccess {
+    guard ready, let connection else { throw T3Error("Connect to save workspace files.") }
+    guard workspaceLocation == location else { throw T3Error("The workspace changed.") }
+    return WorkspaceFileAccess(connection: connection, location: location)
+  }
+
   func saveWorkspaceFile(_ document: WorkspaceFileDocument, at location: WorkspaceLocation)
     async throws
   {
-    let latest = try await readWorkspaceFile(document.path, at: location)
-    try document.validateSave(against: latest)
-    // An acknowledged write may have lost its reply; retrying identical content is already done.
-    if latest.contents == document.contents { return }
-    _ = try await workspaceCall(
-      "projects.writeFile", at: location,
-      fields: [
-        "relativePath": .string(document.path), "contents": .string(document.contents),
-      ])
+    try await workspaceFileAccess(at: location).save(document)
   }
 
   var changingSettings: Bool { commandsInFlight.contains((selectedID ?? "") + ":settings") }

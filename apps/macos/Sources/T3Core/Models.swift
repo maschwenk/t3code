@@ -232,6 +232,9 @@ public struct ThreadState: Sendable {
   private var planTimes: [String: String] = [:]
   private var projectionUpdatedAt = ""
   public private(set) var latestProposedPlan: ProposedPlan?
+  public private(set) var workspaceMutationToken: String?
+  private var workspaceMutationItem: (id: String, position: Int)?
+  private var latestCheckpointTime: String?
   private var requests: [String: JSON] = [:]
   private var requestItems: [String: JSON] = [:]
   private var indices: [String: Int] = [:]
@@ -270,6 +273,12 @@ public struct ThreadState: Sendable {
         }
       }
       rows = next.sorted { $0.position < $1.position }
+      workspaceMutationItem = rows.last(where: Self.mayChangeWorkspace).map { ($0.id, $0.position) }
+      latestCheckpointTime =
+        projection["checkpoints"].array.last(where: {
+          $0["appRunOrdinal"].int != nil && $0["runId"].string != nil
+        })?["capturedAt"].string
+      updateWorkspaceMutationToken()
       execution = ThreadExecution(projection)
       projectionUpdatedAt = projection["updatedAt"].string ?? ""
       planTimes = Dictionary(
@@ -334,9 +343,28 @@ public struct ThreadState: Sendable {
           indices[row.id] = rows.count
           rows.append(row)
         }
+        if item["type"].string == "command_execution" || item["type"].string == "file_change",
+          let index = indices[key]
+        {
+          let row = rows[index]
+          if Self.mayChangeWorkspace(row), row.position >= (workspaceMutationItem?.position ?? -1) {
+            workspaceMutationItem = (row.id, row.position)
+          } else if row.id == workspaceMutationItem?.id && !Self.mayChangeWorkspace(row) {
+            workspaceMutationItem = rows.last(where: Self.mayChangeWorkspace).map {
+              ($0.id, $0.position)
+            }
+          }
+          updateWorkspaceMutationToken()
+        }
         if let id = item["requestId"].string {
           requestItems[id] = item
           try rebuildRequests()
+        }
+      } else if type == "checkpoint.captured" {
+        let checkpoint = event["payload"]
+        if checkpoint["appRunOrdinal"].int != nil, checkpoint["runId"].string != nil {
+          latestCheckpointTime = checkpoint["capturedAt"].string
+          updateWorkspaceMutationToken()
         }
       } else if type == "plan.updated" {
         let value = event["payload"]
@@ -372,6 +400,16 @@ public struct ThreadState: Sendable {
     return false
   }
 
+  private static func mayChangeWorkspace(_ row: TimelineRow) -> Bool {
+    (row.kind == "command_execution" || row.kind == "file_change")
+      && !["pending", "running", "waiting"].contains(row.item["status"].string ?? "")
+  }
+  private mutating func updateWorkspaceMutationToken() {
+    workspaceMutationToken =
+      workspaceMutationItem == nil && latestCheckpointTime == nil
+      ? nil : (workspaceMutationItem?.id ?? "") + "\u{0}" + (latestCheckpointTime ?? "")
+  }
+
   public mutating func prependHistory(_ page: JSON) throws {
     var older: [TimelineRow] = []
     for visible in page["items"].array {
@@ -380,6 +418,10 @@ public struct ThreadState: Sendable {
       if indices[row.id] == nil { older.append(row) }
     }
     rows = (older + rows).sorted { $0.position < $1.position }
+    if workspaceMutationItem == nil {
+      workspaceMutationItem = rows.last(where: Self.mayChangeWorkspace).map { ($0.id, $0.position) }
+      updateWorkspaceMutationToken()
+    }
     reindex()
     cursor = page["nextCursor"].string
     hasMore = page["hasMoreHistory"].bool

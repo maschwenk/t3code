@@ -64,13 +64,18 @@ navigation and Save controls.
 
 Open the thread’s Files panel from its header or ⌘⇧E. Folders load as you expand
 them, including ignored files; Search files also finds paths in unopened folders.
-Text files open in a native editor with ⌘F find and ⌘S Save. Unsaved edits survive
-file, thread, and server switches and app restarts; use Unsaved files to return to
-them. Save checks the current server contents for intervening changes. A conflict
-keeps your edits available to copy; Reload can discard them and load the server
-version. Truncated previews and absolute host paths are read-only. Binary previews,
-autosave, syntax coloring, rendered file previews, file context actions, and
-workspace content search remain incomplete.
+Text files open in a native editor with ⌘F find. Edits autosave after a brief pause;
+⌘S saves immediately or retries a failed save. Switching files, closing the panel,
+and quitting flush pending edits. If the server cannot finish a save during shutdown,
+the local draft remains recoverable. Unsaved changes survive file, thread, and server
+switches and app restarts; use Unsaved files to recover them. A delayed save keeps
+the original workspace even after navigation. Save checks for intervening server
+changes; conflicts retain your edits to copy or retry. Reload can discard them and
+load the server version. Completed agent commands, file changes, and checkpoints
+refresh visited folders and the open file without replacing unsaved text. Truncated
+previews and absolute host paths are read-only. Binary previews, syntax coloring,
+rendered file previews, file context actions, and workspace content search remain
+incomplete.
 
 The integrated browser, interactive terminal, full diff views,
 provider setup, and T3 Connect
@@ -192,7 +197,11 @@ an explicit choice to quit without saving.
 
 Use `--parity-smoke --workspace-thread THREAD_ID` with an existing isolated
 “Native plan verification” thread to check workspace files without inference.
-It creates a uniquely named fixture directory under that project, then checks lazy
-folder listing, ignored entries, path search, exact text saves, recovery after
-restart, concurrent typing, conflict handling, reconnect retry, and truncated and
-binary preview behavior. Fixture files remain available for UI verification.
+It creates uniquely named fixture files and a second thread with an isolated
+workspace, then checks lazy listing, ignored entries, path search, autosave, exact
+text bytes, recovery after restart, typing/undo during a write, navigation with a
+pending save, conflicts, reconnect retry, mutation refresh, and truncated/binary
+previews. Fixtures remain available for UI verification. Add
+`--workspace-provider-smoke` to also have the real provider change an open file
+and verify automatic refresh from its tool/checkpoint events. That option consumes
+one short provider turn in the newly created verification thread.

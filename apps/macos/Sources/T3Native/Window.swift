@@ -184,7 +184,10 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     workspaceItem.canCollapse = true
     workspaceItem.isCollapsed = true
     self.workspaceItem = workspaceItem
-    workspace.onClose = { [weak self] in self?.workspaceItem?.isCollapsed = true }
+    workspace.onClose = { [weak self] in
+      self?.workspace.closeEditor()
+      self?.workspaceItem?.isCollapsed = true
+    }
     splitController.addSplitViewItem(workspaceItem)
     window.contentViewController = splitController
     splitController.splitView.setPosition(285, ofDividerAt: 0)
@@ -417,6 +420,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
   @objc private func toggleWorkspace() {
     guard let workspaceItem else { return }
     workspaceItem.isCollapsed.toggle()
+    if workspaceItem.isCollapsed { workspace.closeEditor() }
     if !workspaceItem.isCollapsed {
       if let window, window.frame.width < 1220 {
         var frame = window.frame
@@ -429,7 +433,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
   }
   @objc private func saveWorkspaceFile() { workspace.saveFile() }
   @objc private func findWorkspaceFile() { workspace.findInFile() }
-  func saveWorkspaceDraftsBeforeExit() -> Bool { workspace.saveDraftsBeforeExit() }
+  func finishWorkspaceSaving() async -> Bool { await workspace.finishSaving() }
   var workspaceStorageError: String? { workspace.storageError }
 
   private func pin(_ child: NSView, to parent: NSView, inset: CGFloat, top: CGFloat) {
@@ -460,7 +464,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
   func refresh() {
     let anchor = scrollAnchor()
     sidebar.refresh()
-    if workspaceItem?.isCollapsed == false { workspace.refreshContext() }
+    workspace.refreshContext(active: workspaceItem?.isCollapsed == false)
     let selected = store.selectedThread
     heading.stringValue = selected?.title ?? "T3 Native"
     subtitle.stringValue =

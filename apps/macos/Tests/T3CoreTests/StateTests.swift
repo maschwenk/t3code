@@ -239,3 +239,50 @@ private func update(_ item: JSON, sequence: Int, type: String = "turn-item.updat
   #expect(local.rows[0].text == "new command")
   #expect(local.sequence == 11)
 }
+
+@Test func workspaceRefreshFollowsSettledFileToolsAndCheckpoints() throws {
+  func fileItem(_ id: String, status: String, type: String = "file_change") -> JSON {
+    .object([
+      "id": .string(id), "threadId": .string("thread"), "type": .string(type),
+      "status": .string(status),
+    ])
+  }
+  var state = ThreadState(id: "thread")
+  _ = try state.apply(
+    snapshot([
+      visible(fileItem("earlier", status: "completed"), position: 0),
+      visible(fileItem("later", status: "running", type: "command_execution"), position: 1),
+    ]))
+  let first = try #require(state.workspaceMutationToken)
+  _ = try state.apply(update(item("stream", text: "Streaming text"), sequence: 11))
+  #expect(state.workspaceMutationToken == first)
+  _ = try state.apply(
+    update(fileItem("later", status: "waiting", type: "command_execution"), sequence: 12))
+  #expect(state.workspaceMutationToken == first)
+  _ = try state.apply(
+    update(fileItem("later", status: "failed", type: "command_execution"), sequence: 13))
+  let second = try #require(state.workspaceMutationToken)
+  #expect(second != first)
+  _ = try state.apply(update(fileItem("earlier", status: "completed"), sequence: 14))
+  #expect(state.workspaceMutationToken == second)
+  let checkpoint: JSON = .object([
+    "id": .string("checkpoint"), "appRunOrdinal": .number(1),
+    "runId": .string("run"), "capturedAt": .string("2026-10-11T20:00:00Z"),
+  ])
+  _ = try state.apply(update(checkpoint, sequence: 15, type: "checkpoint.captured"))
+  let captured = state.workspaceMutationToken
+  #expect(captured != second)
+  _ = try state.apply(update(checkpoint, sequence: 16, type: "checkpoint.captured"))
+  #expect(state.workspaceMutationToken == captured)
+  _ = try state.apply(snapshot([], sequence: 20))
+  #expect(state.workspaceMutationToken == nil)
+  try state.prependHistory(
+    .object([
+      "items": .array([
+        visible(
+          fileItem("inherited", status: "completed"), position: 0, source: "parent", inherited: true
+        )
+      ])
+    ]))
+  #expect(state.workspaceMutationToken?.hasPrefix("parent:inherited") == true)
+}
