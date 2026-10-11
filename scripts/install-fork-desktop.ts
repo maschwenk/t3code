@@ -152,10 +152,16 @@ try {
   const installedApp = NodePath.join(APPLICATIONS_DIR, appName);
   if (NodeFS.existsSync(installedApp)) {
     console.log(`[fork-install] Quitting the running ${PRODUCT_NAME}`);
-    NodeChildProcess.spawnSync("osascript", ["-e", `tell application id "${BUNDLE_ID}" to quit`]);
+    run("osascript", [
+      "-e",
+      `if application id "${BUNDLE_ID}" is running then tell application id "${BUNDLE_ID}" to quit`,
+    ]);
     const deadline = Date.now() + 15_000;
     while (Date.now() < deadline && capture("pgrep", ["-f", installedApp]) !== "") {
       NodeChildProcess.spawnSync("sleep", ["0.5"]);
+    }
+    if (capture("pgrep", ["-f", installedApp]) !== "") {
+      throw new Error(`${PRODUCT_NAME} did not quit; leaving the installed app in place.`);
     }
     NodeFS.rmSync(installedApp, { recursive: true, force: true });
   }
