@@ -85,7 +85,10 @@ CSV and TSV files open as tables, with quoted delimiters and multiline cells pre
 Table display is limited to 100 rows, 30 columns, and 2,000 characters per cell;
 Source retains the complete loaded text. Markdown and table display preferences
 are saved separately. ⌘F opens source for searching without changing that preference.
-Media/HTML/PDF previews, syntax coloring, source-line and heading links,
+File links in messages, plans and previews open against the connected workspace.
+`:line:column` and `#LlineCcolumn` destinations reveal source without changing
+the preview preference; positions beyond the file are clamped to its contents.
+Media/HTML/PDF previews, syntax coloring and heading links,
 file context actions, and workspace content search remain incomplete.
 
 The integrated browser, interactive terminal, full diff views,

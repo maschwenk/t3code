@@ -123,6 +123,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
   private var rendered:
     [String: (row: TimelineRow, markdown: RenderedMarkdown, width: CGFloat, height: CGFloat)] = [:]
   private var renderedThread: String?
+  private var renderedWorkspace: WorkspaceLocation?
   private var lastWidth: CGFloat = 0
   private var outputRequests: Set<String> = []
   private struct ScrollAnchor {
@@ -433,6 +434,16 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     }
   }
   @objc private func saveWorkspaceFile() { workspace.saveFile() }
+  private func openMarkdownLink(_ url: URL, at location: WorkspaceLocation?) {
+    if url.isFileURL {
+      guard let location, store.workspaceLocation == location else { return }
+      if workspaceItem?.isCollapsed == true { toggleWorkspace() }
+      workspace.refreshContext()
+      workspace.open(url)
+    } else if ["http", "https", "mailto"].contains(url.scheme?.lowercased() ?? "") {
+      NSWorkspace.shared.open(url)
+    }
+  }
   @objc private func findWorkspaceFile() { workspace.findInFile() }
   func finishWorkspaceSaving() async -> Bool { await workspace.finishSaving() }
   var workspaceStorageError: String? { workspace.storageError }
@@ -554,7 +565,8 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     followsBottom: Bool? = nil
   ) {
     let changedThread = renderedThread != planScope
-    guard changedThread || next != rows else {
+    let changedWorkspace = renderedWorkspace != store.workspaceLocation
+    guard changedThread || changedWorkspace || next != rows else {
       if let savedAnchor { restoreScroll(savedAnchor) }
       return
     }
@@ -576,7 +588,8 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
       }
     }
     renderedThread = planScope
-    if changedThread || !samePrefix {
+    renderedWorkspace = store.workspaceLocation
+    if changedThread || changedWorkspace || !samePrefix {
       rendered.removeAll(keepingCapacity: true)
       planLayouts.removeAll(keepingCapacity: true)
       timeline.reloadData()
@@ -637,7 +650,10 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     }
     let markdown: RenderedMarkdown
     if ["user_message", "assistant_message", "reasoning", "proposed_plan"].contains(row.kind) {
-      markdown = MarkdownRenderer.render(row.text, width: width)
+      let root = store.workspaceLocation?.root
+      markdown = MarkdownRenderer.render(row.text, width: width) { destination in
+        WorkspaceMarkdown.link(destination, filePath: "", root: root)
+      }
     } else {
       let font =
         ["command_execution", "dynamic_tool", "file_change"].contains(row.kind)
@@ -689,7 +705,8 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
         download: { [weak self] in self?.downloadPlan(layout.document) },
         save: { [weak self] in
           if let location { self?.savePlan(layout.document, rowID: row.id, location: location) }
-        })
+        },
+        openLink: { [weak self] in self?.openMarkdownLink($0, at: location) })
     }
     let cell = NSView()
     let title = NSTextField(labelWithString: "")
@@ -705,6 +722,8 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     let bodyHeight = height - 45 - attachmentHeight(row)
     let body = MessageTextView(
       rendered: markdown, width: max(120, timeline.bounds.width - 36), height: bodyHeight)
+    let location = store.workspaceLocation
+    body.onOpenLink = { [weak self] in self?.openMarkdownLink($0, at: location) }
     let copy = ActionButton("") {
       NSPasteboard.general.clearContents()
       NSPasteboard.general.setString(row.text, forType: .string)
@@ -759,7 +778,11 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     {
       return cached.layout
     }
-    let layout = PlanCardLayout(markdown: row.text, width: width, expanded: expanded)
+    let root = store.workspaceLocation?.root
+    let layout = PlanCardLayout(markdown: row.text, width: width, expanded: expanded) {
+      destination in
+      WorkspaceMarkdown.link(destination, filePath: "", root: root)
+    }
     planLayouts[row.id] = (row, width, expanded, layout)
     return layout
   }

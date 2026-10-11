@@ -1354,6 +1354,7 @@ enum ParitySmoke {
       "| Feature | State |", "| --- | --- |", "| Markdown | Preview |", "| CSV and TSV | Table |",
       "",
       "[Open the data](data.csv)", "", "```swift", "let answer = 42", "```", "",
+      "[Jump to the ordered task](readme.md:8:4)", "",
     ].joined(separator: "\r\n")
     let csv = "Name,Note\r\n\"🦉, café\",\"First\r\nSecond \"\"quoted\"\"\"\r\n,\r\n"
     let tsv = "Name\tNote\nT3\t\"Multiple\nlines\"\n"
@@ -1398,8 +1399,23 @@ enum ParitySmoke {
         ["Name", "Note"], ["T3", "Multiple\nlines"],
       ]
     else { throw T3Error("Table preview changed quoted cells or its original source.") }
+    guard
+      let sourceURL = WorkspaceMarkdown.link(
+        "readme.md:8:4", filePath: csvPath, root: location.root),
+      let sourceLink = WorkspaceFileLink(url: sourceURL, root: location.root)
+    else { throw T3Error("Source link could not be resolved.") }
+    files.open(sourceLink.path, position: sourceLink.position)
+    guard files.revealRequest == nil else {
+      throw T3Error("Source reveal ran before loading the file.")
+    }
+    try await waitForFiles(files) { !files.loadingFile && files.document?.path == markdownPath }
+    guard let reveal = files.revealRequest, let contents = files.document?.contents,
+      reveal.position == FileSourcePosition(line: 8, column: 4),
+      reveal.position.range(in: contents).location
+        == (contents as NSString).range(of: "[ ] Ordered task").location
+    else { throw T3Error("File navigation lost its source location while loading.") }
     print(
-      "PASS: Markdown task source offsets and exact CRLF/Unicode autosave, relative file link, CSV/TSV quoted table previews with unchanged source; fixtures \(folder)/previews."
+      "PASS: Markdown task source offsets and exact CRLF/Unicode autosave, relative file and source-position navigation after loading, CSV/TSV quoted table previews with unchanged source; fixtures \(folder)/previews."
     )
   }
 

@@ -21,6 +21,7 @@ final class WorkspacePanel: NSViewController, NSOutlineViewDataSource,
   private let mode = NSSegmentedControl(
     labels: ["Source", "Preview"], trackingMode: .selectOne, target: nil, action: nil)
   private var forcedSource: WorkspaceFileID?
+  private var handledReveal: UUID?
   private let path = NSTextField(labelWithString: "Select a file")
   private let info = NSTextField(wrappingLabelWithString: "")
   private let saveButton = NSButton(title: "Save  ⌘S", target: nil, action: nil)
@@ -44,10 +45,8 @@ final class WorkspacePanel: NSViewController, NSOutlineViewDataSource,
       self.files.edit(WorkspaceMarkdown.settingTask(source, offset: offset, checked: checked))
     }
     renderedPreview.onFileLink = { [weak self] id, url in
-      guard let self, self.files.selected == id,
-        let path = WorkspaceMarkdown.workspacePath(url, root: id.root)
-      else { return }
-      self.files.open(path)
+      guard let self, self.files.selected == id else { return }
+      self.open(url)
     }
   }
   required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -169,6 +168,12 @@ final class WorkspacePanel: NSViewController, NSOutlineViewDataSource,
   }
 
   func refreshContext(active: Bool = true) { files.refreshContext(active: active) }
+  func open(_ url: URL) {
+    guard let root = files.location?.root, let link = WorkspaceFileLink(url: url, root: root) else {
+      return
+    }
+    files.open(link.path, position: link.position)
+  }
   func closeEditor() { files.closeEditor() }
   func finishSaving() async -> Bool { await files.finishSaving() }
   func focusSearch() { view.window?.makeFirstResponder(search) }
@@ -231,6 +236,8 @@ final class WorkspacePanel: NSViewController, NSOutlineViewDataSource,
     }
     let document = files.document
     if changedFile { forcedSource = nil }
+    let reveal = files.revealRequest.flatMap { $0.id == handledReveal ? nil : $0 }
+    if reveal != nil { forcedSource = files.selected }
     let kind = FilePreviewKind(path: files.selected?.path ?? "")
     let showRendered =
       document != nil && kind != .source && forcedSource != files.selected
@@ -256,6 +263,13 @@ final class WorkspacePanel: NSViewController, NSOutlineViewDataSource,
       if changedFile { editor.scrollRangeToVisible(NSRange(location: 0, length: 0)) }
     }
     editor.isEditable = files.canEditDocument
+    if let reveal {
+      handledReveal = reveal.id
+      let range = reveal.position.range(in: contents)
+      editor.setSelectedRange(NSRange(location: range.location, length: 0))
+      editor.scrollRangeToVisible(range)
+      editor.showFindIndicator(for: range)
+    }
     path.stringValue =
       (files.selected?.path ?? "Select a file") + (files.pendingSave ? " •" : "")
     path.toolTip = files.selected.map { $0.root + "/" + $0.path }

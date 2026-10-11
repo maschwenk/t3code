@@ -1,6 +1,12 @@
 import Foundation
 import T3Core
 
+struct WorkspaceFileReveal {
+  let id = UUID()
+  let file: WorkspaceFileID
+  let position: FileSourcePosition
+}
+
 @MainActor final class WorkspaceFiles {
   private let store: ClientStore
   private let repository: WorkspaceDraftRepository
@@ -20,6 +26,7 @@ import T3Core
   private(set) var saveErrors: [WorkspaceFileID: String] = [:]
   private var active = true
   private var failedReads: Set<WorkspaceFileID> = []
+  private var requestedReveal: WorkspaceFileReveal?
   private var mutationToken: String?
   private var refreshedTreeToken: String?
   private var refreshedFileTokens: [WorkspaceFileID: String] = [:]
@@ -40,6 +47,12 @@ import T3Core
   private(set) var storageError: String?
   var onChange: (() -> Void)?
   var document: WorkspaceFileDocument? { selected.flatMap { documents[$0] } }
+  var revealRequest: WorkspaceFileReveal? {
+    guard let requestedReveal, requestedReveal.file == selected, document != nil,
+      !loadingFile, !failedReads.contains(requestedReveal.file)
+    else { return nil }
+    return requestedReveal
+  }
   var canEditDocument: Bool {
     document?.canEdit == true && !loadingFile && selected.map { !failedReads.contains($0) } == true
   }
@@ -103,6 +116,7 @@ import T3Core
     searchTask = nil
     location = next
     selected = nil
+    requestedReveal = nil
     directories = [:]
     searchResults = []
     query = ""
@@ -218,11 +232,17 @@ import T3Core
     }
   }
 
-  func open(_ path: String, reload: Bool = false, background: Bool = false) {
+  func open(
+    _ path: String, position: FileSourcePosition? = nil,
+    reload: Bool = false, background: Bool = false
+  ) {
     guard let location else { return }
     fileTask?.cancel()
     readingFile = false
     let id = WorkspaceFileID(location: location, path: path)
+    if !background {
+      requestedReveal = position.map { WorkspaceFileReveal(file: id, position: $0) }
+    }
     if let selected, selected != id { requestSave(selected) }
     if reload && !saving.contains(id) {
       saveTimers.removeValue(forKey: id)?.cancel()

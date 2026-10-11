@@ -11,12 +11,13 @@ import T3Markdown
   let expanded: Bool
   var height: CGFloat { 94 + bodyHeight + (document.canCollapse ? 44 : 0) }
 
-  init(markdown: String, width: CGFloat, expanded: Bool) {
+  init(markdown: String, width: CGFloat, expanded: Bool, resolveLink: ((String) -> URL?)? = nil) {
     document = PlanDocument(markdown)
     self.width = max(120, width - 64)
     self.expanded = expanded
     let text = document.canCollapse && !expanded ? document.preview : document.body
-    rendered = MarkdownRenderer.render(text, width: self.width, headingLevelOffset: 3)
+    rendered = MarkdownRenderer.render(
+      text, width: self.width, headingLevelOffset: 3, resolveLink: resolveLink)
     textHeight = max(20, MarkdownRenderer.height(of: rendered.text, width: self.width))
     bodyHeight = document.canCollapse && !expanded ? min(416, textHeight) : textHeight
   }
@@ -26,7 +27,8 @@ import T3Markdown
   init(
     layout: PlanCardLayout, inherited: Bool, canSave: Bool,
     toggle: @escaping () -> Void, copy: @escaping () -> Void,
-    download: @escaping () -> Void, save: @escaping () -> Void
+    download: @escaping () -> Void, save: @escaping () -> Void,
+    openLink: @escaping (URL) -> Void
   ) {
     super.init(frame: .zero)
     let surface = SurfaceView(raised: true)
@@ -63,7 +65,7 @@ import T3Markdown
     actions.menu?.addItem(saveItem)
     let header = NSStackView(views: [badge, title, NSView(), actions])
     header.spacing = 8
-    let body = PlanBodyView(layout: layout)
+    let body = PlanBodyView(layout: layout, openLink: openLink)
     let stack = NSStackView(views: [header, body])
     stack.orientation = .vertical
     stack.alignment = .leading
@@ -102,7 +104,7 @@ import T3Markdown
 
 @MainActor private final class PlanBodyView: NSView {
   private let fade: CAGradientLayer?
-  init(layout: PlanCardLayout) {
+  init(layout: PlanCardLayout, openLink: @escaping (URL) -> Void) {
     fade = layout.document.canCollapse && !layout.expanded ? CAGradientLayer() : nil
     super.init(frame: .zero)
     wantsLayer = true
@@ -115,6 +117,7 @@ import T3Markdown
     }
     let text = MessageTextView(
       rendered: layout.rendered, width: layout.width, height: layout.textHeight)
+    text.onOpenLink = openLink
     text.setAccessibilityLabel("Plan content")
     addSubview(text)
     text.translatesAutoresizingMaskIntoConstraints = false

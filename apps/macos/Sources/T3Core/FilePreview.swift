@@ -93,20 +93,42 @@ public enum WorkspaceMarkdown {
       in: NSRange(location: offset + 1, length: 1), with: checked ? "x" : " ")
   }
 
-  public static func link(_ destination: String, filePath: String, root: String) -> URL? {
+  public static func link(_ destination: String, filePath: String, root: String?) -> URL? {
+    var destination = destination.trimmingCharacters(in: .whitespacesAndNewlines)
+    if destination.hasPrefix("<") && destination.hasSuffix(">") {
+      destination = String(destination.dropFirst().dropLast())
+    }
     guard !destination.isEmpty else { return nil }
-    if let url = URL(string: destination), let scheme = url.scheme {
-      return ["http", "https", "mailto", "file"].contains(scheme.lowercased()) ? url : nil
+    if let url = URL(string: destination), let scheme = url.scheme,
+      ["http", "https", "mailto", "file"].contains(scheme.lowercased())
+    {
+      return url
+    }
+    guard let root else { return nil }
+    // Bare filenames with :line look like URL schemes to Foundation.
+    if let url = URL(string: destination), url.scheme != nil {
+      let parsed = WorkspaceFileLink.split(destination)
+      guard parsed.path != destination,
+        !(parsed.path as NSString).pathExtension.isEmpty
+          || ["Makefile", "Dockerfile", "README", "LICENSE", "AGENTS"].contains(parsed.path)
+      else { return nil }
+      destination = "./" + destination
     }
     guard let parts = URLComponents(string: destination), parts.host == nil else { return nil }
-    if parts.path.isEmpty { return nil }
+    if parts.path.isEmpty {
+      guard !filePath.isEmpty,
+        WorkspaceFileLink.split("", fragment: parts.fragment).position != nil
+      else { return nil }
+    }
     let base =
       filePath.hasPrefix("/") ? filePath : (root as NSString).appendingPathComponent(filePath)
+    let directory = filePath.isEmpty ? root : (base as NSString).deletingLastPathComponent
     let path =
-      parts.path.hasPrefix("/")
-      ? parts.path
-      : ((base as NSString).deletingLastPathComponent as NSString).appendingPathComponent(
-        parts.path)
+      parts.path.isEmpty
+      ? base
+      : parts.path.hasPrefix("/")
+        ? parts.path
+        : (directory as NSString).appendingPathComponent(parts.path)
     var result = URLComponents(
       url: URL(fileURLWithPath: (path as NSString).standardizingPath),
       resolvingAgainstBaseURL: false)
