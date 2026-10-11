@@ -133,7 +133,28 @@ public struct TimelineRow: Sendable, Equatable, Identifiable {
       text = [item["input"].string, item["output"].string].compactMap { $0 }.joined(separator: "\n")
     case "file_change":
       title = "File change"
-      text = item["fileName"].string ?? ""
+      text = [item["fileName"].string, item["diffStr"].string].compactMap { $0 }.joined(
+        separator: "\n")
+    case "dynamic_tool":
+      title = item["toolName"].string ?? item["title"].string ?? "Tool"
+      text = [item["input"].displayText, item["output"].displayText].filter { !$0.isEmpty }.joined(
+        separator: "\n\n")
+    case "file_search":
+      title = "File search"
+      text =
+        ([item["pattern"].string].compactMap { $0 }
+        + item["results"].array.map { result in
+          (result["fileName"].string ?? "") + (result["line"].int.map { ":\($0)" } ?? "")
+            + (result["preview"].string.map { "\n" + $0 } ?? "")
+        }).joined(separator: "\n")
+    case "web_search":
+      title = "Web search"
+      text =
+        (item["patterns"].array.compactMap(\.string)
+        + item["results"].array.map { result in
+          [result["title"].string, result["url"].string, result["snippet"].string].compactMap { $0 }
+            .joined(separator: "\n")
+        }).joined(separator: "\n\n")
     case "approval_request":
       title = "Approval request"
       text = item["prompt"].string ?? item["appName"].string ?? "Agent requested approval"
@@ -264,6 +285,24 @@ public struct ThreadState: Sendable {
     reindex()
     cursor = page["nextCursor"].string
     hasMore = page["hasMoreHistory"].bool
+  }
+
+  @discardableResult public mutating func hydrateOutput(
+    _ item: JSON, replacing original: TimelineRow
+  ) throws -> Bool {
+    guard let index = indices[original.id], rows[index] == original,
+      original.item["outputOmitted"].bool,
+      item["id"] == original.item["id"], item["threadId"].string == original.sourceID,
+      item["updatedAt"] == original.item["updatedAt"],
+      !item["outputOmitted"].bool,
+      case .object(var full) = original.item
+    else { return false }
+    full["output"] = item["output"]
+    full.removeValue(forKey: "outputOmitted")
+    rows[index] = try TimelineRow(
+      item: .object(full), position: original.position, sourceID: original.sourceID,
+      inherited: original.inherited)
+    return true
   }
 
   private static func projectedRow(_ visible: JSON) throws -> TimelineRow {

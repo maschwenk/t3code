@@ -20,6 +20,22 @@ enum ParitySmoke {
       Task { await connection.close() }
     }
     try await connection.open()
+    if let threadID = Arguments.value("--resume-tool-thread") {
+      let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+        "t3-tool-resume-" + UUID().uuidString)
+      defer { try? FileManager.default.removeItem(at: directory) }
+      let store = ClientStore(draftDirectory: directory)
+      store.connect(settings, selecting: threadID)
+      defer { store.disconnect() }
+      try await waitForStore(store) { store.canEditThread }
+      guard store.selectedThread?.projectID == project,
+        store.selectedThread?.title == "Native tool output verification"
+      else {
+        throw T3Error("Resume requires the isolated tool-output test thread.")
+      }
+      try await toolOutput(store, connection: connection, threadID: threadID, resume: true)
+      return
+    }
     let configs = try await connection.subscribe("subscribeServerConfig")
     var catalog = ProviderCatalog()
     for try await event in configs.values {
@@ -184,6 +200,16 @@ enum ParitySmoke {
     print(
       "Thread rename, pin/settle/snooze, auto-settle, visit, archive/restore, and draft retention round trips passed."
     )
+    if CommandLine.arguments.contains("--tool-output-smoke") {
+      try await dispatch(
+        "thread.interaction-mode.set", fields: ["interactionMode": .string("default")])
+      store.rename(id, to: "Native tool output verification")
+      try await waitForStore(store) {
+        !store.lifecycleBusy(id) && store.selectedThread?.title == "Native tool output verification"
+      }
+      try await toolOutput(store, connection: connection, threadID: id)
+      return
+    }
     let manualQuestion = CommandLine.arguments.contains("--manual-question")
     guard CommandLine.arguments.contains("--question-smoke") || manualQuestion else {
       try await dispatch(
@@ -262,6 +288,87 @@ enum ParitySmoke {
       }
     }
     throw T3Error("Question stream ended before verification completed.")
+  }
+
+  @MainActor private static func toolOutput(
+    _ store: ClientStore, connection: RPCConnection, threadID: String, resume: Bool = false
+  ) async throws {
+    let stream = try await connection.subscribe(
+      "orchestration.subscribeThread",
+      payload: .object([
+        "threadId": .string(threadID), "requestCompletionMarker": .bool(true),
+        "acceptBoundedSnapshot": .bool(true),
+      ]))
+    defer { Task { await connection.cancel(stream.id) } }
+    if !resume {
+      _ = try await connection.call(
+        "orchestration.dispatchCommand",
+        payload: Commands.message(
+          threadID: threadID,
+          text:
+            "This is a tool-output test. Run exactly `printf NATIVE_TOOL_OUTPUT_OK` once with your shell tool, then reply exactly NATIVE_TOOL_DONE. Do not read, write, or modify files, inspect the workspace, use the network, or run any other command.",
+          commandID: UUID().uuidString, messageID: UUID().uuidString))
+    }
+    var state = ThreadState(id: threadID)
+    var fetched = false
+    var approved = Set<String>()
+    for try await event in stream.values {
+      _ = try state.apply(event)
+      for request in state.pendingRequests where !approved.contains(request.id) {
+        guard request.kind == "command", request.canRespond,
+          ["printf NATIVE_TOOL_OUTPUT_OK", "/bin/zsh -lc 'printf NATIVE_TOOL_OUTPUT_OK'"].contains(
+            request.detail),
+          request.options.contains(where: { $0["decision"].string == "accept" })
+        else {
+          throw T3Error("Tool-output test stopped at an unexpected approval request.")
+        }
+        try await waitForStore(store) {
+          store.thread?.pendingRequests.contains(where: { $0.id == request.id }) == true
+        }
+        guard let actual = store.thread?.pendingRequests.first(where: { $0.id == request.id })
+        else { throw T3Error("Controller missed command approval.") }
+        store.respond(actual, decision: "accept")
+        try await waitForStore(store) {
+          store.thread?.pendingRequests.contains(where: { $0.id == request.id }) == false
+        }
+        approved.insert(request.id)
+        print(
+          "ClientStore approved the exact diagnostic printf command once and observed resolution.")
+      }
+      if !fetched,
+        let row = state.rows.first(where: {
+          $0.item["outputOmitted"].bool && $0.item["status"].string == "completed"
+        })
+      {
+        try await waitForStore(store) {
+          store.thread?.rows.contains(where: {
+            $0.id == row.id && $0.item["status"].string == "completed"
+          }) == true
+        }
+        guard let current = store.thread?.rows.first(where: { $0.id == row.id }) else {
+          throw T3Error("Controller missed tool output.")
+        }
+        store.loadOutput(current)
+        try await waitForStore(store) {
+          store.thread?.rows.contains(where: {
+            $0.id == row.id && !$0.item["outputOmitted"].bool
+              && $0.item["output"].displayText.contains("NATIVE_TOOL_OUTPUT_OK")
+          }) == true
+        }
+        fetched = true
+        print("Real tool output was omitted from the live feed and fetched by ClientStore.")
+      }
+      if state.rows.contains(where: {
+        $0.kind == "assistant_message" && !$0.streaming && $0.text == "NATIVE_TOOL_DONE"
+      }) {
+        guard fetched else {
+          throw T3Error("Provider completed without exercising omitted tool output.")
+        }
+        print("Tool-output hydration and completed provider reply passed.")
+        return
+      }
+    }
+    throw T3Error("Tool-output verification ended before completion.")
   }
 
   @MainActor private static func waitForStore(

@@ -188,3 +188,54 @@ private func update(_ item: JSON, sequence: Int, type: String = "turn-item.updat
   #expect(state.rows.map(\.text) == ["live after restore"])
   #expect(state.sequence == 4)
 }
+
+@Test func fullOutputIsScopedToItsSourceAndCannotOverwriteStreamingUpdates() throws {
+  func command(_ fields: [String: JSON] = [:]) -> JSON {
+    .object(
+      [
+        "id": .string("cmd"), "threadId": .string("parent"), "type": .string("command_execution"),
+        "input": .string("printf hello"), "outputOmitted": .bool(true),
+        "updatedAt": .string("rev1"),
+      ]
+      .merging(fields) { _, new in new })
+  }
+  var state = ThreadState(id: "thread")
+  _ = try state.apply(
+    snapshot([visible(command(), position: 0, source: "parent", inherited: true)]))
+  let original = try #require(state.rows.first)
+  #expect(
+    try !state.hydrateOutput(
+      command([
+        "threadId": .string("thread"), "outputOmitted": .bool(false), "output": .string("wrong"),
+      ]), replacing: original))
+  #expect(
+    try !state.hydrateOutput(
+      command([
+        "updatedAt": .string("rev2"), "outputOmitted": .bool(false), "output": .string("raced"),
+      ]), replacing: original))
+  #expect(
+    try state.hydrateOutput(
+      command(["outputOmitted": .bool(false), "output": .string("hello")]), replacing: original))
+  #expect(state.rows[0].text == "printf hello\nhello")
+  #expect(state.rows[0].inherited)
+  #expect(state.sequence == 10)
+
+  var local = ThreadState(id: "thread")
+  let localItem = command(["threadId": .string("thread")])
+  _ = try local.apply(snapshot([visible(localItem, position: 0)]))
+  let before = try #require(local.rows.first)
+  _ = try local.apply(
+    update(
+      command([
+        "threadId": .string("thread"), "updatedAt": .string("rev2"),
+        "input": .string("new command"),
+      ]), sequence: 11))
+  #expect(
+    try !local.hydrateOutput(
+      command([
+        "threadId": .string("thread"), "outputOmitted": .bool(false),
+        "output": .string("old response"),
+      ]), replacing: before))
+  #expect(local.rows[0].text == "new command")
+  #expect(local.sequence == 11)
+}

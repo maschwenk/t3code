@@ -36,6 +36,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     [String: (row: TimelineRow, markdown: RenderedMarkdown, width: CGFloat, height: CGFloat)] = [:]
   private var renderedThread: String?
   private var lastWidth: CGFloat = 0
+  private var outputRequests: Set<String> = []
   private struct ScrollAnchor {
     var id: String?
     var offset: CGFloat
@@ -271,6 +272,13 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
       (store.thread?.rows ?? []).filter {
         $0.kind != "checkpoint" || !$0.item["files"].array.isEmpty
       })
+    let requests = Set(store.commandsInFlight.filter { $0.hasSuffix(":output") })
+    if requests != outputRequests {
+      outputRequests = requests
+      timeline.reloadData(
+        forRowIndexes: IndexSet(rows.indices.filter { rows[$0].item["outputOmitted"].bool }),
+        columnIndexes: IndexSet(integer: 0))
+    }
   }
 
   private func updateRows(_ next: [TimelineRow]) {
@@ -342,7 +350,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
       markdown = MarkdownRenderer.render(row.text, width: width)
     } else {
       let font =
-        row.kind == "command_execution"
+        ["command_execution", "dynamic_tool", "file_change"].contains(row.kind)
         ? NSFont.monospacedSystemFont(ofSize: 12, weight: .regular) : NSFont.systemFont(ofSize: 14)
       markdown = RenderedMarkdown(
         text: NSAttributedString(
@@ -386,6 +394,15 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     copy.toolTip = "Copy message"
     copy.setAccessibilityLabel("Copy message")
     let header = NSStackView(views: [title, NSView(), copy])
+    if row.item["outputOmitted"].bool {
+      let busy = store.commandsInFlight.contains(row.id + ":output")
+      let output = ActionButton(busy ? "Loading output…" : "Load full output") { [weak store] in
+        store?.loadOutput(row)
+      }
+      output.isEnabled = store.ready && !busy
+      output.controlSize = .small
+      header.insertArrangedSubview(output, at: 2)
+    }
     let stack = NSStackView(views: [header, body])
     stack.orientation = .vertical
     stack.alignment = .leading

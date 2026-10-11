@@ -15,7 +15,9 @@ The composer discovers provider instances, models, and model options from the
 server. Runtime modes and enabled plan mode are editable there. Pending approvals
 and agent questions can be answered directly; resolved requests disappear when
 another client answers them. Questions support choices, multiple selections,
-custom answers, and dismissal when the server advertises it.
+custom answers, and dismissal when the server advertises it. Command and tool
+results omitted from the live feed can be loaded on demand; stale fetches cannot
+replace a newer streaming revision.
 
 The integrated browser, interactive terminal, full diff views, attachments, model
 search, provider setup, question attachments, and T3 Connect
@@ -83,6 +85,11 @@ apps/macos/.build/release/T3Native --parity-smoke \
 Add `--question-smoke` to ask the real Codex provider for a question, answer through
 the app controller, and verify the resolved request and completed reply. This
 requires an authenticated Codex instance and consumes one short provider turn.
+Add `--manual-question` instead to leave the real question pending for a UI check.
+Add `--tool-output-smoke` to run a diagnostic `printf`, approve only that exact
+command once if requested, and fetch its omitted output through the controller.
+An interrupted tool check can resume with `--resume-tool-thread ID` on its isolated
+test thread; it does not send another message.
 UI runs can use `--thread-id ID` and `--filter TEXT` to select an isolated thread.
 
 ## Measure

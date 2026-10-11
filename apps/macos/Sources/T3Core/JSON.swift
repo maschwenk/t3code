@@ -56,6 +56,13 @@ public enum JSON: Codable, Sendable, Equatable {
     return x
   }
   public func data() throws -> Data { try JSONEncoder().encode(self) }
+  public var displayText: String {
+    if let string { return string }
+    if self == .null { return "" }
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+    return (try? encoder.encode(self)).flatMap { String(data: $0, encoding: .utf8) } ?? ""
+  }
   public static func decode(_ data: Data) throws -> JSON {
     try JSONDecoder().decode(JSON.self, from: data)
   }

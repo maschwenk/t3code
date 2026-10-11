@@ -537,6 +537,41 @@ import T3Core
     }
   }
 
+  func loadOutput(_ row: TimelineRow) {
+    let key = row.id + ":output"
+    guard ready, let connection, row.item["outputOmitted"].bool,
+      !commandsInFlight.contains(key)
+    else { return }
+    commandsInFlight.insert(key)
+    let generation = generation
+    let selection = selectionGeneration
+    notify()
+    Task {
+      defer {
+        if self.generation == generation {
+          commandsInFlight.remove(key)
+          notify()
+        }
+      }
+      do {
+        let response = try await connection.call(
+          "orchestration.getTurnItem",
+          payload: .object([
+            "threadId": .string(row.sourceID), "itemId": row.item["id"],
+            "revision": row.item["updatedAt"],
+          ]))
+        guard self.generation == generation, selectionGeneration == selection else { return }
+        guard response["item"] != .null else {
+          throw T3Error("This tool output is no longer available.")
+        }
+        try thread?.hydrateOutput(response["item"], replacing: row)
+      } catch {
+        guard self.generation == generation, selectionGeneration == selection else { return }
+        self.error = "Tool output: " + error.localizedDescription
+      }
+    }
+  }
+
   func send() {
     guard let id = selectedID, let connection, canEditThread,
       let text = drafts[id], !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,

@@ -5,7 +5,7 @@ swift build --package-path "$macos_root" -c release
 binary_dir="$(swift build --package-path "$macos_root" -c release --show-bin-path)"
 bundle="${1:-$macos_root/.build/T3 Native.app}"
 mkdir -p "$bundle/Contents/MacOS" "$bundle/Contents/Resources/Licenses"
-cp "$macos_root"/Licenses/* "$bundle/Contents/Resources/Licenses/"
+cp -f "$macos_root"/Licenses/* "$bundle/Contents/Resources/Licenses/"
 cp "$binary_dir/T3Native" "$bundle/Contents/MacOS/T3Native"
 cat > "$bundle/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
