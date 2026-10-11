@@ -1,7 +1,7 @@
 # T3 Native prototype
 
 A macOS 14+ AppKit client for an existing T3 protocol-v2 server. The interface uses
-native tables and text controls; it embeds neither Electron nor a web view. Agents,
+native tables and text controls, with isolated WebKit views for document previews. Agents,
 SQLite, Git, terminals, and remote access still belong to the existing server.
 Closing this app does not stop that server or its agents.
 
@@ -123,8 +123,8 @@ An optional first argument chooses the output bundle, for example
 `apps/macos/build.sh "$HOME/Applications/T3 Native.app"`.
 
 Choose **Connect**, enter the server's base URL and a pairing token from its
-Connections settings. Pairing requests only `orchestration:read` and
-`orchestration:operate`; the exchanged bearer token is saved in Keychain. Uncheck
+Connections settings. Pairing requests `orchestration:read`,
+`orchestration:operate`, and `terminal:operate`; the exchanged bearer token is saved in Keychain. Uncheck
 the pairing option to use an existing bearer token. HTTPS direct endpoints and
 HTTP loopback endpoints are supported. When the session expires, pair again.
 
@@ -182,6 +182,13 @@ command once if requested, and fetch its omitted output through the controller.
 An interrupted tool check can resume with `--resume-tool-thread ID` on its isolated
 test thread; it does not send another message.
 UI runs can use `--thread-id ID` and `--filter TEXT` to select an isolated thread.
+
+`--terminal-thread THREAD_ID` checks the native terminal transport on an existing
+thread in the isolated project. It creates its own temporary directory and shell,
+checks input/output, Unicode, resizing, history replay, clearing and restarting,
+then closes that shell and deletes its history. It sends no inference request and
+requires a bearer token with `terminal:operate`; older native pairing tokens need
+to be replaced for this check. The terminal view is not connected to the UI yet.
 
 ## Measure
 

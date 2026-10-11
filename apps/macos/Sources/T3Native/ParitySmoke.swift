@@ -24,6 +24,11 @@ enum ParitySmoke {
       Task { await connection.close() }
     }
     try await connection.open()
+    if let threadID = Arguments.value("--terminal-thread") {
+      try await terminal(
+        connection: connection, settings: settings, threadID: threadID, projectID: project)
+      return
+    }
     if let threadID = Arguments.value("--workspace-resume-thread") {
       try await workspaceProvider(
         settings: settings, connection: connection, threadID: threadID,

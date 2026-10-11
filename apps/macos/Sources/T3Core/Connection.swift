@@ -65,7 +65,7 @@ public enum EnvironmentHTTP {
       "subject_token": credential,
       "subject_token_type": "urn:t3:params:oauth:token-type:environment-bootstrap",
       "requested_token_type": "urn:ietf:params:oauth:token-type:access_token",
-      "scope": "orchestration:read orchestration:operate",
+      "scope": "orchestration:read orchestration:operate terminal:operate",
       "client_label": "T3 Native", "client_device_type": "desktop", "client_os": "macOS",
     ]
     let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~"))
