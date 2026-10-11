@@ -19,6 +19,8 @@ final class WorkspacePanel: NSViewController, NSOutlineViewDataSource,
   private let editor = NSTextView()
   private let editorScroll = NSScrollView()
   private let renderedPreview = WorkspaceRenderedPreview()
+  private let mediaPreview = WorkspaceMediaPreview()
+  private var previewActive = true
   private let previewPreferences = FilePreviewPreferences()
   private let mode = NSSegmentedControl(
     labels: ["Source", "Preview"], trackingMode: .selectOne, target: nil, action: nil)
@@ -57,6 +59,7 @@ final class WorkspacePanel: NSViewController, NSOutlineViewDataSource,
       guard let self, self.files.selected == id else { return nil }
       return FileContextMenu.forLink(url, at: self.files.location, store: self.store)
     }
+    mediaPreview.onOpenLink = { url in NSWorkspace.shared.open(url) }
   }
   required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
@@ -143,7 +146,7 @@ final class WorkspacePanel: NSViewController, NSOutlineViewDataSource,
     mode.action = #selector(changePreviewMode)
     mode.setAccessibilityLabel("File presentation")
     let content = NSView()
-    for child in [editorScroll, renderedPreview] {
+    for child in [editorScroll, renderedPreview, mediaPreview] {
       content.addSubview(child)
       child.translatesAutoresizingMaskIntoConstraints = false
       NSLayoutConstraint.activate([
@@ -188,14 +191,23 @@ final class WorkspacePanel: NSViewController, NSOutlineViewDataSource,
     refresh()
   }
 
-  func refreshContext(active: Bool = true) { files.refreshContext(active: active) }
+  func refreshContext(active: Bool = true) {
+    previewActive = active
+    if !active { mediaPreview.clear() }
+    files.refreshContext(active: active)
+    refresh()
+  }
   func open(_ url: URL) {
     guard let root = files.location?.root, let link = WorkspaceFileLink(url: url, root: root) else {
       return
     }
     files.open(link.path, position: link.position)
   }
-  func closeEditor() { files.closeEditor() }
+  func closeEditor() {
+    previewActive = false
+    mediaPreview.clear()
+    files.closeEditor()
+  }
   func finishSaving() async -> Bool { await files.finishSaving() }
   func focusSearch() { view.window?.makeFirstResponder(search) }
   func findInFile() {
@@ -286,14 +298,24 @@ final class WorkspacePanel: NSViewController, NSOutlineViewDataSource,
     let reveal = files.revealRequest.flatMap { $0.id == handledReveal ? nil : $0 }
     if reveal != nil { forcedSource = files.selected }
     let kind = FilePreviewKind(path: files.selected?.path ?? "")
+    let media = files.mediaRequest
+    let showMedia =
+      media != nil
+      && (kind != .html || (forcedSource != files.selected && previewPreferences.rendered(.html)))
     let showRendered =
-      document != nil && kind != .source && forcedSource != files.selected
+      document != nil && kind != .source && kind != .html && forcedSource != files.selected
       && previewPreferences.rendered(kind)
     mode.isHidden = document == nil || kind == .source
-    mode.selectedSegment = showRendered ? 1 : 0
-    mode.setLabel(kind == .markdown ? "Preview" : "Table", forSegment: 1)
-    editorScroll.isHidden = showRendered
+    mode.selectedSegment = showRendered || showMedia ? 1 : 0
+    mode.setLabel(kind.delimiter == nil ? "Preview" : "Table", forSegment: 1)
+    editorScroll.isHidden = showRendered || showMedia
     renderedPreview.isHidden = !showRendered
+    mediaPreview.isHidden = !showMedia
+    if showMedia, previewActive, let media {
+      mediaPreview.show(media)
+    } else {
+      mediaPreview.clear()
+    }
     if showRendered, let document, let id = files.selected {
       renderedPreview.show(document, id: id, editable: files.canEditDocument)
     }
@@ -324,7 +346,7 @@ final class WorkspacePanel: NSViewController, NSOutlineViewDataSource,
     saveButton.isEnabled = files.canSave
     saveButton.title = files.selectedSaveError == nil ? "Save  ⌘S" : "Retry  ⌘S"
     reloadButton.isEnabled =
-      (document != nil || files.selectedDirectory != nil) && !files.loadingFile
+      (document != nil || files.selectedDirectory != nil || media != nil) && !files.loadingFile
       && files.selected.map { !files.saving.contains($0) } == true
     let draftIDs = files.drafts
     if draftsButton.itemArray.compactMap({ $0.representedObject as? String })

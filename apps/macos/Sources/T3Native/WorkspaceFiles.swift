@@ -26,6 +26,8 @@ struct WorkspaceFileReveal {
   private(set) var saveErrors: [WorkspaceFileID: String] = [:]
   private var active = true
   private var failedReads: Set<WorkspaceFileID> = []
+  private var mediaFile: WorkspaceFileID?
+  private var mediaRevision: UInt64 = 0
   private var requestedReveal: WorkspaceFileReveal?
   private var mutationToken: String?
   private var refreshedTreeToken: String?
@@ -48,6 +50,12 @@ struct WorkspaceFileReveal {
   private(set) var storageError: String?
   var onChange: (() -> Void)?
   var document: WorkspaceFileDocument? { selected.flatMap { documents[$0] } }
+  var mediaRequest: WorkspaceMediaRequest? {
+    guard let selected, selected == mediaFile, let location, !loadingFile,
+      selectedDirectory == nil
+    else { return nil }
+    return store.workspaceMediaRequest(selected.path, at: location, revision: mediaRevision)
+  }
   var revealRequest: WorkspaceFileReveal? {
     guard let requestedReveal, requestedReveal.file == selected, document != nil,
       !loadingFile, !failedReads.contains(requestedReveal.file)
@@ -56,6 +64,7 @@ struct WorkspaceFileReveal {
   }
   var canEditDocument: Bool {
     document?.canEdit == true && !loadingFile && selected.map { !failedReads.contains($0) } == true
+      && selected.map { WorkspaceMediaKind(path: $0.path).map { $0 == .html } ?? true } == true
   }
   var pendingSave: Bool {
     document?.requiresRecovery == true
@@ -118,6 +127,7 @@ struct WorkspaceFileReveal {
     location = next
     selected = nil
     selectedDirectory = nil
+    mediaFile = nil
     requestedReveal = nil
     directories = [:]
     searchResults = []
@@ -258,6 +268,7 @@ struct WorkspaceFileReveal {
     fileTask?.cancel()
     readingFile = false
     let id = WorkspaceFileID(location: location, path: path)
+    if mediaFile != id { mediaFile = nil }
     if !background || selected != id { selectedDirectory = nil }
     if !background {
       requestedReveal = position.map { WorkspaceFileReveal(file: id, position: $0) }
@@ -276,6 +287,7 @@ struct WorkspaceFileReveal {
     message = ""
     if !reload, documents[id]?.requiresRecovery == true || saveSchedules[id]?.pending == true {
       loadingFile = false
+      if WorkspaceMediaKind(path: path) != nil { mediaFile = id }
       revealInTree(path, isDirectory: false)
       onChange?()
       return
@@ -297,6 +309,8 @@ struct WorkspaceFileReveal {
         {
           documents[id] = document
           selectedDirectory = nil
+          mediaFile = WorkspaceMediaKind(path: path) == nil ? nil : id
+          mediaRevision &+= 1
           revealInTree(path, isDirectory: false)
           if let requestedMutation { refreshedFileTokens[id] = requestedMutation }
           failedReads.remove(id)
@@ -307,6 +321,7 @@ struct WorkspaceFileReveal {
         guard !Task.isCancelled, self.context == context, selected == id else { return }
         if let requestedMutation { refreshedFileTokens[id] = requestedMutation }
         if documents[id]?.requiresRecovery != true { failedReads.insert(id) }
+        mediaFile = nil
         if let error = error as? T3Error, error.remoteCode == "ProjectReadFileError",
           error.remoteFailure == "path_not_file", !path.hasPrefix("/"),
           documents[id]?.requiresRecovery != true
@@ -317,6 +332,13 @@ struct WorkspaceFileReveal {
           if isSearching { search("") }
           revealInTree(path, isDirectory: true)
           message = "Folder · " + path
+        } else if let error = error as? T3Error, error.remoteCode == "ProjectReadFileError",
+          error.remoteFailure == "binary_file", WorkspaceMediaKind(path: path) != nil
+        {
+          mediaFile = id
+          mediaRevision &+= 1
+          revealInTree(path, isDirectory: false)
+          message = ""
         } else {
           message = error.localizedDescription
         }
@@ -456,6 +478,7 @@ struct WorkspaceFileReveal {
     } else {
       documents[id]?.acknowledgeSave(contents)
       saveErrors.removeValue(forKey: id)
+      if mediaFile == id { mediaRevision &+= 1 }
     }
     saveSchedules[id]?.complete(
       revision, succeeded: error == nil, at: ProcessInfo.processInfo.systemUptime)
@@ -488,7 +511,7 @@ struct WorkspaceFileReveal {
       refreshedTreeToken = token
       refresh()
     }
-    guard let selected, document != nil || selectedDirectory != nil,
+    guard let selected, document != nil || selectedDirectory != nil || selected == mediaFile,
       document?.requiresRecovery != true,
       saveSchedules[selected]?.pending != true, !saving.contains(selected), !readingFile,
       refreshedFileTokens[selected] != token
@@ -521,8 +544,10 @@ struct WorkspaceFileReveal {
     saveAccess = saveAccess.filter { documents[$0.key] != nil }
     saveSchedules = saveSchedules.filter { documents[$0.key] != nil }
     saveErrors = saveErrors.filter { documents[$0.key] != nil }
-    failedReads = failedReads.filter { documents[$0] != nil }
-    refreshedFileTokens = refreshedFileTokens.filter { documents[$0.key] != nil }
+    failedReads = failedReads.filter { documents[$0] != nil || $0 == selected }
+    refreshedFileTokens = refreshedFileTokens.filter {
+      documents[$0.key] != nil || $0.key == selected
+    }
   }
 }
 

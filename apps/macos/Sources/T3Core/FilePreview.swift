@@ -1,12 +1,13 @@
 import Foundation
 
 public enum FilePreviewKind: String, Sendable {
-  case markdown, csv, tsv, source
+  case markdown, csv, tsv, html, source
   public init(path: String) {
     switch (path as NSString).pathExtension.lowercased() {
     case "md", "mdx": self = .markdown
     case "csv": self = .csv
     case "tsv": self = .tsv
+    case "htm", "html": self = .html
     default: self = .source
     }
   }
@@ -155,6 +156,7 @@ public struct FilePreviewPreferences {
     switch kind {
     case .markdown: defaults.bool(forKey: "filePreview.renderMarkdown")
     case .csv, .tsv: defaults.object(forKey: "filePreview.renderTable") as? Bool ?? true
+    case .html: defaults.object(forKey: "filePreview.renderHTML") as? Bool ?? true
     case .source: false
     }
   }
@@ -162,6 +164,7 @@ public struct FilePreviewPreferences {
     switch kind {
     case .markdown: defaults.set(value, forKey: "filePreview.renderMarkdown")
     case .csv, .tsv: defaults.set(value, forKey: "filePreview.renderTable")
+    case .html: defaults.set(value, forKey: "filePreview.renderHTML")
     case .source: break
     }
   }

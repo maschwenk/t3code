@@ -1,3 +1,5 @@
+import AVFoundation
+import CoreGraphics
 import Foundation
 import T3Core
 import T3Markdown
@@ -1445,9 +1447,210 @@ enum ParitySmoke {
     guard files.selectedDirectory == nil, files.canEditDocument else {
       throw T3Error("A workspace mutation did not replace the folder view with the new file.")
     }
+    try await workspaceMedia(store: store, files: files, location: location, folder: previewFolder)
     print(
       "PASS: Markdown task source offsets and exact CRLF/Unicode autosave, relative file and source-position navigation after loading, folder reveal and folder-to-file mutation, CSV/TSV quoted table previews with unchanged source; fixtures \(folder)/previews."
     )
+  }
+
+  @MainActor private static func workspaceMedia(
+    store: ClientStore, files: WorkspaceFiles, location: WorkspaceLocation, folder: String
+  ) async throws {
+    let root = URL(fileURLWithPath: location.root)
+    let image = Data(
+      base64Encoded:
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aJ1sAAAAASUVORK5CYII="
+    )!
+    let html =
+      "<!doctype html><html><head><link rel=\"stylesheet\" href=\"theme.css\"></head><body><h1>Native HTML preview</h1><img src=\"pixel.png\"><p id=\"script\">Script pending</p><script>document.getElementById('script').textContent='Script executed';</script></body></html>"
+    let htmlPath = folder + "/page.html"
+    let pdfPath = folder + "/document.pdf"
+    let videoPath = folder + "/video.mp4"
+    try await previewVideo(at: root.appendingPathComponent(videoPath))
+    var mediaBox = CGRect(x: 0, y: 0, width: 320, height: 240)
+    guard
+      let context = CGContext(
+        root.appendingPathComponent(pdfPath) as CFURL, mediaBox: &mediaBox, nil)
+    else {
+      throw T3Error("Could not create the isolated PDF fixture.")
+    }
+    context.beginPDFPage(nil)
+    context.setFillColor(CGColor(red: 0.2, green: 0.5, blue: 0.9, alpha: 1))
+    context.fill(CGRect(x: 20, y: 20, width: 280, height: 200))
+    context.endPDFPage()
+    context.closePDF()
+    var wave = Data("RIFF".utf8)
+    func word(_ value: UInt32, bytes: Int) {
+      for offset in 0..<bytes { wave.append(UInt8(truncatingIfNeeded: value >> (offset * 8))) }
+    }
+    word(36 + 16000, bytes: 4)
+    wave.append(Data("WAVEfmt ".utf8))
+    word(16, bytes: 4)
+    word(1, bytes: 2)
+    word(1, bytes: 2)
+    word(8000, bytes: 4)
+    word(16000, bytes: 4)
+    word(2, bytes: 2)
+    word(16, bytes: 2)
+    wave.append(Data("data".utf8))
+    word(16000, bytes: 4)
+    wave.append(Data(repeating: 0, count: 16000))
+    for (name, bytes) in [
+      ("pixel.png", image), ("page.html", Data(html.utf8)),
+      ("theme.css", Data("body { color: #257; font: 20px system-ui; }".utf8)),
+      ("sound.wav", wave),
+    ] { try bytes.write(to: root.appendingPathComponent(folder + "/" + name)) }
+    let session = URLSession(configuration: .ephemeral)
+    defer { session.invalidateAndCancel() }
+    let downloads = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "t3-media-download-" + UUID().uuidString)
+    try FileManager.default.createDirectory(
+      at: downloads, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+    defer { try? FileManager.default.removeItem(at: downloads) }
+    for (path, kind, expected) in [
+      (folder + "/pixel.png", WorkspaceMediaKind.image, image),
+      (folder + "/sound.wav", .audio, wave),
+      (videoPath, .video, try Data(contentsOf: root.appendingPathComponent(videoPath))),
+      (pdfPath, .pdf, try Data(contentsOf: root.appendingPathComponent(pdfPath))),
+      (htmlPath, .html, Data(html.utf8)),
+    ] {
+      files.open(path)
+      try await waitForFiles(files) { !files.loadingFile }
+      guard let request = files.mediaRequest, request.kind == kind,
+        files.canEditDocument == (kind == .html)
+      else { throw T3Error("Media source was not recognized: " + path + " · " + files.message) }
+      let url: URL
+      do { url = try await request.load() } catch {
+        throw T3Error(
+          "Signing the \(kind.rawValue) preview failed: \((error as? T3Error)?.remoteCode ?? "unknown") · \(error.localizedDescription)"
+        )
+      }
+      let (data, response) = try await session.data(from: url)
+      guard (response as? HTTPURLResponse)?.statusCode == 200, data == expected else {
+        throw T3Error("The signed media asset did not preserve its source bytes: " + path)
+      }
+      if kind == .image {
+        let destination = downloads.appendingPathComponent("saved.png")
+        try await request.save(to: destination)
+        guard try Data(contentsOf: destination) == image else {
+          throw T3Error("Media download changed its bytes.")
+        }
+        let original = Data("Existing destination".utf8)
+        try original.write(to: destination)
+        var limited = false
+        do {
+          try await AttachmentHTTP.download(url, to: destination, maximumBytes: 1)
+        } catch is T3Error { limited = true }
+        guard limited, try Data(contentsOf: destination) == original else {
+          throw T3Error("A rejected download replaced the existing destination.")
+        }
+        try await request.save(to: destination)
+        guard try Data(contentsOf: destination) == image,
+          try FileManager.default.contentsOfDirectory(atPath: downloads.path) == ["saved.png"]
+        else { throw T3Error("Media replacement failed or left a staging file.") }
+      }
+      if kind.playable {
+        var range = URLRequest(url: url)
+        range.setValue("bytes=0-43", forHTTPHeaderField: "Range")
+        let (prefix, response) = try await session.data(for: range)
+        guard (response as? HTTPURLResponse)?.statusCode == 206, prefix == expected.prefix(44)
+        else {
+          throw T3Error("Media streaming did not honor the byte range.")
+        }
+        let asset = AVURLAsset(url: url)
+        let (playable, duration) = try await asset.load(.isPlayable, .duration)
+        guard playable, duration.seconds > 0 else {
+          throw T3Error("The platform could not decode the streamed media fixture.")
+        }
+      }
+      if kind == .html {
+        let style = url.deletingLastPathComponent().appendingPathComponent("theme.css")
+        let (css, response) = try await session.data(from: style)
+        guard (response as? HTTPURLResponse)?.statusCode == 200,
+          String(data: css, encoding: .utf8)?.contains("system-ui") == true
+        else { throw T3Error("The workspace HTML preview could not load a sibling stylesheet.") }
+        let changed = html.replacingOccurrences(
+          of: "Native HTML preview", with: "Saved HTML preview")
+        files.edit(changed)
+        try await waitForFiles(files) { !files.pendingSave && files.document?.original == changed }
+        guard let refreshed = files.mediaRequest, refreshed.key != request.key else {
+          throw T3Error("Saving HTML did not refresh the preview revision.")
+        }
+        let (saved, _) = try await session.data(from: refreshed.load())
+        guard saved == Data(changed.utf8) else {
+          throw T3Error("The HTML preview still served pre-save content.")
+        }
+      }
+    }
+    let outside = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "t3-host-preview-" + UUID().uuidString + ".html")
+    defer { try? FileManager.default.removeItem(at: outside) }
+    try Data(html.utf8).write(to: outside)
+    files.open(outside.path)
+    try await waitForFiles(files) { !files.loadingFile }
+    guard let host = files.mediaRequest, !files.canEditDocument else {
+      throw T3Error("An external HTML file was editable or lacked its host preview.")
+    }
+    let hostURL: URL
+    do { hostURL = try await host.load() } catch {
+      throw T3Error(
+        "Signing the external HTML preview failed: \((error as? T3Error)?.remoteCode ?? "unknown") · \(error.localizedDescription)"
+      )
+    }
+    let (hostData, hostResponse) = try await session.data(from: hostURL)
+    guard (hostResponse as? HTTPURLResponse)?.statusCode == 200, hostData == Data(html.utf8) else {
+      throw T3Error("The host HTML file could not be previewed through its single-file grant.")
+    }
+    let directory = folder + "/folder.png"
+    try FileManager.default.createDirectory(
+      at: root.appendingPathComponent(directory), withIntermediateDirectories: false)
+    files.open(directory)
+    try await waitForFiles(files) { !files.loadingFile }
+    guard files.selectedDirectory == directory, files.mediaRequest == nil else {
+      throw T3Error("A folder extension was incorrectly treated as a media file.")
+    }
+    print(
+      "PASS: real PNG/PDF/HTML/audio/video asset bytes, audio/video range streaming and native decoder metadata, HTML sibling assets and autosave revision, read-only host HTML and media-named folder; fixtures \(folder)."
+    )
+  }
+
+  @MainActor private static func previewVideo(at url: URL) async throws {
+    let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
+    let input = AVAssetWriterInput(
+      mediaType: .video,
+      outputSettings: [
+        AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: 64, AVVideoHeightKey: 64,
+      ])
+    let adaptor = AVAssetWriterInputPixelBufferAdaptor(
+      assetWriterInput: input,
+      sourcePixelBufferAttributes: [
+        kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32ARGB,
+        kCVPixelBufferWidthKey as String: 64, kCVPixelBufferHeightKey as String: 64,
+      ])
+    writer.add(input)
+    guard writer.startWriting() else { throw T3Error("The video fixture encoder did not start.") }
+    writer.startSession(atSourceTime: .zero)
+    var buffer: CVPixelBuffer?
+    guard
+      CVPixelBufferCreate(kCFAllocatorDefault, 64, 64, kCVPixelFormatType_32ARGB, nil, &buffer)
+        == kCVReturnSuccess,
+      let buffer
+    else { throw T3Error("The video fixture buffer could not be allocated.") }
+    CVPixelBufferLockBaseAddress(buffer, [])
+    if let address = CVPixelBufferGetBaseAddress(buffer) {
+      memset(address, 80, CVPixelBufferGetDataSize(buffer))
+    }
+    CVPixelBufferUnlockBaseAddress(buffer, [])
+    guard input.isReadyForMoreMediaData, adaptor.append(buffer, withPresentationTime: .zero) else {
+      writer.cancelWriting()
+      throw T3Error("The video fixture frame could not be encoded.")
+    }
+    writer.endSession(atSourceTime: CMTime(seconds: 1, preferredTimescale: 600))
+    input.markAsFinished()
+    await writer.finishWriting()
+    guard writer.status == .completed else {
+      throw T3Error("The video fixture could not be finalized.")
+    }
   }
 
   @MainActor private static func workspaceProvider(

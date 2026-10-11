@@ -58,6 +58,7 @@ import T3Core
   var onChange: (() -> Void)?
   private var connection: RPCConnection?
   private var settings: ConnectionSettings?
+  private var cachedWorkspaceMedia: WorkspaceMediaRequest?
   private var lifetime: Task<Void, Never>?
   private var detail: Task<Void, Never>?
   private var configuration: Task<Void, Never>?
@@ -225,6 +226,7 @@ import T3Core
     visibleVisit = nil
     if let connection { Task { await connection.close() } }
     connection = nil
+    cachedWorkspaceMedia = nil
     ready = false
     catalogReady = false
     commandsInFlight = []
@@ -483,6 +485,27 @@ import T3Core
     try await WorkspaceFileDocument(
       workspaceCall(
         "projects.readFile", at: location, fields: ["relativePath": .string(path)]))
+  }
+
+  func workspaceMediaRequest(_ path: String, at location: WorkspaceLocation, revision: UInt64)
+    -> WorkspaceMediaRequest?
+  {
+    guard let connection, let settings, workspaceLocation == location,
+      let kind = WorkspaceMediaKind(path: path)
+    else { return nil }
+    let key = WorkspaceMediaRequest.Key(
+      file: WorkspaceFileID(location: location, path: path), threadID: location.threadID,
+      connection: generation, revision: revision)
+    if let cachedWorkspaceMedia, cachedWorkspaceMedia.key == key { return cachedWorkspaceMedia }
+    let resource = WorkspaceMediaRequest.resource(path: path, at: location)
+    let request = WorkspaceMediaRequest(key: key, kind: kind) {
+      let issued = try await connection.call(
+        "assets.createUrl", payload: .object(["resource": resource]))
+      return try WorkspaceMediaRequest.freshURL(
+        issued, endpoint: settings.endpoint, revision: revision)
+    }
+    cachedWorkspaceMedia = request
+    return request
   }
 
   func workspaceFileAccess(at location: WorkspaceLocation) throws -> WorkspaceFileAccess {

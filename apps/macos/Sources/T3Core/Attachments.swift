@@ -214,7 +214,9 @@ public enum AttachmentHTTP {
     }
   }
 
-  public static func download(_ url: URL, to destination: URL) async throws {
+  public static func download(
+    _ url: URL, to destination: URL, maximumBytes: Int? = AttachmentPolicy.fileLimit
+  ) async throws {
     let session = URLSession(configuration: .ephemeral)
     defer { session.invalidateAndCancel() }
     let (temporary, response) = try await session.download(
@@ -226,8 +228,16 @@ public enum AttachmentHTTP {
     }
     defer { try? FileManager.default.removeItem(at: temporary) }
     guard let size = try temporary.resourceValues(forKeys: [.fileSizeKey]).fileSize,
-      size <= AttachmentPolicy.fileLimit
+      maximumBytes.map({ size <= $0 }) ?? true
     else { throw T3Error("The attachment exceeds the download limit.") }
-    try Data(contentsOf: temporary, options: .mappedIfSafe).write(to: destination, options: .atomic)
+    let staging = destination.deletingLastPathComponent().appendingPathComponent(
+      ".t3-download-" + UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: staging) }
+    try FileManager.default.copyItem(at: temporary, to: staging)
+    if FileManager.default.fileExists(atPath: destination.path) {
+      _ = try FileManager.default.replaceItemAt(destination, withItemAt: staging)
+    } else {
+      try FileManager.default.moveItem(at: staging, to: destination)
+    }
   }
 }

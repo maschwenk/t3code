@@ -92,8 +92,12 @@ the preview preference; positions beyond the file are clamped to its contents.
 Right-click a file or file link, or use Actions in the file toolbar, to copy its
 path, open it, reveal it in the host's file manager, or choose an available editor.
 Open and reveal use the connected environment's apps and capabilities.
-Media/HTML/PDF previews, syntax coloring, heading links and workspace content
-search remain incomplete.
+Images and PDFs open in the file panel. Audio and video stream through native
+playback controls; Retry refreshes the asset URL and preserves playback position.
+HTML files offer Source and Preview, with previews refreshing after autosave.
+Save… downloads the original file. Formats macOS cannot decode can be opened
+through Actions. Syntax coloring, heading links and workspace content search
+remain incomplete.
 
 The integrated browser, interactive terminal, full diff views,
 provider setup, and T3 Connect
