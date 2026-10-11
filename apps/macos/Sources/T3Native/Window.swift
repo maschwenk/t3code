@@ -267,8 +267,8 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
         store.shell.projects[$0.projectID] ?? "Project"
       } ?? "Connect to an existing T3 server to get started"
     status.stringValue = store.status
-    errorLabel.stringValue = store.error ?? ""
-    errorLabel.isHidden = store.error == nil
+    errorLabel.stringValue = store.error ?? store.storageError ?? ""
+    errorLabel.isHidden = store.error == nil && store.storageError == nil
     olderButton.isHidden = store.thread?.hasMore != true
     olderButton.isEnabled = store.ready && !store.loadingHistory
     olderButton.title = store.loadingHistory ? "Loading earlier activity…" : "Load earlier activity"

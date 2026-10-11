@@ -1,6 +1,6 @@
 import Foundation
 
-public struct QuestionDraft: Sendable, Equatable {
+public struct QuestionDraft: Codable, Sendable, Equatable {
   public var selected: [String] = []
   public var custom = ""
   public init() {}

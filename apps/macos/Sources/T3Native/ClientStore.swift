@@ -11,10 +11,11 @@ import T3Core
   var ready = false
   var loadingHistory = false
   var sending: Set<String> = []
-  var drafts: [String: String] = [:]
+  var drafts: [String: String] = [:] { didSet { scheduleDraftSave() } }
   var catalog = ProviderCatalog()
   private(set) var catalogReady = false
-  var questionDrafts: [String: [String: QuestionDraft]] = [:]
+  var questionDrafts: [String: [String: QuestionDraft]] = [:] { didSet { scheduleDraftSave() } }
+  private(set) var storageError: String?
   private(set) var commandsInFlight: Set<String> = []
   var onChange: (() -> Void)?
   private var connection: RPCConnection?
@@ -25,11 +26,31 @@ import T3Core
   private var notification: Task<Void, Never>?
   private var generation = UUID()
   private var selectionGeneration = UUID()
-  private var pending: [String: (text: String, command: String, message: String)] = [:]
+  private var pending: [String: PendingSubmission] = [:] { didSet { scheduleDraftSave() } }
+  private let draftRepository: DraftRepository
+  private var draftEndpoint: URL?
+  private var draftSave: Task<Void, Never>?
+
+  init(draftDirectory: URL? = nil) {
+    let directory =
+      draftDirectory
+      ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+      .appendingPathComponent("T3 Native/Drafts", isDirectory: true)
+    draftRepository = DraftRepository(directory: directory)
+  }
 
   func connect(_ settings: ConnectionSettings, selecting threadID: String? = nil) {
+    if let current = self.settings, current.endpoint != settings.endpoint,
+      !drafts.isEmpty || !questionDrafts.isEmpty || !pending.isEmpty,
+      !flushDrafts()
+    {
+      error = "Save the current drafts before switching servers."
+      notify()
+      return
+    }
     disconnect()
-    if self.settings?.endpoint != settings.endpoint {
+    if self.settings?.endpoint != settings.endpoint || draftEndpoint == nil {
+      draftEndpoint = nil
       shell = ShellState()
       sortedThreads = []
       thread = nil
@@ -38,6 +59,16 @@ import T3Core
       questionDrafts = [:]
       pending = [:]
       catalog = ProviderCatalog()
+      do {
+        let saved = try draftRepository.load(for: settings.endpoint)
+        drafts = saved.messages
+        pending = saved.submissions
+        questionDrafts = saved.questions
+        draftEndpoint = settings.endpoint
+        storageError = nil
+      } catch {
+        storageError = "Saved drafts could not be loaded: " + error.localizedDescription
+      }
     }
     self.settings = settings
     if let threadID { selectedID = threadID }
@@ -112,6 +143,7 @@ import T3Core
   }
 
   func disconnect() {
+    _ = flushDrafts()
     generation = UUID()
     selectionGeneration = UUID()
     lifetime?.cancel()
@@ -129,6 +161,35 @@ import T3Core
   }
 
   func retry() { if let settings { connect(settings) } }
+
+  func saveDraftsBeforeExit() -> Bool { flushDrafts() }
+
+  private func scheduleDraftSave() {
+    guard draftEndpoint != nil else { return }
+    draftSave?.cancel()
+    draftSave = Task {
+      do { try await Task.sleep(for: .milliseconds(250)) } catch { return }
+      _ = flushDrafts()
+    }
+  }
+
+  @discardableResult private func flushDrafts() -> Bool {
+    draftSave?.cancel()
+    draftSave = nil
+    guard let draftEndpoint else { return storageError == nil }
+    do {
+      try draftRepository.save(
+        SavedDrafts(
+          messages: drafts.filter { !$0.value.isEmpty }, submissions: pending,
+          questions: questionDrafts), for: draftEndpoint)
+      storageError = nil
+      return true
+    } catch {
+      storageError = "Drafts could not be saved: " + error.localizedDescription
+      notify()
+      return false
+    }
+  }
 
   private func subscribeConfiguration(_ connection: RPCConnection, generation: UUID) {
     configuration?.cancel()
@@ -340,10 +401,9 @@ import T3Core
       !sending.contains(id)
     else { return }
     let command =
-      pending[id].flatMap { $0.text == text ? $0 : nil } ?? (
-        text: text, command: UUID().uuidString, message: UUID().uuidString
-      )
+      pending[id].flatMap { $0.text == text ? $0 : nil } ?? PendingSubmission(text: text)
     pending[id] = command
+    guard flushDrafts() else { return }
     let generation = generation
     sending.insert(id)
     error = nil

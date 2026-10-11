@@ -23,6 +23,16 @@ import T3Core
   }
 
   func applicationWillTerminate(_ notification: Notification) { store.disconnect() }
+  func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+    guard !store.saveDraftsBeforeExit() else { return .terminateNow }
+    let alert = NSAlert()
+    alert.messageText = "Drafts could not be saved"
+    alert.informativeText =
+      store.storageError ?? "Keep the app open to preserve your unsent drafts."
+    alert.addButton(withTitle: "Keep open")
+    alert.addButton(withTitle: "Quit without saving")
+    return alert.runModal() == .alertSecondButtonReturn ? .terminateNow : .terminateCancel
+  }
   func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 }
 

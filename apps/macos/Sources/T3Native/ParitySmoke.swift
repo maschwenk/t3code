@@ -77,7 +77,10 @@ enum ParitySmoke {
     try await dispatch("thread.interaction-mode.set", fields: ["interactionMode": .string("plan")])
     try await verify("interactionMode", .string("plan"))
     print("Provider catalog, model/options, runtime modes, and plan mode round trips passed.")
-    let store = ClientStore()
+    let draftDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "t3-native-smoke-drafts-" + UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: draftDirectory) }
+    let store = ClientStore(draftDirectory: draftDirectory)
     store.connect(settings, selecting: id)
     defer { store.disconnect() }
     try await waitForStore(store) { store.canEditThread && store.catalogReady }
@@ -104,6 +107,17 @@ enum ParitySmoke {
       throw T3Error("Controller lost the draft on reconnect.")
     }
     print("ClientStore model options, shell read-back, and reconnect/draft checks passed.")
+    store.disconnect()
+    let reopened = ClientStore(draftDirectory: draftDirectory)
+    reopened.connect(settings, selecting: id)
+    try await waitForStore(reopened) { reopened.canEditThread && reopened.catalogReady }
+    guard reopened.drafts[id] == "Draft survives reconnect" else {
+      throw T3Error("Draft did not survive a new controller instance.")
+    }
+    reopened.disconnect()
+    store.connect(settings, selecting: id)
+    try await waitForStore(store) { store.canEditThread && store.catalogReady }
+    print("Draft restored in a fresh app controller.")
     guard CommandLine.arguments.contains("--question-smoke") else {
       try await dispatch(
         "thread.interaction-mode.set", fields: ["interactionMode": .string("default")])

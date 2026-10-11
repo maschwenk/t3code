@@ -109,5 +109,8 @@ smoke run as well as the reducer tests.
 One reconnect task owns the session. Reconnect reloads authoritative bounded
 snapshots; cached text remains visible while offline. Mutations are never replayed
 automatically. An unchanged draft retry within this process reuses the command and
-message IDs; after an ambiguous failure across an app restart, check the history
-before submitting again. Drafts are held in memory, not persisted across app quits.
+message IDs, including after an app restart. Draft text, question answers, and
+pending submission IDs are stored atomically under Application Support/T3 Native,
+separated by server address. The files are private to the current macOS user.
+Switching servers or quitting does not discard a draft that failed to save without
+an explicit choice to quit without saving.
