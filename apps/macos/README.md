@@ -109,8 +109,10 @@ scrolling, Unicode and input methods use the native Ghostty renderer. Split pane
 and terminal search remain incomplete.
 
 Open Changes from the thread header or ⌘⇧G to review uncommitted work or compare
-against a branch or revision. Filter the changed-file list, ignore whitespace,
-wrap long lines, copy a patch, or use ⌘F to search the selected diff. Clicking a
+against a branch or revision. Choose a unified or side-by-side diff, filter the
+changed-file list, ignore whitespace, wrap long lines, copy a patch, or use ⌘F to
+search the selected diff. Split columns stay aligned when wrapping or resizing,
+scroll together vertically, and search the focused side. Clicking a
 new line number opens that location in the current workspace file. Completed
 agent tools refresh the comparison; Refresh also picks up external edits.
 Choose Latest turn, a numbered turn, or Full thread to inspect saved checkpoint
@@ -121,7 +123,7 @@ checkpoints show their availability rather than falling back to a different turn
 Links open the current workspace file, which may have changed since the checkpoint.
 Changes and Files share the right side of the window. Large patches are bounded
 and labeled when incomplete; complete file totals remain available when supplied
-by the server. Split diffs, syntax coloring, and line
+by the server. Syntax coloring, context expansion, and line
 annotations remain incomplete. Older pairing sessions need a new pairing token
 for review access.
 

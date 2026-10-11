@@ -14,6 +14,8 @@ final class ReviewPanel: NSViewController, NSTableViewDataSource, NSTableViewDel
   private let whitespace = NSButton(
     checkboxWithTitle: "Ignore whitespace", target: nil, action: nil)
   private let wrap = NSButton(checkboxWithTitle: "Wrap lines", target: nil, action: nil)
+  private let layoutStyle = NSSegmentedControl(
+    labels: ["Unified", "Split"], trackingMode: .selectOne, target: nil, action: nil)
   private let search = NSSearchField()
   private let table = NSTableView()
   private let summary = NSTextField(wrappingLabelWithString: "")
@@ -21,6 +23,7 @@ final class ReviewPanel: NSViewController, NSTableViewDataSource, NSTableViewDel
   private let path = NSTextField(labelWithString: "Select a changed file")
   private let text = NSTextView()
   private let scroll = NSScrollView()
+  private let splitDiff = SplitReviewView(frame: .zero)
   private let openButton = NSButton(title: "Open file", target: nil, action: nil)
   private let copyButton = NSButton(title: "Copy patch", target: nil, action: nil)
   private let retryButton = NSButton(title: "Retry file", target: nil, action: nil)
@@ -65,7 +68,14 @@ final class ReviewPanel: NSViewController, NSTableViewDataSource, NSTableViewDel
     wrap.target = self
     wrap.action = #selector(toggleWrap)
     wrap.state = UserDefaults.standard.bool(forKey: "reviewWrapLines") ? .on : .off
-    let options = NSStackView(views: [whitespace, NSView(), wrap])
+    layoutStyle.target = self
+    layoutStyle.action = #selector(changeLayout)
+    layoutStyle.selectedSegment =
+      UserDefaults.standard.string(forKey: "reviewDiffLayout") == "split" ? 1 : 0
+    layoutStyle.setAccessibilityLabel("Diff layout")
+    let options = NSStackView(views: [layoutStyle, NSView(), wrap])
+    let sourceOptions = NSStackView(views: [sources, whitespace])
+    sources.setContentHuggingPriority(.defaultLow, for: .horizontal)
     search.placeholderString = "Filter changed files"
     search.setAccessibilityLabel("Filter changed files")
     search.delegate = self
@@ -112,13 +122,14 @@ final class ReviewPanel: NSViewController, NSTableViewDataSource, NSTableViewDel
     scroll.documentView = text
     scroll.hasVerticalScroller = true
     scroll.autohidesScrollers = true
-    let detail = stack([actions, status, retryButton, scroll])
+    splitDiff.onOpenLine = { [weak self] line in self?.open(line: line) }
+    let detail = stack([actions, status, retryButton, scroll, splitDiff])
     let split = NSSplitView()
     split.isVertical = false
     split.dividerStyle = .thin
     split.addArrangedSubview(browser)
     split.addArrangedSubview(detail)
-    let content = stack([header, sources, comparison, options, split])
+    let content = stack([header, sourceOptions, comparison, options, split])
     surface.addSubview(content)
     content.translatesAutoresizingMaskIntoConstraints = false
     NSLayoutConstraint.activate([
@@ -155,6 +166,10 @@ final class ReviewPanel: NSViewController, NSTableViewDataSource, NSTableViewDel
   }
   func focus() { view.window?.makeFirstResponder(search) }
   func find() {
+    if layoutStyle.selectedSegment == 1 {
+      splitDiff.find()
+      return
+    }
     view.window?.makeFirstResponder(text)
     let item = NSMenuItem()
     item.tag = Int(NSFindPanelAction.showFindPanel.rawValue)
@@ -251,10 +266,17 @@ final class ReviewPanel: NSViewController, NSTableViewDataSource, NSTableViewDel
   }
 
   private func render() {
-    let rendered = ReviewText.render(changes.patch)
-    displayLimited = rendered.limited
-    text.textStorage?.setAttributedString(rendered.text)
-    text.scrollToBeginningOfDocument(nil)
+    let split = layoutStyle.selectedSegment == 1
+    scroll.isHidden = split
+    splitDiff.isHidden = !split
+    if split {
+      displayLimited = splitDiff.render(changes.patch)
+    } else {
+      let rendered = ReviewText.render(changes.patch)
+      displayLimited = rendered.limited
+      text.textStorage?.setAttributedString(rendered.text)
+      text.scrollToBeginningOfDocument(nil)
+    }
   }
 
   func numberOfRows(in tableView: NSTableView) -> Int { filtered.count }
@@ -322,8 +344,15 @@ final class ReviewPanel: NSViewController, NSTableViewDataSource, NSTableViewDel
     UserDefaults.standard.set(wrap.state == .on, forKey: "reviewWrapLines")
     applyWrap()
   }
+  @objc private func changeLayout() {
+    UserDefaults.standard.set(
+      layoutStyle.selectedSegment == 1 ? "split" : "unified", forKey: "reviewDiffLayout")
+    render()
+    refresh()
+  }
   private func applyWrap() {
     let wrap = wrap.state == .on
+    splitDiff.setWrapped(wrap)
     text.isHorizontallyResizable = !wrap
     text.autoresizingMask = wrap ? [.width] : []
     text.textContainer?.widthTracksTextView = wrap
@@ -334,61 +363,5 @@ final class ReviewPanel: NSViewController, NSTableViewDataSource, NSTableViewDel
       text.setFrameSize(NSSize(width: scroll.contentSize.width, height: text.frame.height))
     }
     scroll.hasHorizontalScroller = !wrap
-  }
-}
-
-@MainActor enum ReviewText {
-  static func render(_ file: DiffFile?) -> (text: NSAttributedString, limited: Bool) {
-    let output = NSMutableAttributedString()
-    guard let file else { return (output, false) }
-    let font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-    let paragraph = NSMutableParagraphStyle()
-    paragraph.lineSpacing = 2
-    paragraph.defaultTabInterval = font.maximumAdvancement.width * 4
-    var limited = false
-    for (index, line) in file.lines.enumerated() {
-      if index >= 10_000 || output.length + line.text.utf16.count > 1_000_000 {
-        limited = true
-        break
-      }
-      let old = line.oldLine.map(String.init) ?? ""
-      let new = line.newLine.map(String.init) ?? ""
-      let prefix =
-        String(repeating: " ", count: max(0, 5 - old.count)) + old + " "
-        + String(repeating: " ", count: max(0, 5 - new.count)) + new + " "
-      let sign = line.kind == .addition ? "+" : line.kind == .deletion ? "−" : " "
-      let value = NSMutableAttributedString(
-        string: prefix + sign + " " + line.text + "\n",
-        attributes: [.font: font, .foregroundColor: NSColor.labelColor, .paragraphStyle: paragraph])
-      switch line.kind {
-      case .addition:
-        value.addAttribute(
-          .backgroundColor, value: NSColor.systemGreen.withAlphaComponent(0.13),
-          range: NSRange(location: 0, length: value.length))
-      case .deletion:
-        value.addAttribute(
-          .backgroundColor, value: NSColor.systemRed.withAlphaComponent(0.13),
-          range: NSRange(location: 0, length: value.length))
-      case .hunk:
-        value.addAttribute(
-          .foregroundColor, value: NSColor.systemBlue,
-          range: NSRange(location: 0, length: value.length))
-      case .metadata:
-        value.addAttribute(
-          .foregroundColor, value: NSColor.secondaryLabelColor,
-          range: NSRange(location: 0, length: value.length))
-      case .context: break
-      }
-      value.addAttribute(
-        .foregroundColor, value: NSColor.secondaryLabelColor,
-        range: NSRange(location: 0, length: prefix.utf16.count))
-      if let number = line.newLine, !file.isDeleted {
-        value.addAttribute(
-          .link, value: String(number),
-          range: NSRange(location: prefix.utf16.count - new.count - 1, length: new.count))
-      }
-      output.append(value)
-    }
-    return (output, limited)
   }
 }

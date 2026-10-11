@@ -54,6 +54,12 @@ extension ParitySmoke {
         else {
           throw T3Error("Checkpoint text did not render.")
         }
+        let split = SplitReviewText(file)
+        let removed = file.lines.first(where: { $0.kind == .deletion })?.text ?? ""
+        let added = file.lines.first(where: { $0.kind == .addition })?.text ?? ""
+        guard
+          split.limited || split.old.string.contains(removed) && split.new.string.contains(added)
+        else { throw T3Error("The split checkpoint diff lost changed lines.") }
         if !file.isDeleted && !file.isBinary, let absolutePath = changes.absolutePath,
           let location = store.workspaceLocation
         {

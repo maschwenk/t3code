@@ -111,6 +111,15 @@ extension ParitySmoke {
     guard display.text.string.contains("new 日本語 👋"), !display.limited else {
       throw T3Error("Native diff text did not render the actual patch.")
     }
+    let split = SplitReviewView(frame: NSRect(x: 0, y: 0, width: 600, height: 300))
+    split.setWrapped(true)
+    guard !split.render(changes.patch), split.oldText.string.contains("old\r\n"),
+      split.newText.string.contains("new 日本語 👋\r\n")
+    else { throw T3Error("The split view lost one side of the actual patch.") }
+    split.setWrapped(false)
+    guard split.oldScroll.hasHorizontalScroller && split.newScroll.hasHorizontalScroller else {
+      throw T3Error("The split diff cannot scroll unwrapped lines.")
+    }
     for (name, check) in [
       ("deleted.txt", { (file: DiffFile) in file.isDeleted }),
       ("new name.txt", { (file: DiffFile) in file.previousPath == "old name.txt" }),
@@ -132,7 +141,8 @@ extension ParitySmoke {
     reviewProgress("large per-file patch")
     try await waitForChanges(changes) { !changes.loadingFile }
     guard changes.file?.additions == 50_000,
-      changes.truncated || ReviewText.render(changes.patch).limited
+      changes.truncated || ReviewText.render(changes.patch).limited,
+      SplitReviewText(changes.patch).limited
     else { throw T3Error("Large patches must preserve full stats and expose the display limit.") }
     changes.selectSource("branch-range")
     changes.compare(baseRef: "main", ignoreWhitespace: true)
@@ -176,7 +186,7 @@ extension ParitySmoke {
       throw T3Error("Review smoke unexpectedly started inference.")
     }
     print(
-      "Review smoke passed: working-tree/branch comparison, complete stats, per-file patches, Unicode/CRLF, rename/delete/binary/untracked files, whitespace filter, large patch bounds, invalid-ref recovery, stale selection cancellation, hide/reopen refresh, navigation isolation, no inference. Fixture \(root.path), thread \(reviewID)."
+      "Review smoke passed: working-tree/branch comparison, complete stats, per-file patches, unified/split rendering, Unicode/CRLF, rename/delete/binary/untracked files, whitespace filter, large patch bounds, invalid-ref recovery, stale selection cancellation, hide/reopen refresh, navigation isolation, no inference. Fixture \(root.path), thread \(reviewID)."
     )
   }
 
