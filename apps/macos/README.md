@@ -41,6 +41,12 @@ Both paths retain the link to the source plan. If a send loses its connection,
 Retry resumes the saved send; its menu can dismiss the retry without stopping
 work already accepted by the server.
 
+Long plan cards start with a compact preview; Expand plan reveals the full text.
+Their actions menu copies the complete Markdown, downloads it, or saves it to a
+path in the thread’s workspace. Workspace saves use the connected environment,
+including a remote server or the thread’s worktree. A failed save keeps the dialog
+and entered path available for retry.
+
 The menu beside Send chooses Auto, Queue next, Steer now, or Interrupt and restart
 when the provider supports them. Queued messages can be edited, removed, reordered,
 or sent as steering. Stop holds the queue; Resume continues interrupted work and
@@ -129,6 +135,10 @@ checks queue edits, reorder, cancellation, stop/resume, and draft recovery.
 `--plan-smoke` checks real plan generation and refinement, implementation in the
 same and a new thread, source-plan links, and restart after a partially committed
 send. It uses an isolated plan-mode preference and five short provider turns.
+`--plan-card-thread THREAD_ID` reuses one of those isolated plan threads to check
+collapsed/expanded text layout and exact local/workspace exports, including
+reconnect and invalid-path handling. It writes a uniquely named Markdown file
+under `plans/` in the isolated workspace and sends no inference request.
 Add `--manual-question` instead to leave the real question pending for a UI check.
 Add `--tool-output-smoke` to run a diagnostic `printf`, approve only that exact
 command once if requested, and fetch its omitted output through the controller.

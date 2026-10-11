@@ -17,8 +17,10 @@ public struct RenderedMarkdown {
 }
 
 @MainActor public enum MarkdownRenderer {
-  public static func render(_ source: String, width: CGFloat) -> RenderedMarkdown {
-    let renderer = Renderer(width: width)
+  public static func render(_ source: String, width: CGFloat, headingLevelOffset: Int = 0)
+    -> RenderedMarkdown
+  {
+    let renderer = Renderer(width: width, headingLevelOffset: headingLevelOffset)
     for block in Document(parsing: source).children { renderer.block(block) }
     return RenderedMarkdown(text: renderer.output, codeBlocks: renderer.codeBlocks)
   }
@@ -45,16 +47,21 @@ public struct RenderedMarkdown {
     var alignment = NSTextAlignment.left
   }
   let width: CGFloat
+  let headingLevelOffset: Int
   let output = NSMutableAttributedString(string: "")
   var codeBlocks: [RenderedCodeBlock] = []
-  init(width: CGFloat) { self.width = max(120, width) }
+  init(width: CGFloat, headingLevelOffset: Int) {
+    self.width = max(120, width)
+    self.headingLevelOffset = min(5, max(0, headingLevelOffset))
+  }
 
   func block(_ node: any Markup, style: Style = Style(), prefix: String = "") {
     switch node {
     case let heading as Heading:
       var headingStyle = style
       headingStyle.font = .systemFont(
-        ofSize: [22.0, 19, 17, 15, 14, 14][min(5, max(0, heading.level - 1))], weight: .semibold)
+        ofSize: [22.0, 19, 17, 15, 14, 14][min(5, max(0, heading.level + headingLevelOffset - 1))],
+        weight: .semibold)
       paragraph(
         inline(heading, style: headingStyle), style: headingStyle, prefix: prefix, before: 10)
     case let paragraph as Paragraph:

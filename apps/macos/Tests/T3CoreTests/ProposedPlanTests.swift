@@ -95,6 +95,15 @@ private func planFixture(_ id: String, run: String = "run", status: String = "ac
     }
   }
   #expect(Commands.newThread(template: template, id: "ordinary")["worktreePath"] == .null)
+  let simplyNamed = ProposedPlan(
+    .object([
+      "id": .string("plan"), "kind": .string("proposed_plan"),
+      "markdown": .string("# Plan\n\nDo the work."),
+    ]), updatedAt: "")!
+  let named = PendingPlanSubmission(
+    plan: simplyNamed, template: template, draft: "", newThread: true,
+    defaultRuntimeMode: "approval-required")
+  #expect(named.setup["title"].string == "Implement Plan")
 }
 
 @Test func partialPlanSendPreservesBothCommandIdentitiesAcrossRestart() throws {

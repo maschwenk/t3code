@@ -89,3 +89,17 @@ import Testing
   #expect(rendered.text.attribute(.link, at: 0, effectiveRange: nil) == nil)
   #expect(rendered.text.string.contains("<script>"))
 }
+
+@MainActor @Test func cardHeadingsRemainBelowTheTitleWithoutChangingCopyableContent() throws {
+  let source = "# Details\n\n## Steps\n\n```swift\nlet value = 1\n```\n"
+  let normal = MarkdownRenderer.render(source, width: 500)
+  let card = MarkdownRenderer.render(source, width: 500, headingLevelOffset: 3)
+  #expect(card.text.string == normal.text.string)
+  #expect(card.codeBlocks.first?.code == "let value = 1\n")
+  let normalFont = try #require(normal.text.attribute(.font, at: 0, effectiveRange: nil) as? NSFont)
+  let cardFont = try #require(card.text.attribute(.font, at: 0, effectiveRange: nil) as? NSFont)
+  #expect(cardFont.pointSize < normalFont.pointSize)
+  #expect(
+    MarkdownRenderer.height(of: card.text, width: 500)
+      < MarkdownRenderer.height(of: normal.text, width: 500))
+}

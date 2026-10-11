@@ -21,6 +21,11 @@ enum ParitySmoke {
       Task { await connection.close() }
     }
     try await connection.open()
+    if let threadID = Arguments.value("--plan-card-thread") {
+      try await planCard(
+        settings: settings, connection: connection, threadID: threadID, projectID: project)
+      return
+    }
     if let threadID = Arguments.value("--resume-queue-thread") {
       let projection = try await connection.call(
         "orchestration.getThreadProjection", payload: .object(["threadId": .string(threadID)]))
@@ -1063,6 +1068,101 @@ enum ParitySmoke {
       }
       throw error
     }
+  }
+
+  @MainActor private static func planCard(
+    settings: ConnectionSettings, connection: RPCConnection, threadID: String, projectID: String
+  ) async throws {
+    let original = try await connection.call(
+      "orchestration.getThreadProjection", payload: .object(["threadId": .string(threadID)]))
+    guard original["thread"]["projectId"].string == projectID,
+      original["thread"]["title"].string == "Native plan verification"
+    else {
+      throw T3Error("Plan card checks require an isolated plan verification thread.")
+    }
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "t3-plan-card-" + UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let store = ClientStore(draftDirectory: directory)
+    store.connect(settings, selecting: threadID)
+    defer { store.disconnect() }
+    try await waitForStore(store) { store.canEditThread && store.catalogReady }
+    guard let row = store.thread?.rows.first(where: { $0.kind == "proposed_plan" }),
+      let location = store.workspaceLocation, let template = store.selectedThread
+    else {
+      throw T3Error("The stored plan or its workspace is unavailable.")
+    }
+    let document = PlanDocument(row.text)
+    let downloaded = directory.appendingPathComponent(document.filename)
+    try await document.save(to: downloaded)
+    guard try Data(contentsOf: downloaded) == Data(document.contents.utf8) else {
+      throw T3Error("The local Markdown export changed bytes.")
+    }
+    let path = "plans/native-plan-card-" + UUID().uuidString.lowercased() + ".md"
+    let saved = try await store.savePlan(document, at: location, relativePath: " " + path + " ")
+    let read = try await connection.call(
+      "projects.readFile",
+      payload: .object([
+        "cwd": .string(location.root), "relativePath": .string(saved),
+      ]))
+    guard saved == path, !read["truncated"].bool,
+      read["contents"].string == document.contents,
+      read["byteLength"].int == document.contents.utf8.count
+    else {
+      throw T3Error("The workspace export changed path or bytes.")
+    }
+    var rejected = false
+    do {
+      _ = try await store.savePlan(
+        document, at: location, relativePath: "../outside-" + UUID().uuidString + ".md")
+    } catch {
+      rejected = (error as? T3Error)?.remoteCode == "ProjectWriteFileError"
+    }
+    guard rejected else { throw T3Error("The server did not reject an outside-workspace save.") }
+    let other = WorkspaceLocation(
+      environment: "different-environment", thread: template,
+      project: .object(["workspaceRoot": .string(location.root)]))!
+    rejected = false
+    do { _ = try await store.savePlan(document, at: other, relativePath: path) } catch {
+      rejected = error.localizedDescription.contains("workspace changed")
+    }
+    guard rejected else {
+      throw T3Error("A save dialog could write after its environment changed.")
+    }
+    store.retry()
+    try await waitForStore(store) { store.canEditThread && store.catalogReady }
+    _ = try await store.savePlan(document, at: location, relativePath: saved)
+    let repeated = try await connection.call(
+      "projects.readFile",
+      payload: .object([
+        "cwd": .string(location.root), "relativePath": .string(saved),
+      ]))
+    guard repeated["contents"] == read["contents"] else {
+      throw T3Error("Reconnect/retry changed the exported plan.")
+    }
+    let longPlan =
+      "# Card layout\n\n## Summary\n\n"
+      + (1...24).map {
+        "- Step \($0): " + String(repeating: "Preserve the full plan. ", count: 8)
+      }.joined(separator: "\n\n") + "\n\n**Last step marker**\n"
+    let collapsed = PlanCardLayout(markdown: longPlan, width: 340, expanded: false)
+    let expanded = PlanCardLayout(markdown: longPlan, width: 340, expanded: true)
+    guard collapsed.bodyHeight <= 416, expanded.height > collapsed.height,
+      !collapsed.rendered.text.string.contains("Last step marker"),
+      expanded.rendered.text.string.contains("Last step marker"),
+      collapsed.document.contents == expanded.document.contents
+    else {
+      throw T3Error("Collapsing the card lost export content or failed to bound its layout.")
+    }
+    let final = try await connection.call(
+      "orchestration.getThreadProjection", payload: .object(["threadId": .string(threadID)]))
+    guard final["runs"] == original["runs"] else {
+      throw T3Error("Export unexpectedly changed inference state.")
+    }
+    print(
+      "PASS: plan card bounded/collapsed and expanded Markdown layout, exact local and workspace exports, rejected path/environment changes, reconnect/retry, no new inference; saved \(saved)."
+    )
   }
 
   @MainActor private static func waitForStore(

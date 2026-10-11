@@ -5,6 +5,7 @@ public struct ProposedPlan: Codable, Equatable, Sendable, Identifiable {
   public let runID: String?
   public let status: String
   public let markdown: String
+  public let heading: String?
   public let title: String
   public private(set) var updatedAt: String
 
@@ -14,21 +15,10 @@ public struct ProposedPlan: Codable, Equatable, Sendable, Identifiable {
     runID = value["runId"].string
     status = value["status"].string ?? "draft"
     markdown = value["markdown"].string ?? ""
-    title = Self.title(in: markdown)
+    heading =
+      markdown.components(separatedBy: .newlines).lazy.compactMap(PlanDocument.heading).first
+    title = heading ?? "Plan"
     self.updatedAt = updatedAt
-  }
-
-  private static func title(in markdown: String) -> String {
-    for line in markdown.components(separatedBy: .newlines) {
-      guard line.range(of: #"^\s{0,3}#{1,6}\s+(.+)$"#, options: .regularExpression) != nil
-      else { continue }
-      let heading = line.replacingOccurrences(
-        of: #"^\s{0,3}#{1,6}\s+"#, with: "", options: .regularExpression
-      )
-      .trimmingCharacters(in: .whitespacesAndNewlines)
-      if !heading.isEmpty { return heading }
-    }
-    return "Plan"
   }
 
   public var implementationPrompt: String {
@@ -71,8 +61,7 @@ public struct PendingPlanSubmission: Codable, Equatable, Sendable {
     if newThread {
       setup = Commands.newThread(
         template: template, id: targetThreadID,
-        title: String(
-          (plan.title == "Plan" ? "Implement plan" : "Implement " + plan.title).prefix(120)),
+        title: String((plan.heading.map { "Implement " + $0 } ?? "Implement plan").prefix(120)),
         runtimeMode: defaultRuntimeMode, interactionMode: mode, inheritWorkspace: true)
     } else {
       setup = .object([

@@ -417,6 +417,25 @@ import T3Core
     selectedID.flatMap { shell.threads[$0] ?? archives.threads[$0] }
   }
   var environmentKey: String { settings?.endpoint.absoluteString ?? "disconnected" }
+  var workspaceLocation: WorkspaceLocation? {
+    guard let selectedThread else { return nil }
+    return WorkspaceLocation(
+      environment: environmentKey, thread: selectedThread,
+      project: shell.projectDetails[selectedThread.projectID] ?? archives.projectDetails[
+        selectedThread.projectID] ?? .null)
+  }
+  func savePlan(_ document: PlanDocument, at location: WorkspaceLocation, relativePath: String)
+    async throws -> String
+  {
+    guard ready, let connection else { throw T3Error("Connect before saving to the workspace.") }
+    guard workspaceLocation == location else {
+      throw T3Error("The workspace changed. Reopen Save to workspace for the current thread.")
+    }
+    let result = try await connection.call(
+      "projects.writeFile",
+      payload: location.writeInput(relativePath: relativePath, contents: document.contents))
+    return try result.requiredString("relativePath")
+  }
   var changingSettings: Bool { commandsInFlight.contains((selectedID ?? "") + ":settings") }
   var canEditThread: Bool {
     ready && thread?.synchronized == true && selectedThread?.archived == false && !changingSettings

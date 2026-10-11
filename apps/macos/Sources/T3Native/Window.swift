@@ -1,6 +1,7 @@
 import AppKit
 import T3Core
 import T3Markdown
+import UniformTypeIdentifiers
 
 @MainActor private final class ConversationWindow: NSWindow {
   var questionShortcut: ((NSEvent) -> Bool)?
@@ -108,6 +109,15 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
   private var sidebarItem: NSSplitViewItem?
   private var rows: [ConversationEntry] = []
   private var expandedWork: [String: Set<String>] = [:]
+  private var expandedPlans: [String: Set<String>] = [:]
+  private var planLayouts:
+    [String: (row: TimelineRow, width: CGFloat, expanded: Bool, layout: PlanCardLayout)] = [:]
+  private var planWorkspace: WorkspaceLocation?
+  private var planWorkspaceReady = false
+  private var planSavePaths: [String: String] = [:]
+  private var planSaveSheet: WorkspaceSaveSheet?
+  private var notice: String?
+  private var noticeReset: Task<Void, Never>?
   private var rendered:
     [String: (row: TimelineRow, markdown: RenderedMarkdown, width: CGFloat, height: CGFloat)] = [:]
   private var renderedThread: String?
@@ -418,7 +428,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
       selected.map {
         store.shell.projects[$0.projectID] ?? store.archives.projects[$0.projectID] ?? "Project"
       } ?? "Connect to an existing T3 server to get started"
-    status.stringValue = store.status
+    status.stringValue = notice ?? store.status
     errorLabel.stringValue = store.error ?? store.storageError ?? ""
     errorLabel.isHidden = store.error == nil && store.storageError == nil
     olderButton.isHidden = store.thread?.hasMore != true
@@ -449,6 +459,13 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
       store.canEditThread && !store.commandsInFlight.contains((store.selectedID ?? "") + ":stop")
     window?.contentView?.layoutSubtreeIfNeeded()
     updateRows(conversationEntries(), anchor: anchor)
+    if planWorkspace != store.workspaceLocation || planWorkspaceReady != store.ready {
+      planWorkspace = store.workspaceLocation
+      planWorkspaceReady = store.ready
+      timeline.reloadData(
+        forRowIndexes: IndexSet(rows.indices.filter { rows[$0].item?.kind == "proposed_plan" }),
+        columnIndexes: IndexSet(integer: 0))
+    }
     let connectionState = "\(store.environmentKey):\(store.ready)"
     if connectionState != attachmentConnectionState {
       attachmentConnectionState = connectionState
@@ -492,7 +509,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     _ next: [ConversationEntry], anchor savedAnchor: ScrollAnchor? = nil,
     followsBottom: Bool? = nil
   ) {
-    let changedThread = renderedThread != store.selectedID
+    let changedThread = renderedThread != planScope
     guard changedThread || next != rows else {
       if let savedAnchor { restoreScroll(savedAnchor) }
       return
@@ -514,12 +531,16 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
         anchor.offset = 0
       }
     }
-    renderedThread = store.selectedID
+    renderedThread = planScope
     if changedThread || !samePrefix {
       rendered.removeAll(keepingCapacity: true)
+      planLayouts.removeAll(keepingCapacity: true)
       timeline.reloadData()
     } else {
-      for index in changes { rendered.removeValue(forKey: rows[index].id) }
+      for index in changes {
+        rendered.removeValue(forKey: rows[index].id)
+        planLayouts.removeValue(forKey: rows[index].id)
+      }
       if rows.count > oldCount {
         timeline.insertRows(at: IndexSet(oldCount..<rows.count), withAnimation: [])
       }
@@ -559,6 +580,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     let anchor = scrollAnchor()
     lastWidth = width
     rendered.removeAll(keepingCapacity: true)
+    planLayouts.removeAll(keepingCapacity: true)
     timeline.noteHeightOfRows(withIndexesChanged: IndexSet(rows.indices))
     timeline.reloadData(forRowIndexes: IndexSet(rows.indices), columnIndexes: IndexSet(integer: 0))
     restoreScroll(anchor)
@@ -599,7 +621,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
 
   func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
     switch rows[row] {
-    case .item(let item): render(item).1
+    case .item(let item): item.kind == "proposed_plan" ? planLayout(item).height : render(item).1
     case .work: 36
     }
   }
@@ -609,6 +631,22 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
   {
     if case .work(let group) = rows[index] { return workCell(group) }
     guard case .item(let row) = rows[index] else { return nil }
+    if row.kind == "proposed_plan" {
+      let layout = planLayout(row)
+      let location = store.workspaceLocation
+      return PlanCardView(
+        layout: layout, inherited: row.inherited, canSave: store.ready && location != nil,
+        toggle: { [weak self] in self?.togglePlan(row.id) },
+        copy: { [weak self] in
+          NSPasteboard.general.clearContents()
+          NSPasteboard.general.setString(layout.document.contents, forType: .string)
+          self?.showNotice("Plan copied")
+        },
+        download: { [weak self] in self?.downloadPlan(layout.document) },
+        save: { [weak self] in
+          if let location { self?.savePlan(layout.document, rowID: row.id, location: location) }
+        })
+    }
     let cell = NSView()
     let title = NSTextField(labelWithString: "")
     title.font = .systemFont(ofSize: 11, weight: .semibold)
@@ -666,6 +704,79 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
       header.widthAnchor.constraint(equalTo: stack.widthAnchor),
     ])
     return cell
+  }
+
+  private var planScope: String { store.environmentKey + "\n" + (store.selectedID ?? "") }
+  private func planLayout(_ row: TimelineRow) -> PlanCardLayout {
+    let expanded = expandedPlans[planScope]?.contains(row.id) == true
+    let width = timeline.bounds.width
+    if let cached = planLayouts[row.id], cached.row == row, cached.width == width,
+      cached.expanded == expanded
+    {
+      return cached.layout
+    }
+    let layout = PlanCardLayout(markdown: row.text, width: width, expanded: expanded)
+    planLayouts[row.id] = (row, width, expanded, layout)
+    return layout
+  }
+  private func togglePlan(_ rowID: String) {
+    guard let index = rows.firstIndex(where: { $0.id == rowID }) else { return }
+    var anchor = scrollAnchor()
+    anchor.followsBottom = false
+    if expandedPlans[planScope, default: []].contains(rowID) {
+      expandedPlans[planScope, default: []].remove(rowID)
+      if anchor.id == rowID { anchor.offset = 0 }
+    } else {
+      expandedPlans[planScope, default: []].insert(rowID)
+    }
+    planLayouts.removeValue(forKey: rowID)
+    timeline.noteHeightOfRows(withIndexesChanged: IndexSet(integer: index))
+    timeline.reloadData(
+      forRowIndexes: IndexSet(integer: index), columnIndexes: IndexSet(integer: 0))
+    restoreScroll(anchor)
+  }
+  private func showNotice(_ message: String) {
+    noticeReset?.cancel()
+    notice = message
+    status.stringValue = message
+    noticeReset = Task { [weak self] in
+      do { try await Task.sleep(for: .seconds(4)) } catch { return }
+      self?.notice = nil
+      if let self { status.stringValue = store.status }
+    }
+  }
+  private func downloadPlan(_ document: PlanDocument) {
+    guard let window else { return }
+    let panel = NSSavePanel()
+    panel.nameFieldStringValue = document.filename
+    panel.allowedContentTypes = [UTType(filenameExtension: "md") ?? .plainText]
+    panel.beginSheetModal(for: window) { [weak self] response in
+      guard response == .OK, let url = panel.url else { return }
+      Task { @MainActor in
+        do {
+          try await document.save(to: url)
+          self?.showNotice("Plan saved as \(url.lastPathComponent)")
+        } catch {
+          self?.store.error = error.localizedDescription
+          self?.refresh()
+        }
+      }
+    }
+  }
+  private func savePlan(_ document: PlanDocument, rowID: String, location: WorkspaceLocation) {
+    guard let window, planSaveSheet == nil else { return }
+    let key = location.environment + "\n" + location.threadID + "\n" + rowID
+    let sheet = WorkspaceSaveSheet(
+      root: location.root, path: planSavePaths[key] ?? document.filename,
+      write: { [store] path in try await store.savePlan(document, at: location, relativePath: path)
+      },
+      saved: { [weak self] path in self?.showNotice("Plan saved to workspace · \(path)") },
+      closed: { [weak self] path in
+        self?.planSavePaths[key] = path
+        self?.planSaveSheet = nil
+      })
+    planSaveSheet = sheet
+    sheet.present(on: window)
   }
 
   private func workCell(_ group: TimelineWorkGroup) -> NSView {
