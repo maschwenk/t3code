@@ -107,6 +107,34 @@ extension ParitySmoke {
       print("Browser smoke: links, back/forward, popup and screenshot")
       page.reload(hard: true)
       try await wait { !page.web.isLoading && page.web.title == "Browser fixture Two" }
+      let blocked = try BrowserTab(
+        await connection.call(
+          "preview.navigate",
+          payload: .object([
+            "threadId": .string(threadID), "tabId": .string(tab.id),
+            "url": .string("http://localhost:1/unavailable"),
+          ])))
+      page.receive(blocked)
+      let deadline = Date().addingTimeInterval(10)
+      while page.failure == nil && Date() < deadline {
+        try await Task.sleep(for: .milliseconds(50))
+      }
+      guard page.failure != nil else {
+        throw T3Error("WebKit rejected an address without showing an error.")
+      }
+      let restored = try BrowserTab(
+        await connection.call(
+          "preview.navigate",
+          payload: .object([
+            "threadId": .string(threadID), "tabId": .string(tab.id),
+            "url": .string(fixture.absoluteString),
+          ])))
+      page.receive(restored, navigate: true)
+      try await wait { !page.web.isLoading && page.web.title == "Browser fixture One" }
+      guard page.failure == nil else {
+        throw T3Error("Browser navigation did not recover after an error.")
+      }
+      print("Browser smoke: blocked address reports failure and recovers on valid navigation")
       try await close()
       let remaining = try await connection.call(
         "preview.list", payload: .object(["threadId": .string(threadID)]))
@@ -175,6 +203,47 @@ extension ParitySmoke {
       }
       _ = try await regular.evaluateJavaScript(
         "document.getElementById('draft').value='preserved across conversations'; 'ok'")
+      func expectViewport(_ setting: BrowserViewport) async throws {
+        panel.resize(setting)
+        let deadline = Date().addingTimeInterval(15)
+        while Date() < deadline {
+          panel.view.layoutSubtreeIfNeeded()
+          if let actual = try await regular.evaluateJavaScript("[innerWidth,innerHeight]")
+            as? [Int],
+            actual == [setting.width!, setting.height!]
+          {
+            return
+          }
+          try await Task.sleep(for: .milliseconds(50))
+        }
+        let actual = try await regular.evaluateJavaScript("[innerWidth,innerHeight]")
+        throw T3Error(
+          "Requested viewport \(setting.width!) × \(setting.height!), got \(String(describing: actual))."
+        )
+      }
+      let phone = BrowserDevicePreset.all[0].viewport
+      try await expectViewport(phone)
+      let stored = try await connection.call(
+        "preview.list", payload: .object(["threadId": .string(threadID)]))
+      guard stored["sessions"].array.contains(where: { $0["viewport"] == phone.json }) else {
+        throw T3Error("Device viewport did not persist on the server.")
+      }
+      try await expectViewport(phone.rotated)
+      regular.pageZoom = 1.5
+      try await expectViewport(try BrowserViewport(width: 1024, height: 768))
+      guard
+        try await regular.evaluateJavaScript("document.getElementById('draft').value") as? String
+          == "preserved across conversations"
+      else { throw T3Error("Resizing discarded the page form.") }
+      regular.pageZoom = 1
+      panel.resize(.fill)
+      try await wait {
+        (views(panel.view).first { $0 is BrowserViewportView } as? BrowserViewportView)?.setting
+          == .fill
+      }
+      print(
+        "Browser smoke: preset, rotated and custom CSS viewports, page zoom, server persistence and form retention"
+      )
       let alternate = UUID().uuidString
       guard let template = store.selectedThread else { throw T3Error("No browser fixture thread.") }
       _ = try await connection.call(

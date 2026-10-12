@@ -4,11 +4,15 @@ import WebKit
 
 @MainActor final class BrowserPanel: NSViewController {
   var onClose: (() -> Void)?
+  var onContextAdded: (() -> Void)?
   var onExpand: (() -> Void)?
   private let store: ClientStore
   private let profiles = BrowserProfiles()
   private let tabs = NSStackView()
-  private let host = NSView()
+  private let host = BrowserViewportView()
+  private let devices = BrowserDeviceToolbar()
+  private let deviceToggle = NSButton()
+  private var lastViewports: [String: BrowserViewport] = [:]
   private let address = NSTextField()
   private let empty = NSStackView()
   private let footer = NSStackView()
@@ -17,6 +21,7 @@ import WebKit
   private let forward = NSButton()
   private let reload = NSButton()
   private let capture = NSButton()
+  private let pick = NSButton()
   private let more = NSPopUpButton(frame: .zero, pullsDown: true)
   private let add = NSButton()
   private let retry = NSButton(title: "Retry", target: nil, action: nil)
@@ -81,6 +86,9 @@ import WebKit
     configure(reload, symbol: "arrow.clockwise", label: "Reload", action: #selector(reloadPage))
     configure(
       capture, symbol: "camera", label: "Attach browser screenshot", action: #selector(capturePage))
+    configure(
+      pick, symbol: "cursorarrow.click.2", label: "Select element for message",
+      action: #selector(togglePicker))
     address.placeholderString = "Search or enter URL"
     address.font = .systemFont(ofSize: 13)
     address.isBezeled = false
@@ -91,7 +99,17 @@ import WebKit
     address.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
     more.bezelStyle = .inline
     more.setAccessibilityLabel("Browser actions")
-    let navigation = NSStackView(views: [back, forward, reload, address, capture, more])
+    configure(
+      deviceToggle, symbol: "rectangle.on.rectangle", label: "Toggle device toolbar",
+      action: #selector(toggleDevices))
+    devices.onChange = { [weak self] in self?.resize($0) }
+    devices.onError = { [weak self] message in
+      self?.error = message
+      self?.render()
+    }
+    let navigation = NSStackView(views: [
+      back, forward, reload, address, pick, capture, deviceToggle, more,
+    ])
     navigation.spacing = 7
     let divider = NSBox()
     divider.boxType = .separator
@@ -105,7 +123,7 @@ import WebKit
     footer.addArrangedSubview(retry)
     footer.setContentHuggingPriority(.required, for: .vertical)
     status.setContentHuggingPriority(.defaultLow, for: .horizontal)
-    let stack = NSStackView(views: [top, navigation, divider, host, footer])
+    let stack = NSStackView(views: [top, navigation, divider, devices, host, footer])
     stack.orientation = .vertical
     stack.alignment = .leading
     stack.spacing = 10
@@ -121,7 +139,7 @@ import WebKit
       address.widthAnchor.constraint(greaterThanOrEqualToConstant: 100),
       more.widthAnchor.constraint(equalToConstant: 28),
     ])
-    for child in [top, navigation, divider, host, footer] {
+    for child in [top, navigation, divider, devices, host, footer] {
       child.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
     }
     empty.orientation = .vertical
@@ -157,7 +175,10 @@ import WebKit
     let nextThread = store.selectedID
     let contextChanged =
       connection !== nextConnection || threadID != nextThread || self.active != active
-    guard contextChanged else { return }
+    guard contextChanged else {
+      render()
+      return
+    }
     if connection !== nextConnection {
       for page in pages.values {
         page.dispose()
@@ -171,7 +192,8 @@ import WebKit
     connection = nextConnection
     endpoint = store.browserEndpoint
     threadID = nextThread
-    shownPage?.web.removeFromSuperview()
+    shownPage?.picker.cancel()
+    host.show(nil)
     shownPage = nil
     empty.isHidden = false
     directory = BrowserDirectory(threadID: nextThread ?? "")
@@ -282,7 +304,8 @@ import WebKit
     guard active, let threadID, let connection, let endpoint,
       let tab = directory.tabs.first(where: { $0.id == selectedID })
     else {
-      shownPage?.web.removeFromSuperview()
+      shownPage?.picker.cancel()
+      host.show(nil)
       shownPage = nil
       empty.isHidden = false
       return
@@ -296,6 +319,18 @@ import WebKit
         tab: tab, environment: endpoint, connection: connection,
         dataStore: profiles.dataStore(profile: tab.profileID))
       pages[key] = page
+      page.picker.onChange = { [weak self] in self?.render() }
+      page.picker.onError = { [weak self] message in
+        self?.error = message
+        self?.render()
+      }
+      page.picker.onSelection = { [weak self, weak page] context in
+        guard let self, let page, self.shownPage === page, self.active,
+          self.store.selectedID == page.threadID, self.connection === self.store.browserConnection
+        else { return }
+        self.store.addBrowserContext(context)
+        self.onContextAdded?()
+      }
       page.onChange = { [weak self] in self?.render() }
       page.onNewTab = { [weak self, weak page] url in
         guard let self, let page, self.threadID == page.threadID, self.active else { return }
@@ -303,16 +338,10 @@ import WebKit
       }
     }
     if shownPage !== page {
-      shownPage?.web.removeFromSuperview()
+      shownPage?.picker.cancel()
+      host.show(nil)
       shownPage = page
-      host.addSubview(page.web)
-      page.web.translatesAutoresizingMaskIntoConstraints = false
-      NSLayoutConstraint.activate([
-        page.web.leadingAnchor.constraint(equalTo: host.leadingAnchor),
-        page.web.trailingAnchor.constraint(equalTo: host.trailingAnchor),
-        page.web.topAnchor.constraint(equalTo: host.topAnchor),
-        page.web.bottomAnchor.constraint(equalTo: host.bottomAnchor),
-      ])
+      host.show(page.web)
     }
     page.receive(tab)
     page.web.isHidden = tab.url == nil && page.web.url == nil
@@ -352,11 +381,16 @@ import WebKit
       }
     }
     let page = page
+    let viewport = (try? BrowserViewport(page?.snapshot.viewport ?? .null)) ?? .fill
+    host.setting = viewport
+    devices.render(viewport, enabled: !loading && !busy && page != nil)
+    deviceToggle.isEnabled = page != nil && !loading && !busy
+    deviceToggle.state = viewport.width == nil ? .off : .on
     let selectedChanged = addressSelection != selectedID
     addressSelection = selectedID
     if selectedChanged || address.currentEditor() == nil {
       address.stringValue =
-        page?.web.url?.absoluteString ?? directory.tabs.first { $0.id == selectedID }?.url?
+        page?.displayedURL?.absoluteString ?? directory.tabs.first { $0.id == selectedID }?.url?
         .absoluteString ?? ""
     }
     address.isEnabled = connection != nil && threadID != nil && !loading && !busy
@@ -367,10 +401,21 @@ import WebKit
     reload.image = NSImage(
       systemSymbolName: page?.web.isLoading == true ? "xmark" : "arrow.clockwise",
       accessibilityDescription: page?.web.isLoading == true ? "Stop loading" : "Reload")
-    capture.isEnabled = page?.web.url != nil && page?.web.isLoading == false && store.canAttach
+    pick.isEnabled =
+      page?.web.url != nil && page?.failure == nil && page?.web.isLoading == false
+      && store.canAddBrowserContext
+    pick.state = page?.picker.active == true ? .on : .off
+    pick.toolTip =
+      page?.picker.active == true
+      ? "Cancel element selection (Escape)" : "Select element for message"
+    capture.isEnabled =
+      page?.web.url != nil && page?.failure == nil && page?.web.isLoading == false
+      && store.canAttach
     let message = error ?? page?.failure ?? page?.synchronizationError ?? discoveryError
     status.stringValue =
       message
+      ?? (page?.picker.active == true
+        ? "Click an element to add it to your message. Escape cancels." : nil)
       ?? (loading
         ? "Loading browser tabs…"
         : connection == nil
@@ -515,6 +560,10 @@ import WebKit
         let result = try await connection.call(method, payload: .object(input))
         try Task.checkCancellation()
         guard self.generation == generation else { return }
+        if method == "preview.navigate", let tab = try? BrowserTab(result), tab.id == selectedID {
+          // Explicit navigation must not be mistaken for an old status echo after a failed load.
+          page?.receive(tab, navigate: true)
+        }
         completed?(result)
         let snapshot = try await connection.call(
           "preview.list", payload: .object(["threadId": .string(threadID)]))
@@ -543,6 +592,36 @@ import WebKit
       more.lastItem?.action = action
     }
   }
+  @objc private func togglePicker() {
+    guard let page, store.canAddBrowserContext else { return }
+    if page.picker.active { page.picker.cancel() } else { page.picker.start() }
+  }
+  func resize(_ viewport: BrowserViewport) {
+    guard let connection, let threadID, let selectedID else { return }
+    let key = key(selectedID, thread: threadID)
+    mutate(
+      "preview.resize",
+      input: [
+        "threadId": .string(threadID), "tabId": .string(selectedID),
+        "viewport": viewport.json,
+      ], connection: connection
+    ) { [weak self] _ in
+      if viewport.width != nil { self?.lastViewports[key] = viewport }
+    }
+  }
+  @objc private func toggleDevices() {
+    guard let page else { return }
+    if host.setting.width != nil {
+      resize(.fill)
+      return
+    }
+    let previous = lastViewports[key(page.tabID, thread: page.threadID)]
+    let width = min(3840, max(240, Int(host.bounds.width / page.web.pageZoom)))
+    let height = min(2160, max(240, Int((host.bounds.height - 42) / page.web.pageZoom)))
+    resize(
+      previous ?? (try? BrowserViewport(width: width, height: height))
+        ?? BrowserDevicePreset.all[0].viewport)
+  }
   @objc private func goBack() { page?.web.goBack() }
   @objc private func goForward() { page?.web.goForward() }
   @objc private func reloadPage() {
@@ -550,12 +629,21 @@ import WebKit
   }
   @objc private func hardReload() { page?.reload(hard: true) }
   @objc private func zoomIn() {
-    if let web = page?.web { web.pageZoom = min(5, web.pageZoom + 0.1) }
+    if let web = page?.web {
+      web.pageZoom = min(5, web.pageZoom + 0.1)
+      host.needsLayout = true
+    }
   }
   @objc private func zoomOut() {
-    if let web = page?.web { web.pageZoom = max(0.25, web.pageZoom - 0.1) }
+    if let web = page?.web {
+      web.pageZoom = max(0.25, web.pageZoom - 0.1)
+      host.needsLayout = true
+    }
   }
-  @objc private func resetZoom() { page?.web.pageZoom = 1 }
+  @objc private func resetZoom() {
+    page?.web.pageZoom = 1
+    host.needsLayout = true
+  }
   @objc private func newPrivateTab() { open(nil, newTab: true, profile: "incognito") }
   @objc private func openExternal() {
     if let url = page?.web.url, ["http", "https"].contains(url.scheme ?? "") {

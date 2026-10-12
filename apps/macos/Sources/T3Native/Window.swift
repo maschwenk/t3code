@@ -257,6 +257,10 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     browserItem.canCollapse = true
     browserItem.isCollapsed = true
     self.browserItem = browserItem
+    browser.onContextAdded = { [weak self] in
+      self?.centerItem?.isCollapsed = false
+      self?.window?.makeFirstResponder(self?.composer)
+    }
     browser.onClose = { [weak self] in self?.hideBrowser() }
     browser.onExpand = { [weak self] in
       guard let item = self?.centerItem else { return }

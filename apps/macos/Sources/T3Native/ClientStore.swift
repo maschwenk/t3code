@@ -1248,6 +1248,27 @@ import T3Core
       fields: ["queuedRunId": .string(id), "targetRunId": .string(target)], key: "queue")
   }
 
+  var canAddBrowserContext: Bool {
+    selectedThread?.archived == false && questionRequest == nil && queuedEdit == nil
+      && pendingPlanSubmission == nil && messageDraftID != nil
+  }
+  func addBrowserContext(_ context: JSON) {
+    guard canAddBrowserContext else { return }
+    let draft = composerText
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+    guard let data = try? encoder.encode(context), let text = String(data: data, encoding: .utf8)
+    else { return }
+    // A fence longer than any run in the page keeps selected HTML inside the context block.
+    let fence = String(
+      repeating: "`",
+      count: max(3, (text.split(whereSeparator: { $0 != "`" }).map(\.count).max() ?? 0) + 1))
+    composerText =
+      draft + (draft.isEmpty ? "" : "\n\n") + "Selected browser element:\n" + fence + "json\n"
+      + text + "\n" + fence
+    notify()
+  }
+
   var selectedAttachments: [DraftAttachment] {
     composerDraftID.flatMap { attachmentDrafts[$0] } ?? []
   }

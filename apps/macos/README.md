@@ -151,9 +151,17 @@ state when switching tabs or conversations. Browser cookies are separate from
 Electron; normal profile cookies persist, while private tabs use a memory-only
 store. Empty tabs list servers discovered by the connected environment.
 Loopback links resolve to a directly connected LAN/Tailscale host; public relays
-need a browser gateway before local previews can work. Device emulation, element
-selection, downloads, agent browser automation and profile management remain
-incomplete. Provider setup and T3 Connect account/relay discovery remain in the
+need a browser gateway before local previews can work.
+
+The device toolbar offers the same viewport presets as Electron, rotation, and
+custom CSS dimensions (press Return to apply). Previews fit the panel without
+changing responsive breakpoints or reloading the page. These are viewport sizes;
+the browser still uses macOS WebKit, without mobile user-agent or touch emulation.
+Select an element with the pointer button to add its URL, selector and HTML to the
+message draft. Escape cancels; selected links do not navigate. Selection currently
+covers the main document and open shadow roots. Rich annotations, React source
+attribution, frame selection, downloads, agent browser automation and profile
+management remain incomplete. Provider setup and T3 Connect account/relay discovery remain in the
 existing app. Markdown supports native headings,
 lists, task lists, quotes, code blocks, tables, and selectable links. Copy-message
 actions preserve the original Markdown; code blocks have a Copy code context action.

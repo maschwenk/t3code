@@ -5,6 +5,7 @@ import WebKit
 
 @MainActor final class BrowserPage: NSObject, WKNavigationDelegate, WKUIDelegate {
   let web: WKWebView
+  let picker: BrowserElementPicker
   let tabID: String
   let threadID: String
   let environment: URL
@@ -21,7 +22,9 @@ import WebKit
   private var reportTask: Task<Void, Never>?
   private var serverURL: URL?
   private var retryURL: URL?
+  private var requestedURL: URL?
   private var started = false
+  var displayedURL: URL? { failure == nil ? web.url ?? snapshot.url : retryURL ?? snapshot.url }
 
   init(tab: BrowserTab, environment: URL, connection: RPCConnection, dataStore: WKWebsiteDataStore)
   {
@@ -34,6 +37,7 @@ import WebKit
     configuration.websiteDataStore = dataStore
     configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
     web = WKWebView(frame: .zero, configuration: configuration)
+    picker = BrowserElementPicker(web: web)
     super.init()
     web.navigationDelegate = self
     web.uiDelegate = self
@@ -63,22 +67,22 @@ import WebKit
       })
   }
 
-  func receive(_ tab: BrowserTab) {
+  func receive(_ tab: BrowserTab, navigate: Bool = false) {
     snapshot = tab
-    if let index = expectedReports.firstIndex(of: tab.status) {
-      expectedReports.remove(at: index)
+    if !navigate, let index = expectedReports.firstIndex(of: tab.status) {
+      expectedReports.removeFirst(index + 1)
       serverURL = tab.url
       return
     }
-    guard !started || serverURL != tab.url else { return }
+    guard navigate || !started || serverURL != tab.url else { return }
+    if navigate { expectedReports = [] }
     started = true
     serverURL = tab.url
     guard let url = tab.url else { return }
     do {
       let resolved = try BrowserURL.resolve(url, environment: environment)
-      if web.url != resolved {
-        failure = nil
-        web.load(URLRequest(url: resolved))
+      if web.url != resolved || failure != nil, !(web.isLoading && requestedURL == resolved) {
+        load(resolved)
       }
     } catch {
       failure = error.localizedDescription
@@ -87,6 +91,7 @@ import WebKit
   }
 
   func dispose() {
+    picker.dispose()
     web.stopLoading()
     web.navigationDelegate = nil
     web.uiDelegate = nil
@@ -98,14 +103,30 @@ import WebKit
   func reload(hard: Bool = false) {
     failure = nil
     if let url = retryURL ?? (web.url == nil ? snapshot.url : nil) {
-      do { web.load(URLRequest(url: try BrowserURL.resolve(url, environment: environment))) } catch
-      { failure = error.localizedDescription }
-    } else if hard {
-      web.reloadFromOrigin()
+      do { load(try BrowserURL.resolve(url, environment: environment)) } catch {
+        failure = error.localizedDescription
+      }
     } else {
-      web.reload()
+      requestedURL = web.url
+      if hard { web.reloadFromOrigin() } else { web.reload() }
     }
     onChange?()
+  }
+
+  private func load(_ url: URL) {
+    requestedURL = url
+    failure = nil
+    if web.load(URLRequest(url: url)) == nil { rejectedNavigation(url) }
+  }
+  private func rejectedNavigation(_ url: URL) {
+    failed(
+      NSError(
+        domain: NSURLErrorDomain, code: NSURLErrorCannotConnectToHost,
+        userInfo: [
+          NSURLErrorFailingURLErrorKey: url,
+          NSLocalizedDescriptionKey:
+            "WebKit could not open this address. Check the URL and port, then try again.",
+        ]))
   }
 
   func capture() async throws -> URL {
@@ -126,11 +147,19 @@ import WebKit
   }
 
   func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+    picker.cancel()
     failure = nil
     retryURL = nil
     onChange?()
   }
   func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+    if webView.url?.absoluteString == "about:blank", let requestedURL,
+      ["http", "https"].contains(requestedURL.scheme ?? "")
+    {
+      rejectedNavigation(requestedURL)
+      return
+    }
+    requestedURL = nil
     failure = nil
     report(kind: "Success")
     onChange?()
@@ -147,6 +176,7 @@ import WebKit
   }
   private func failed(_ error: any Error) {
     guard (error as NSError).code != NSURLErrorCancelled else { return }
+    requestedURL = nil
     failure = error.localizedDescription
     retryURL = (error as NSError).userInfo[NSURLErrorFailingURLErrorKey] as? URL ?? serverURL
     report(kind: "LoadFailed", error: error as NSError)
@@ -207,8 +237,9 @@ import WebKit
       do {
         let resolved = try BrowserURL.resolve(
           try BrowserURL.normalize(url.absoluteString), environment: environment)
+        requestedURL = resolved
         if resolved != url {
-          web.load(URLRequest(url: resolved))
+          load(resolved)
           return .cancel
         }
       } catch {
