@@ -32,6 +32,7 @@ final class SidebarView: NSStackView, NSTableViewDataSource, NSTableViewDelegate
   var onShowUsage: (() -> Void)?
   var onThreadChosen: (() -> Void)?
   var onNewThread: (() -> Void)?
+  var onOpenProject: (() -> Void)?
   var onToggleSidebar: (() -> Void)?
   var onConnect: (() -> Void)?
   var onReconnect: (() -> Void)?
@@ -47,6 +48,10 @@ final class SidebarView: NSStackView, NSTableViewDataSource, NSTableViewDelegate
   }
   private lazy var newButton = sidebarIcon("New thread (⌘N)", "square.and.pencil") { [weak self] in
     self?.onNewThread?()
+  }
+  private lazy var openProjectButton = sidebarIcon("Open project (⌘O)", "folder.badge.plus") {
+    [weak self] in
+    self?.onOpenProject?()
   }
   private lazy var settingsButton = sidebarIcon("Settings", "gearshape") { [weak self] in
     self?.showSettings()
@@ -64,6 +69,8 @@ final class SidebarView: NSStackView, NSTableViewDataSource, NSTableViewDelegate
   private var collapsed = Set(
     UserDefaults.standard.stringArray(forKey: "collapsedThreadGroups") ?? ["Settled", "Snoozed"])
   private var projectID: String?
+  private var pendingProjectID: String?
+  var selectedProjectID: String? { projectID }
   private var previousProjects: [String: String] = [:]
   private var restoringSelection = false
   private var refreshTimer: Task<Void, Never>?
@@ -98,7 +105,7 @@ final class SidebarView: NSStackView, NSTableViewDataSource, NSTableViewDelegate
     let brandRow = NSStackView(views: [trafficSpace, toggle, brand, NSView()])
     brandRow.spacing = 4
     brandRow.heightAnchor.constraint(equalToConstant: 30).isActive = true
-    let header = NSStackView(views: [search, projects, newButton])
+    let header = NSStackView(views: [search, projects, openProjectButton, newButton])
     header.spacing = 1
     header.heightAnchor.constraint(equalToConstant: 32).isActive = true
     scope.font = .systemFont(ofSize: 11)
@@ -127,7 +134,7 @@ final class SidebarView: NSStackView, NSTableViewDataSource, NSTableViewDelegate
     message.textColor = .secondaryLabelColor
     usageButton.setAccessibilityLabel("Usage")
     newButton.setAccessibilityLabel("New thread")
-    newButton.toolTip = "New thread using the current thread’s project and model (⌘N)"
+    newButton.toolTip = "New thread in the selected project (⌘N)"
     backButton.image = NSImage(systemSymbolName: "arrow.left", accessibilityDescription: nil)
     backButton.imagePosition = .imageLeading
     backButton.setAccessibilityLabel("Back to conversation")
@@ -154,13 +161,17 @@ final class SidebarView: NSStackView, NSTableViewDataSource, NSTableViewDelegate
     let projectNames = store.shell.projects.merging(store.archives.projects) { current, _ in current
     }
     previousProjects = projectNames
-    if let projectID, projectNames[projectID] == nil { self.projectID = nil }
+    if let projectID, projectNames[projectID] != nil { pendingProjectID = nil }
+    if let projectID, projectNames[projectID] == nil, pendingProjectID != projectID {
+      self.projectID = nil
+    }
     projects.contentTintColor = projectID == nil ? .secondaryLabelColor : .controlAccentColor
     projects.toolTip =
       "Filter by project: " + (projectID.flatMap { projectNames[$0] } ?? "All projects")
     scope.stringValue = projectID.flatMap { projectNames[$0] } ?? ""
     scope.isHidden = scope.stringValue.isEmpty
-    newButton.isEnabled = store.ready && store.selectedThread != nil
+    newButton.isEnabled = store.canCreateThread
+    openProjectButton.isEnabled = store.ready && store.catalogReady
     let query = search.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
     let source = store.showingArchives ? store.archives.threads : store.shell.threads
     let filtered = source.values.filter { thread in
@@ -398,6 +409,14 @@ final class SidebarView: NSStackView, NSTableViewDataSource, NSTableViewDelegate
   func showUtilityPage(_ visible: Bool) {
     for button in [settingsButton, archiveButton, usageButton] { button.isHidden = visible }
     backButton.isHidden = !visible
+  }
+
+  func selectProject(_ id: String) {
+    projectID = id
+    pendingProjectID = id
+    search.stringValue = ""
+    searchCandidate = nil
+    refresh(revealSelection: true)
   }
 
   private func chooseProject() {

@@ -24,6 +24,10 @@ enum ParitySmoke {
       Task { await connection.close() }
     }
     try await connection.open()
+    if let root = Arguments.value("--project-smoke-root") {
+      try await ProjectSmoke.run(settings: settings, root: root)
+      return
+    }
     if CommandLine.arguments.contains("--usage-smoke") {
       try await usage(settings: settings, connection: connection)
       return

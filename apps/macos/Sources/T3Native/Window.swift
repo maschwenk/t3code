@@ -89,6 +89,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
   private let review: ReviewPanel
   private var reviewItem: NSSplitViewItem?
   private let sidebar: SidebarView
+  private var projectPicker: ProjectPicker?
   private let usage: UsagePageController
   private let browser: BrowserPanel
   private var browserItem: NSSplitViewItem?
@@ -227,6 +228,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     sidebar.onShowUsage = { [weak self] in self?.showUsage() }
     sidebar.onThreadChosen = { [weak self] in self?.showConversation() }
     sidebar.onNewThread = { [weak self] in self?.newThread() }
+    sidebar.onOpenProject = { [weak self] in self?.openProject() }
     sidebar.onToggleSidebar = { [weak self] in self?.toggleSidebar() }
     sidebar.onConnect = { [weak self] in self?.connect() }
     sidebar.onReconnect = { [weak self] in self?.retry() }
@@ -450,6 +452,8 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     let view = NSMenu(title: "View")
     for (parent, title, action, key, modifiers) in [
       (chat, "New Thread", #selector(newThread), "n", NSEvent.ModifierFlags.command),
+      (chat, "Open Project…", #selector(openProject), "o", [.command]),
+      (chat, "New Project…", #selector(newProject), "n", [.command, .shift]),
       (chat, "Choose Model…", #selector(chooseModel), "m", [.command, .shift]),
       (chat, "Attach Files…", #selector(attachFiles), "a", [.command, .shift]),
       (chat, "Steer Next Queued Message", #selector(steerNextQueued), "\r", [.command, .shift]),
@@ -499,7 +503,10 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     if menuItem.action == #selector(chooseModel) {
       return store.canEditThread && store.catalogReady
     }
-    if menuItem.action == #selector(newThread) { return store.ready && store.selectedThread != nil }
+    if menuItem.action == #selector(newThread) { return store.canCreateThread }
+    if menuItem.action == #selector(openProject) || menuItem.action == #selector(newProject) {
+      return store.ready && store.catalogReady && projectPicker == nil
+    }
     if menuItem.action == #selector(attachFiles) { return store.canAttach }
     if menuItem.action == #selector(steerNextQueued) {
       return !store.queueBusy && store.execution.canSteer && !store.execution.queued.isEmpty
@@ -1249,7 +1256,30 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     if let first = store.execution.queued.first { store.steerQueuedMessage(first.id) }
   }
   @objc private func older() { store.loadOlder() }
-  @objc private func newThread() { store.newThread() }
+  @objc private func newThread() {
+    showConversation()
+    if sidebar.selectedProjectID == nil, store.selectedThread == nil,
+      store.catalog.scratchWorkspaceRoot == nil
+    {
+      showProjectPicker(create: false)
+      return
+    }
+    store.newThread(projectID: sidebar.selectedProjectID)
+  }
+  @objc private func openProject() { showProjectPicker(create: false) }
+  @objc private func newProject() { showProjectPicker(create: true) }
+  private func showProjectPicker(create: Bool) {
+    guard let window, projectPicker == nil, store.ready && store.catalogReady else { return }
+    projectPicker = ProjectPicker(
+      store: store, create: create,
+      opened: { [weak self] project, warning in
+        guard let self, let id = project["id"].string else { return }
+        showConversation()
+        sidebar.selectProject(id)
+        store.newThread(project: project, warning: warning)
+      }, closed: { [weak self] in self?.projectPicker = nil })
+    projectPicker?.present(on: window)
+  }
   @objc private func retry() { store.retry() }
 
   @objc func connect() {

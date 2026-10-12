@@ -57,6 +57,8 @@ import T3Core
     (request: PendingRequest, progress: QuestionProgress, attachments: [String: [DraftAttachment]])?
   private(set) var storageError: String?
   private(set) var commandsInFlight: Set<String> = []
+  private(set) var creatingThread = false
+  private var pendingNewThread: (configuration: NewThreadConfiguration, command: JSON)?
   var onChange: (() -> Void)?
   private var connection: RPCConnection?
   var terminalConnection: RPCConnection? { ready ? connection : nil }
@@ -152,6 +154,7 @@ import T3Core
         notify()
         let connection = RPCConnection(settings: settings)
         usageSessionID = UUID()
+        creatingThread = false
         usageLimits = UsageLimitsSnapshot()
         browserEnvironmentID = nil
         self.connection = connection
@@ -241,6 +244,8 @@ import T3Core
     ready = false
     catalogReady = false
     commandsInFlight = []
+    creatingThread = false
+    pendingNewThread = nil
     sending = []
     for job in uploadJobs.values { job.task.cancel() }
     uploadJobs = [:]
@@ -1613,20 +1618,145 @@ import T3Core
     }
   }
 
-  func newThread() {
-    guard let connection, ready, let template = selectedID.flatMap({ shell.threads[$0] }) else {
-      return
+  var canCreateThread: Bool { ready && catalogReady && !creatingThread }
+  var projectSessionID: UUID { usageSessionID }
+
+  func browseProjectFolders(_ path: String, session: UUID) async throws -> JSON {
+    let path = path.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !path.isEmpty else { throw T3Error("Enter a folder path.") }
+    return try await projectCall(
+      "filesystem.browse",
+      payload: .object(["partialPath": .string(path.hasSuffix("/") ? path : path + "/")]),
+      session: session)
+  }
+
+  func openProject(_ path: String, session: UUID) async throws -> JSON {
+    let result = try await browseProjectFolders(path, session: session)
+    let root = try result.requiredString("parentPath")
+    if let existing = shell.projectDetails.values.first(where: {
+      $0["workspaceRoot"].string == root
+    }) {
+      return existing
     }
-    let generation = generation
+    let id = UUID().uuidString
+    do {
+      return try await projectCall(
+        "projects.mutate",
+        payload: .object([
+          "type": .string("project.create"), "commandId": .string(UUID().uuidString),
+          "projectId": .string(id), "workspaceRoot": .string(root),
+          "title": .string(root == "/" ? "/" : (root as NSString).lastPathComponent),
+        ]), session: session)
+    } catch {
+      // An accepted create may lose its response, or another client may open the same folder.
+      if let existing = try? await serverProjects(session: session).first(where: {
+        $0["workspaceRoot"].string == root
+      }) {
+        return existing
+      }
+      throw error
+    }
+  }
+
+  func createProject(_ name: String, session: UUID) async throws -> (
+    project: JSON, warning: String?
+  ) {
+    let result = try await projectCall(
+      "projects.createNew", payload: .object(["name": .string(name)]), session: session)
+    let id = try result.requiredString("projectId")
+    let project = try await project(id: id, session: session)
+    return (
+      project,
+      result["commitError"].string.map { "Project created. Its initial commit failed: " + $0 }
+    )
+  }
+
+  private func projectCall(_ method: String, payload: JSON, session: UUID) async throws -> JSON {
+    guard ready, let connection, session == projectSessionID else {
+      throw T3Error("The connection changed. Reopen the project picker to use the current server.")
+    }
+    let result = try await connection.call(method, payload: payload)
+    try Task.checkCancellation()
+    guard ready, session == projectSessionID else {
+      throw T3Error("The connection changed while the project operation was running.")
+    }
+    return result
+  }
+
+  private func serverProjects(session: UUID) async throws -> [JSON] {
+    guard ready, let connection, session == projectSessionID else {
+      throw T3Error("The project connection changed.")
+    }
+    let stream = try await connection.subscribe(
+      "orchestration.subscribeShell", payload: .object(["requestCompletionMarker": .bool(true)]))
+    defer { Task { await connection.cancel(stream.id) } }
+    for try await value in stream.values {
+      try Task.checkCancellation()
+      guard ready, session == projectSessionID else {
+        throw T3Error("The project connection changed.")
+      }
+      if value["kind"].string == "snapshot" {
+        return value["snapshot"]["projects"].array
+      }
+    }
+    throw T3Error("The server did not return its projects.")
+  }
+
+  private func project(id: String, session: UUID) async throws -> JSON {
+    if let project = shell.projectDetails[id], session == projectSessionID { return project }
+    guard
+      let project = try await serverProjects(session: session).first(where: {
+        $0["id"].string == id
+      })
+    else { throw T3Error("The project is no longer available.") }
+    return project
+  }
+
+  func newThread(
+    projectID: String? = nil, project openedProject: JSON? = nil, warning: String? = nil
+  ) {
+    guard canCreateThread else { return }
+    let session = projectSessionID
+    let selection = selectionGeneration
+    let template = selectedThread
+    let projectID = projectID ?? openedProject?["id"].string ?? template?.projectID
+    creatingThread = true
+    error = nil
+    notify()
     Task {
+      defer {
+        if session == projectSessionID {
+          creatingThread = false
+          notify()
+        }
+      }
       do {
-        let id = UUID().uuidString
-        _ = try await connection.call(
-          "orchestration.dispatchCommand", payload: Commands.newThread(template: template, id: id))
-        guard self.generation == generation else { return }
-        select(id)
+        let project: JSON
+        if let openedProject {
+          project = openedProject
+        } else if let projectID {
+          project = try await self.project(id: projectID, session: session)
+        } else {
+          let scratch = try await projectCall(
+            "projects.ensureScratch", payload: .object([:]), session: session)
+          project = try await self.project(
+            id: scratch.requiredString("projectId"), session: session)
+        }
+        let configuration = try catalog.newThreadConfiguration(project: project, carrying: template)
+        let command: JSON
+        if let pendingNewThread, pendingNewThread.configuration == configuration {
+          command = pendingNewThread.command
+        } else {
+          command = configuration.command(id: UUID().uuidString)
+          pendingNewThread = (configuration, command)
+        }
+        _ = try await projectCall(
+          "orchestration.dispatchCommand", payload: command, session: session)
+        pendingNewThread = nil
+        if selectionGeneration == selection { select(try command.requiredString("threadId")) }
+        error = warning
       } catch {
-        guard self.generation == generation else { return }
+        guard session == projectSessionID else { return }
         self.error = error.localizedDescription
         notify()
       }

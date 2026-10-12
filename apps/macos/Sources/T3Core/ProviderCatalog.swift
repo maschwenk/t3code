@@ -83,8 +83,11 @@ public struct ProviderCatalog: Sendable, Equatable {
   public private(set) var planModeEnabled = false
   public private(set) var attachmentPolicy = AttachmentPolicy()
   public private(set) var fileOpen = FileOpenCapabilities()
+  public private(set) var newProjectsRoot: String?
+  public private(set) var scratchWorkspaceRoot: String?
   private var defaultMode = "approval-required"
   private var projectModes: [String: String] = [:]
+  private var settings: JSON = .null
   public init(planModeEnabled: Bool = false) { self.planModeEnabled = planModeEnabled }
   public mutating func setPlanModeEnabled(_ enabled: Bool) { planModeEnabled = enabled }
 
@@ -95,6 +98,8 @@ public struct ProviderCatalog: Sendable, Equatable {
       applySettings(event["config"]["settings"])
       attachmentPolicy = AttachmentPolicy(event["config"]["environment"]["capabilities"])
       fileOpen = FileOpenCapabilities(event["config"])
+      newProjectsRoot = event["config"]["newProjectsRoot"].string
+      scratchWorkspaceRoot = event["config"]["scratchWorkspaceRoot"].string
     case "providerStatuses":
       providers = try event["payload"]["providers"].array.map(ProviderEntry.init)
     case "settingsUpdated":
@@ -111,12 +116,50 @@ public struct ProviderCatalog: Sendable, Equatable {
     projectModes[projectID] ?? defaultMode
   }
   private mutating func applySettings(_ settings: JSON) {
+    self.settings = settings
     defaultMode = settings["defaultRuntimeMode"].string ?? "approval-required"
     if case .object(let overrides) = settings["projectSettingsOverrides"] {
       projectModes = overrides.compactMapValues { $0["defaultRuntimeMode"].string }
     } else {
       projectModes = [:]
     }
+  }
+
+  public func newThreadConfiguration(project: JSON, carrying thread: ThreadSummary?) throws
+    -> NewThreadConfiguration
+  {
+    let projectID = try project.requiredString("id")
+    let overrides = settings["projectSettingsOverrides"][projectID]
+    var configured = settings["defaultModelSelection"]
+    if !settings["projectSettingsFolded"].bool, project["defaultModelSelection"] != .null {
+      configured = project["defaultModelSelection"]
+    }
+    if case .object(let fields) = overrides, let value = fields["defaultModelSelection"] {
+      configured = value
+    }
+    if configured != .null, provider(for: configured)?.available != true {
+      configured = settings["defaultModelSelection"]
+    }
+    let candidates = [configured, thread?.model ?? .null]
+    for candidate in candidates {
+      if let provider = provider(for: candidate), provider.available,
+        let model = model(for: candidate)
+      {
+        return NewThreadConfiguration(
+          projectID: projectID,
+          model: model.selection(
+            instanceID: provider.id, preserving: candidate, planModeEnabled: planModeEnabled),
+          runtimeMode: defaultRuntimeMode(projectID: projectID),
+          interactionMode: planModeEnabled ? thread?.interactionMode ?? "default" : "default")
+      }
+    }
+    guard let provider = providers.first(where: { $0.available && !$0.models.isEmpty }),
+      let model = provider.models.first(where: { !$0.legacy }) ?? provider.models.first
+    else { throw T3Error("Connect an available provider before starting a new thread.") }
+    return NewThreadConfiguration(
+      projectID: projectID,
+      model: model.selection(instanceID: provider.id, planModeEnabled: planModeEnabled),
+      runtimeMode: defaultRuntimeMode(projectID: projectID), interactionMode: "default")
   }
 
   public func model(for selection: JSON) -> ProviderModel? {

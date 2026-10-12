@@ -8,9 +8,17 @@ Closing this app does not stop that server or its agents.
 The client supports grouped active/pinned/settled/snoozed threads, project filtering,
 search, archived history and restore, rename, pin, settle, snooze, and shared unread
 state. Snoozes wake on the same attention and time rules as Electron. It also supports bounded conversation
-history with older pages, streamed text and activity, per-thread drafts, new threads
-using the selected thread's project/model, message submission, and stopping a run.
+history with older pages, streamed text and activity, per-thread drafts, new threads,
+message submission, and stopping a run. New threads use the project filter when set,
+then the current thread's project. Configured project and environment model defaults
+take precedence over the current model, and permissions use the configured defaults.
 New threads use the project's workspace root; they do not create a worktree.
+
+Open an existing project folder with ⌘O or the folder-plus button. The picker browses
+the connected server, including remote environments. Chat → New Project (⌘⇧N)
+creates a folder in that server's configured projects directory. A new environment
+can start its first thread without an existing thread; if the server does not support
+Scratch, choose or create a project first.
 
 Search matches thread titles, projects and branches. Use ↑/↓ to browse matches,
 Return to open one, or Escape to clear the search. The folder button limits the
