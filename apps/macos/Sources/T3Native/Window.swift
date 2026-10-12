@@ -94,6 +94,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
   private let browser: BrowserPanel
   private var browserItem: NSSplitViewItem?
   private var centerItem: NSSplitViewItem?
+  private var pageContainer: NSView?
   private var conversationView: NSView?
   private var showingUsage = false
   private var usageThreadID: String?
@@ -138,6 +139,10 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
   private var renderedThread: String?
   private var renderedWorkspace: WorkspaceLocation?
   private var lastWidth: CGFloat = 0
+  private var liveResizing = false
+  private var resizeAnchor: ScrollAnchor?
+  private var resizeWork: DispatchWorkItem?
+  private var applyingResize = false
   private var outputRequests: Set<String> = []
   private struct ScrollAnchor {
     var id: String?
@@ -218,12 +223,10 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     pages.view = NSView()
     pages.addChild(conversationSplit)
     pages.addChild(usage)
-    for page in [conversationSplit.view, usage.view] {
-      pages.view.addSubview(page)
-      pin(page, to: pages.view, inset: 0, top: 0)
-    }
+    pageContainer = pages.view
+    pages.view.addSubview(conversationSplit.view)
+    pin(conversationSplit.view, to: pages.view, inset: 0, top: 0)
     conversationView = conversationSplit.view
-    usage.view.isHidden = true
     usage.model.onClose = { [weak self] in self?.showConversation() }
     sidebar.onShowUsage = { [weak self] in self?.showUsage() }
     sidebar.onThreadChosen = { [weak self] in self?.showConversation() }
@@ -307,8 +310,12 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     timeline.intercellSpacing = NSSize(width: 0, height: 4)
     timeline.backgroundColor = .clear
     timelineScroll.contentView.postsBoundsChangedNotifications = true
+    timelineScroll.contentView.postsFrameChangedNotifications = true
     NotificationCenter.default.addObserver(
       self, selector: #selector(resized), name: NSView.boundsDidChangeNotification,
+      object: timelineScroll.contentView)
+    NotificationCenter.default.addObserver(
+      self, selector: #selector(resized), name: NSView.frameDidChangeNotification,
       object: timelineScroll.contentView)
 
     let composerScroll = NSScrollView()
@@ -581,8 +588,11 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     workspace.refreshContext(active: false)
     review.refreshContext(active: false)
     terminal.refresh(active: false)
-    conversationView?.isHidden = true
-    usage.view.isHidden = false
+    conversationView?.removeFromSuperview()
+    if let pageContainer {
+      pageContainer.addSubview(usage.view)
+      pin(usage.view, to: pageContainer, inset: 0, top: 0)
+    }
     sidebar.showUtilityPage(true)
     window?.makeFirstResponder(usage.view)
     usage.model.synchronize(active: true)
@@ -590,9 +600,12 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
   private func showConversation() {
     guard showingUsage else { return }
     showingUsage = false
-    usage.view.isHidden = true
+    usage.view.removeFromSuperview()
     sidebar.showUtilityPage(false)
-    conversationView?.isHidden = false
+    if let pageContainer, let conversationView {
+      pageContainer.addSubview(conversationView)
+      pin(conversationView, to: pageContainer, inset: 0, top: 0)
+    }
     usage.model.synchronize(active: false)
     terminal.refresh(active: terminalItem?.isCollapsed == false)
     window?.makeFirstResponder(composer)
@@ -807,6 +820,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     }
     renderedThread = planScope
     renderedWorkspace = store.workspaceLocation
+    if changedThread || changedWorkspace { resizeAnchor = nil }
     if changedThread || changedWorkspace || !samePrefix {
       rendered.removeAll(keepingCapacity: true)
       planLayouts.removeAll(keepingCapacity: true)
@@ -850,9 +864,36 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
   }
 
   @objc private func resized() {
+    guard !applyingResize, !showingUsage else { return }
     let width = timelineScroll.contentSize.width
-    guard abs(width - lastWidth) > 1 else { return }
-    let anchor = scrollAnchor()
+    guard abs(width - lastWidth) > 1 else {
+      resizeWork?.cancel()
+      resizeWork = nil
+      if !liveResizing, window?.inLiveResize != true { resizeAnchor = nil }
+      return
+    }
+    if resizeAnchor == nil { resizeAnchor = scrollAnchor() }
+    // Preserve the rows while a window edge or split divider is being dragged.
+    guard !liveResizing, window?.inLiveResize != true else { return }
+    if NSEvent.pressedMouseButtons & 1 != 0 {
+      resizeWork?.cancel()
+      let work = DispatchWorkItem { [weak self] in self?.resized() }
+      resizeWork = work
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.08, execute: work)
+      return
+    }
+    applyResize()
+  }
+
+  private func applyResize() {
+    resizeWork?.cancel()
+    resizeWork = nil
+    let anchor = resizeAnchor ?? scrollAnchor()
+    resizeAnchor = nil
+    let width = timelineScroll.contentSize.width
+    guard !applyingResize, abs(width - lastWidth) > 1 else { return }
+    applyingResize = true
+    defer { applyingResize = false }
     lastWidth = width
     rendered.removeAll(keepingCapacity: true)
     planLayouts.removeAll(keepingCapacity: true)
@@ -862,7 +903,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
   }
 
   private func render(_ row: TimelineRow) -> (RenderedMarkdown, CGFloat) {
-    let width = max(120, timeline.bounds.width - 36)
+    let width = max(120, timelineLayoutWidth - 36)
     if let cached = rendered[row.id], cached.row == row, cached.width == width {
       return (cached.markdown, cached.height)
     }
@@ -955,7 +996,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     let (markdown, height) = render(row)
     let bodyHeight = height - 45 - attachmentHeight(row)
     let body = MessageTextView(
-      rendered: markdown, width: max(120, timeline.bounds.width - 36), height: bodyHeight)
+      rendered: markdown, width: max(120, timelineLayoutWidth - 36), height: bodyHeight)
     let location = store.workspaceLocation
     body.onOpenLink = { [weak self] in self?.openMarkdownLink($0, at: location) }
     body.fileLinkMenu = { [weak store] url in
@@ -1008,9 +1049,12 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
   }
 
   private var planScope: String { store.environmentKey + "\n" + (store.selectedID ?? "") }
+  private var timelineLayoutWidth: CGFloat {
+    lastWidth > 0 ? lastWidth : timeline.bounds.width
+  }
   private func planLayout(_ row: TimelineRow) -> PlanCardLayout {
     let expanded = expandedPlans[planScope]?.contains(row.id) == true
-    let width = timeline.bounds.width
+    let width = timelineLayoutWidth
     if let cached = planLayouts[row.id], cached.row == row, cached.width == width,
       cached.expanded == expanded
     {
@@ -1123,6 +1167,16 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     }
   }
   func windowDidBecomeKey(_ notification: Notification) { store.markVisibleThreadRead() }
+  func windowWillStartLiveResize(_ notification: Notification) {
+    liveResizing = true
+    resizeWork?.cancel()
+    resizeAnchor = scrollAnchor()
+  }
+  func windowDidEndLiveResize(_ notification: Notification) {
+    liveResizing = false
+    window?.contentView?.layoutSubtreeIfNeeded()
+    applyResize()
+  }
   func textDidChange(_ notification: Notification) {
     store.composerText = composer.string
     updateComposerControls()
