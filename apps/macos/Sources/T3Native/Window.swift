@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import T3Core
 import T3Markdown
 import UniformTypeIdentifiers
@@ -15,6 +16,23 @@ import UniformTypeIdentifiers
   var editLatestQueued: (() -> Bool)?
   var attach: (([URL], Bool) -> Void)?
   var allowsAttachments = false
+  var handleCompletionKey: ((NSEvent) -> Bool)?
+  var placeholder = "Ask anything, @tag files/folders, $use skills, or / for commands" {
+    didSet { needsDisplay = true }
+  }
+  override func draw(_ dirtyRect: NSRect) {
+    super.draw(dirtyRect)
+    if string.isEmpty {
+      (placeholder as NSString).draw(
+        in: NSRect(
+          x: textContainerInset.width + 5, y: textContainerInset.height, width: bounds.width - 30,
+          height: 42),
+        withAttributes: [
+          .font: font ?? NSFont.systemFont(ofSize: 14),
+          .foregroundColor: NSColor.placeholderTextColor,
+        ])
+    }
+  }
   override func paste(_ sender: Any?) {
     if !receiveAttachments(from: .general, preferText: true) { super.paste(sender) }
   }
@@ -64,6 +82,7 @@ import UniformTypeIdentifiers
       || super.performDragOperation(sender)
   }
   override func keyDown(with event: NSEvent) {
+    if handleCompletionKey?(event) == true { return }
     if event.keyCode == 126 && event.modifierFlags.contains(.option), selectedRange().location == 0,
       editLatestQueued?() == true
     {
@@ -90,6 +109,14 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
   private var reviewItem: NSSplitViewItem?
   private let sidebar: SidebarView
   private var projectPicker: ProjectPicker?
+  private var settingsWindow: NativeSettingsWindow?
+  private var reconnecting = false
+  private var connectionAttempt = UUID()
+  private let preferences = NativePreferences.shared
+  private var appearanceObservation: AnyCancellable?
+  private var appearanceValues = NativeAppearanceValues()
+  private var maximumChatWidth: NSLayoutConstraint?
+  private let notifications: NativeNotificationPresenter
   private let usage: UsagePageController
   private let browser: BrowserPanel
   private var browserItem: NSSplitViewItem?
@@ -101,14 +128,24 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
   private let timeline = NSTableView()
   private let timelineScroll = NSScrollView()
   private let composer = Composer()
+  private let completion: ComposerCompletion
+  private let contextBanner: NativeContextBanner
   private let header = NSStackView()
   private let conversationStack = NSStackView()
   private let welcome = ConnectionWelcomeView()
+  private let newChatHeading = NSStackView()
+  private let newChatProject = ComposerPill("Choose project", height: 36, action: {})
+  private let withoutProject = ActionButton("or start without a project", action: {})
+  private let workspaceControls: DraftWorkspaceControls
+  private var conversationTop: NSLayoutConstraint?
+  private var conversationBottom: NSLayoutConstraint?
+  private var conversationCenter: NSLayoutConstraint?
+  private let composerSurface = SurfaceView(raised: true)
   private let heading = NSTextField(labelWithString: "T3 Native")
   private let subtitle = NSTextField(labelWithString: "A native Mac client for T3")
   private let status = NSTextField(labelWithString: "")
   private let errorLabel = NSTextField(wrappingLabelWithString: "")
-  private let sendButton = NSButton(title: "Send  ⌘↵", target: nil, action: nil)
+  private let sendButton = RoundSendButton(title: "Send  ⌘↵", target: nil, action: nil)
   private let planBanner = NSTextField(wrappingLabelWithString: "")
   private let stopButton = NSButton(title: "Stop", target: nil, action: nil)
   private let olderButton = NSButton(title: "Load earlier activity", target: nil, action: nil)
@@ -155,6 +192,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
 
   init(store: ClientStore) {
     self.store = store
+    notifications = NativeNotificationPresenter(store: store)
     terminal = TerminalPanel(store: store)
     workspace = WorkspacePanel(store: store)
     review = ReviewPanel(store: store)
@@ -162,6 +200,9 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     usage = UsagePageController(store: store)
     browser = BrowserPanel(store: store)
     modelControls = ComposerControls(store: store)
+    completion = ComposerCompletion(store: store)
+    contextBanner = NativeContextBanner(store: store)
+    workspaceControls = DraftWorkspaceControls(store: store)
     requestsPanel = RequestsPanel(store: store)
     attachmentTray = AttachmentTray(store: store, previews: attachmentPreviews)
     queuePanel = QueuePanel(store: store, previews: attachmentPreviews)
@@ -178,12 +219,78 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     super.init(window: window)
     window.delegate = self
     construct()
+    contextBanner.onCompact = { [weak store] in store?.compactContext() }
     installCommands()
     store.onChange = { [weak self] in self?.refresh() }
+    store.onShellEvent = { [weak self] event, connection, endpoint in
+      self?.notifications.receive(event, connection: connection, endpoint: endpoint)
+    }
+    notifications.activate()
+    notifications.onOpenThread = { [weak self] endpoint, id in
+      guard let self else { return }
+      if store.browserEndpoint != endpoint {
+        do {
+          let repository = try ConnectionRepository()
+          guard
+            let environment = repository.values.environments.first(where: {
+              $0.endpoint == endpoint
+            })
+          else { return }
+          try repository.select(environment)
+          store.connect(try repository.settings(for: environment), selecting: id)
+        } catch {
+          store.error = error.localizedDescription
+          refresh()
+          return
+        }
+      } else {
+        store.select(id)
+      }
+      showWindow(nil)
+      NSApp.activate(ignoringOtherApps: true)
+    }
+    appearanceObservation = preferences.observeChanges { [weak self] _ in
+      guard let self, appearanceValues != preferences.appearance else { return }
+      applyAppearance()
+    }
+    applyAppearance()
     refresh()
   }
 
   required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+  private var markdownConfiguration: MarkdownConfiguration {
+    var config = MarkdownConfiguration.message
+    config.fontSize = CGFloat(appearanceValues.interfaceFontSize)
+    config.codeFontSize = CGFloat(appearanceValues.codeFontSize)
+    config.fontName = appearanceValues.interfaceFont
+    config.codeFontName = appearanceValues.codeFont
+    config.wrapCode = appearanceValues.wordWrap
+    config.wrapTables = appearanceValues.wordWrap
+    return config
+  }
+
+  private func applyAppearance() {
+    let anchor = scrollAnchor()
+    appearanceValues = preferences.appearance
+    window?.appearance = appearanceValues.appearance.appKitAppearance
+    composer.font = appearanceValues.resolvedInterfaceFont
+    maximumChatWidth?.constant = appearanceValues.chatWidth.maximumWidth ?? 100_000
+    rendered.removeAll(keepingCapacity: true)
+    planLayouts.removeAll(keepingCapacity: true)
+    window?.contentView?.layoutSubtreeIfNeeded()
+    lastWidth = timelineScroll.contentSize.width
+    timeline.noteHeightOfRows(withIndexesChanged: IndexSet(rows.indices))
+    timeline.reloadData()
+    restoreScroll(anchor)
+  }
+
+  @objc private func showSettings() {
+    completion.dismiss()
+    if settingsWindow == nil { settingsWindow = NativeSettingsWindow(store: store) }
+    settingsWindow?.showWindow(nil)
+    settingsWindow?.window?.makeKeyAndOrderFront(nil)
+  }
 
   private func construct() {
     guard let window else { return }
@@ -208,7 +315,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     conversationSplit.splitView.isVertical = false
     conversationSplit.splitView.dividerStyle = .thin
     let conversationItem = NSSplitViewItem(viewController: contentController)
-    conversationItem.minimumThickness = 280
+    conversationItem.minimumThickness = 480
     conversationSplit.addSplitViewItem(conversationItem)
     let terminalItem = NSSplitViewItem(viewController: terminal)
     terminalItem.minimumThickness = 180
@@ -238,6 +345,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     sidebar.onToggleSidebar = { [weak self] in self?.toggleSidebar() }
     sidebar.onConnect = { [weak self] in self?.connect() }
     sidebar.onReconnect = { [weak self] in self?.retry() }
+    sidebar.onSettings = { [weak self] in self?.showSettings() }
     sidebar.onBrowserSettings = { [weak self] in self?.browserSettings() }
     sidebar.onBack = { [weak self] in self?.showConversation() }
     let contentItem = NSSplitViewItem(viewController: pages)
@@ -331,12 +439,34 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     composer.isAutomaticQuoteSubstitutionEnabled = false
     composer.isAutomaticDashSubstitutionEnabled = false
     composer.font = .systemFont(ofSize: 14)
-    composer.textContainerInset = NSSize(width: 10, height: 10)
+    composer.textContainerInset = NSSize(width: 8, height: 12)
     composer.isVerticallyResizable = true
     composer.isHorizontallyResizable = false
     composer.autoresizingMask = [.width]
     composer.textContainer?.widthTracksTextView = true
     composer.delegate = self
+    completion.anchorView = composer
+    completion.onLocalCommand = { [weak self] command in
+      guard let self else { return }
+      if command == "model" {
+        modelControls.showModels()
+      } else if command == "plan" {
+        store.setInteractionMode("plan")
+      } else if command == "default" {
+        store.setInteractionMode("default")
+      }
+    }
+    composer.handleCompletionKey = { [weak completion] in completion?.handleKeyDown($0) ?? false }
+    completion.onInsert = { [weak self] range, text in
+      guard let self, composer.isEditable, !composer.hasMarkedText(),
+        range.location >= 0, NSMaxRange(range) <= (composer.string as NSString).length,
+        composer.shouldChangeText(in: range, replacementString: text)
+      else { return }
+      composer.textStorage?.replaceCharacters(in: range, with: text)
+      composer.setSelectedRange(
+        NSRange(location: range.location + (text as NSString).length, length: 0))
+      composer.didChangeText()
+    }
     composer.setAccessibilityLabel("Message")
     composer.submit = { [weak store] in store?.submitComposer() }
     (window as? ConversationWindow)?.questionShortcut = { [weak self, weak requestsPanel] in
@@ -366,7 +496,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     attachButton.imagePosition = .imageOnly
     attachButton.bezelStyle = .inline
     attachButton.setAccessibilityLabel("Attach files")
-    composerScroll.heightAnchor.constraint(equalToConstant: 88).isActive = true
+    composerScroll.heightAnchor.constraint(equalToConstant: 86).isActive = true
     sendButton.target = self
     sendButton.action = #selector(send)
     sendButton.bezelStyle = .inline
@@ -375,22 +505,29 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     sendButton.imagePosition = .imageOnly
     sendButton.contentTintColor = .controlAccentColor
     sendButton.setAccessibilityLabel("Send message")
-    sendButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 32).isActive = true
-    sendButton.heightAnchor.constraint(equalToConstant: 30).isActive = true
+    sendButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 36).isActive = true
+    sendButton.heightAnchor.constraint(equalToConstant: 36).isActive = true
     deliveryButton.controlSize = .small
     deliveryButton.bezelStyle = .inline
     deliveryButton.widthAnchor.constraint(equalToConstant: 24).isActive = true
     deliveryButton.setAccessibilityLabel("Message delivery")
     stopButton.target = self
     stopButton.action = #selector(stop)
+    stopButton.image = NSImage(
+      systemSymbolName: "stop.fill", accessibilityDescription: "Stop generation")
+    stopButton.imagePosition = .imageOnly
+    stopButton.isBordered = false
+    stopButton.bezelStyle = .inline
+    stopButton.widthAnchor.constraint(equalToConstant: 24).isActive = true
+    stopButton.setAccessibilityLabel("Stop generation")
     let hint = NSTextField(labelWithString: "⌘ Return to send")
     hint.font = .systemFont(ofSize: 11)
     hint.textColor = .secondaryLabelColor
     let spacer = NSView()
     let bottom = NSStackView(views: [
-      attachButton, modelControls, spacer, stopButton, sendButton, deliveryButton,
+      modelControls, spacer, attachButton, stopButton, sendButton, deliveryButton,
     ])
-    bottom.spacing = 6
+    bottom.spacing = 8
     planBanner.font = .systemFont(ofSize: 12, weight: .medium)
     planBanner.textColor = .secondaryLabelColor
     planBanner.isHidden = true
@@ -398,10 +535,9 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     composerStack.orientation = .vertical
     composerStack.alignment = .leading
     composerStack.spacing = 8
-    let composerSurface = SurfaceView(raised: true)
-    composerSurface.layer?.cornerRadius = 16
+    composerSurface.layer?.cornerRadius = 22
     composerSurface.addSubview(composerStack)
-    pin(composerStack, to: composerSurface, inset: 10, top: 4)
+    pin(composerStack, to: composerSurface, inset: 16, top: 6)
     composerScroll.widthAnchor.constraint(equalTo: composerStack.widthAnchor).isActive = true
     attachmentTray.widthAnchor.constraint(equalTo: composerStack.widthAnchor).isActive = true
     planBanner.widthAnchor.constraint(equalTo: composerStack.widthAnchor).isActive = true
@@ -419,10 +555,28 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
       header.trailingAnchor.constraint(equalTo: right.trailingAnchor, constant: -24),
       header.topAnchor.constraint(equalTo: right.topAnchor, constant: 46),
     ])
+    let heroTitle = NSTextField(labelWithString: "What should we build in")
+    heroTitle.font = .systemFont(ofSize: 24, weight: .medium)
+    newChatProject.font = .systemFont(ofSize: 24, weight: .semibold)
+    newChatProject.invoke = { [weak self] in self?.showProjectPicker(create: false) }
+    newChatProject.widthAnchor.constraint(lessThanOrEqualToConstant: 300).isActive = true
+    let heroLine = NSStackView(views: [heroTitle, newChatProject])
+    heroLine.spacing = 6
+    withoutProject.isBordered = false
+    withoutProject.font = .systemFont(ofSize: 14)
+    withoutProject.contentTintColor = .secondaryLabelColor
+    withoutProject.invoke = { [weak store] in store?.startWithoutProject() }
+    newChatHeading.orientation = .vertical
+    newChatHeading.alignment = .centerX
+    newChatHeading.spacing = 12
+    newChatHeading.edgeInsets = NSEdgeInsets(top: 0, left: 0, bottom: 22, right: 0)
+    newChatHeading.addArrangedSubview(heroLine)
+    newChatHeading.addArrangedSubview(withoutProject)
     let footer = NSStackView(views: [status, NSView(), hint])
     let stack = conversationStack
     for view in [
-      olderButton, timelineScroll, errorLabel, requestsPanel, queuePanel, composerSurface, footer,
+      newChatHeading, olderButton, timelineScroll, errorLabel, requestsPanel, queuePanel,
+      contextBanner, composerSurface, workspaceControls, footer,
     ] { stack.addArrangedSubview(view) }
     stack.orientation = .vertical
     stack.alignment = .leading
@@ -431,15 +585,21 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     stack.translatesAutoresizingMaskIntoConstraints = false
     let preferredWidth = stack.widthAnchor.constraint(equalTo: right.widthAnchor, constant: -48)
     preferredWidth.priority = .defaultHigh
+    conversationTop = stack.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 16)
+    conversationBottom = stack.bottomAnchor.constraint(equalTo: right.bottomAnchor, constant: -16)
+    conversationCenter = stack.centerYAnchor.constraint(equalTo: right.centerYAnchor, constant: -20)
+    maximumChatWidth = stack.widthAnchor.constraint(lessThanOrEqualToConstant: 880)
     NSLayoutConstraint.activate([
+      maximumChatWidth!,
       stack.centerXAnchor.constraint(equalTo: right.centerXAnchor),
-      stack.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 16),
-      stack.bottomAnchor.constraint(equalTo: right.bottomAnchor, constant: -16),
-      stack.widthAnchor.constraint(lessThanOrEqualToConstant: 820),
+      conversationTop!, conversationBottom!,
       stack.widthAnchor.constraint(lessThanOrEqualTo: right.widthAnchor, constant: -32),
       preferredWidth,
     ])
-    for view in [timelineScroll, errorLabel, requestsPanel, queuePanel, composerSurface, footer] {
+    for view in [
+      newChatHeading, timelineScroll, errorLabel, requestsPanel, queuePanel, contextBanner,
+      composerSurface, workspaceControls, footer,
+    ] {
       view.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
     }
     timelineScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 120).isActive = true
@@ -479,6 +639,12 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
 
   private func installCommands() {
     guard let menu = NSApp.mainMenu else { return }
+    if let app = menu.items.first?.submenu {
+      let settings = app.addItem(
+        withTitle: "Settings…", action: #selector(showSettings), keyEquivalent: ",")
+      settings.target = self
+      settings.keyEquivalentModifierMask = .command
+    }
     let chat = NSMenu(title: "Chat")
     let view = NSMenu(title: "View")
     for (parent, title, action, key, modifiers) in [
@@ -486,6 +652,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
       (chat, "Open Project…", #selector(openProject), "o", [.command]),
       (chat, "New Project…", #selector(newProject), "n", [.command, .shift]),
       (chat, "Choose Model…", #selector(chooseModel), "m", [.command, .shift]),
+      (chat, "Search Threads", #selector(searchThreads), "k", [.command]),
       (chat, "Attach Files…", #selector(attachFiles), "a", [.command, .shift]),
       (chat, "Steer Next Queued Message", #selector(steerNextQueued), "\r", [.command, .shift]),
       (chat, "Resume", #selector(resume), "", []),
@@ -549,6 +716,11 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
   }
 
   @objc private func chooseModel() { modelControls.showModels() }
+  @objc private func searchThreads() {
+    completion.dismiss()
+    sidebarItem?.isCollapsed = false
+    sidebar.focusSearch()
+  }
   @objc private func togglePlanModeEnabled() {
     store.setPlanModeEnabled(!store.catalog.planModeEnabled)
   }
@@ -603,6 +775,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
   @objc private func saveWorkspaceFile() { workspace.saveFile() }
   @objc private func showUsage() {
     guard !showingUsage else { return }
+    completion.dismiss()
     showingUsage = true
     hideBrowser()
     usageThreadID = store.selectedID
@@ -672,8 +845,9 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
   @objc private func browserSettings() { browser.showBrowserSettings() }
   @objc private func browserDownloads() { browser.showDownloads() }
   func finishBrowserDownloads() async -> Bool {
-    await browser.downloads.finishBeforeQuit(window: window)
+    await browser.finishBeforeQuit(window: window)
   }
+  func stopBrowserHelper() { browser.stopChromiumHelper() }
   private func openMarkdownLink(_ url: URL, at location: WorkspaceLocation?) {
     if url.isFileURL {
       guard let location, store.workspaceLocation == location else { return }
@@ -723,6 +897,8 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
   }
 
   func refresh() {
+    settingsWindow?.refresh()
+    notifications.refreshConnection()
     if showingUsage, store.selectedID != usageThreadID { showConversation() }
     usage.model.synchronize(active: showingUsage)
     browser.refresh(active: !showingUsage && browserItem?.isCollapsed == false)
@@ -737,20 +913,38 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     conversationStack.isHidden = !hasConversation
     welcome.isHidden = hasConversation
     welcome.refresh(store)
+    let newConversation = store.isNewConversation
+    newChatHeading.isHidden = !newConversation
+    timelineScroll.isHidden = newConversation
+    conversationTop?.isActive = !newConversation
+    conversationBottom?.isActive = !newConversation
+    conversationCenter?.isActive = newConversation
+    let project = store.selectedDraft?.project
+    newChatProject.title = (project?["title"].string ?? "this project") + "  ⌄"
+    withoutProject.isHidden = store.catalog.scratchWorkspaceRoot == nil
+    workspaceControls.refresh()
+    composer.placeholder =
+      newConversation
+      ? "Ask for changes, send follow-ups, or attach images"
+      : "Ask anything, @tag files/folders, $use skills, or / for commands"
     heading.stringValue = selected?.title ?? "T3 Native"
     subtitle.stringValue =
       selected.map {
         store.shell.projects[$0.projectID] ?? store.archives.projects[$0.projectID] ?? "Project"
       } ?? "Connect to an existing T3 server to get started"
-    status.stringValue = notice ?? store.status
+    status.stringValue = notice ?? (store.ready ? "" : store.status)
     errorLabel.stringValue = store.error ?? store.storageError ?? ""
     errorLabel.isHidden = store.error == nil && store.storageError == nil
-    olderButton.isHidden = store.thread?.hasMore != true
+    olderButton.isHidden = newConversation || store.thread?.hasMore != true
     olderButton.isEnabled = store.ready && !store.loadingHistory
     olderButton.title = store.loadingHistory ? "Loading earlier activity…" : "Load earlier activity"
     let draft = store.composerText
-    if composer.string != draft { composer.string = draft }
+    if composer.string != draft {
+      composer.string = draft
+      composer.needsDisplay = true
+    }
     if renderedDraftID != store.composerDraftID {
+      completion.dismiss()
       renderedDraftID = store.composerDraftID
       window?.makeFirstResponder(composer)
     }
@@ -762,8 +956,10 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
       && store.activeQuestionProgress?.question["allowCustomAnswer"] != .bool(false)
     composer.setAccessibilityLabel(
       store.questionRequest == nil ? "Message" : "Answer to the current question")
+    refreshCompletion()
     if window?.isKeyWindow == true { store.markVisibleThreadRead() }
     modelControls.refresh()
+    contextBanner.refresh()
     requestsPanel.refresh()
     attachmentPreviews.updateEnvironment(store.environmentKey)
     attachmentTray.refresh()
@@ -931,15 +1127,33 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     restoreScroll(anchor)
   }
 
+  private func messageWidth(_ row: TimelineRow) -> CGFloat {
+    let available = max(120, timelineLayoutWidth - 24)
+    guard row.kind == "user_message" else { return available }
+    let natural =
+      (row.text as NSString).size(withAttributes: [.font: appearanceValues.resolvedInterfaceFont])
+      .width + 4
+    return min(available * 0.82, max(row.attachments.isEmpty ? 100 : 300, natural))
+  }
+
   private func render(_ row: TimelineRow) -> (RenderedMarkdown, CGFloat) {
-    let width = max(120, timelineLayoutWidth - 36)
+    let width = messageWidth(row)
     if let cached = rendered[row.id], cached.row == row, cached.width == width {
       return (cached.markdown, cached.height)
     }
     let markdown: RenderedMarkdown
-    if ["user_message", "assistant_message", "reasoning", "proposed_plan"].contains(row.kind) {
+    if row.kind == "user_message" {
+      markdown = RenderedMarkdown(
+        text: NSAttributedString(
+          string: row.text,
+          attributes: [
+            .font: appearanceValues.resolvedInterfaceFont, .foregroundColor: NSColor.labelColor,
+          ]), codeBlocks: [])
+    } else if ["assistant_message", "reasoning", "proposed_plan"].contains(row.kind) {
       let root = store.workspaceLocation?.root
-      markdown = MarkdownRenderer.render(row.text, width: width) { destination in
+      markdown = MarkdownRenderer.render(
+        row.text, width: width, configuration: markdownConfiguration
+      ) { destination in
         WorkspaceMarkdown.link(destination, filePath: "", root: root)
       }
     } else {
@@ -952,7 +1166,11 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
           attributes: [.font: font, .foregroundColor: NSColor.labelColor]), codeBlocks: [])
     }
     let height =
-      max(65, MarkdownRenderer.height(of: markdown.text, width: width) + 45)
+      max(
+        row.kind == "user_message" ? 60 : 44,
+        MarkdownRenderer.height(of: markdown.text, width: width)
+          + (row.kind == "user_message" ? 40 : 44))
+      + MessageTextView.horizontalScrollerAllowance(for: markdown, width: width)
       + attachmentHeight(row)
     rendered[row.id] = (row, markdown, width, height)
     return (markdown, height)
@@ -1013,35 +1231,53 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
         })
     }
     let cell = NSView()
-    let title = NSTextField(labelWithString: "")
-    title.font = .systemFont(ofSize: 11, weight: .semibold)
-    title.textColor = .secondaryLabelColor
-    title.stringValue =
-      row.title + (row.inherited ? " · inherited" : "")
-      + (row.failed ? " · failed" : row.streaming ? " · streaming" : "")
-    title.textColor =
-      row.failed
-      ? .systemRed : row.kind == "user_message" ? .controlAccentColor : .secondaryLabelColor
+    let isUser = row.kind == "user_message"
+    let isAssistant = row.kind == "assistant_message"
     let (markdown, height) = render(row)
-    let bodyHeight = height - 45 - attachmentHeight(row)
-    let body = MessageTextView(
-      rendered: markdown, width: max(120, timelineLayoutWidth - 36), height: bodyHeight)
+    let bodyHeight = height - (isUser ? 40 : 44) - attachmentHeight(row)
+    let body = MessageTextView(rendered: markdown, width: messageWidth(row), height: bodyHeight)
+    let bodyView = body.horizontalScrollContainer()
+    body.setAccessibilityLabel(
+      isUser ? "Your message" : isAssistant ? "Assistant response" : row.title)
+    let scope = planScope
+    body.onCodeWrapChange = { [weak self] codeIndex, wraps in
+      guard let self, planScope == scope, let current = rendered[row.id], current.row == row else {
+        return
+      }
+      let next = MarkdownRenderer.settingCodeWrapping(
+        wraps, at: codeIndex, in: current.markdown, width: messageWidth(row))
+      let height =
+        max(
+          isUser ? 60 : 44,
+          MarkdownRenderer.height(of: next.text, width: messageWidth(row)) + (isUser ? 40 : 44))
+        + MessageTextView.horizontalScrollerAllowance(for: next, width: messageWidth(row))
+        + attachmentHeight(row)
+      rendered[row.id] = (row, next, current.width, height)
+      guard let index = rows.firstIndex(where: { $0.id == row.id }) else { return }
+      let anchor = scrollAnchor()
+      timeline.noteHeightOfRows(withIndexesChanged: IndexSet(integer: index))
+      timeline.reloadData(
+        forRowIndexes: IndexSet(integer: index), columnIndexes: IndexSet(integer: 0))
+      restoreScroll(anchor)
+    }
     let location = store.workspaceLocation
     body.onOpenLink = { [weak self] in self?.openMarkdownLink($0, at: location) }
     body.fileLinkMenu = { [weak store] url in
       guard let store else { return nil }
       return FileContextMenu.forLink(url, at: location, store: store)
     }
-    let copy = ActionButton("") {
+    let copy = sidebarIcon("Copy message", "doc.on.doc", size: 22) {
       NSPasteboard.general.clearContents()
       NSPasteboard.general.setString(row.text, forType: .string)
     }
-    copy.image = NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: "Copy message")
-    copy.imagePosition = .imageOnly
-    copy.bezelStyle = .inline
-    copy.toolTip = "Copy message"
-    copy.setAccessibilityLabel("Copy message")
-    let header = NSStackView(views: [title, NSView(), copy])
+    let title = NSTextField(
+      labelWithString: (isUser || isAssistant ? "" : row.title)
+        + (row.inherited ? " · inherited" : "")
+        + (row.failed ? " · failed" : row.streaming ? " · streaming" : ""))
+    title.font = .systemFont(ofSize: 11)
+    title.textColor = row.failed ? .systemRed : .secondaryLabelColor
+    let actions = NSStackView(views: [title, NSView(), copy])
+    actions.spacing = 6
     if row.item["outputOmitted"].bool {
       let busy = store.commandsInFlight.contains(row.id + ":output")
       let output = ActionButton(busy ? "Loading output…" : "Load full output") { [weak store] in
@@ -1049,9 +1285,9 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
       }
       output.isEnabled = store.ready && !busy
       output.controlSize = .small
-      header.insertArrangedSubview(output, at: 2)
+      actions.insertArrangedSubview(output, at: 1)
     }
-    let stack = NSStackView(views: [header, body])
+    let stack = NSStackView(views: isAssistant || isUser ? [bodyView] : [actions, bodyView])
     stack.orientation = .vertical
     stack.alignment = .leading
     stack.spacing = 6
@@ -1064,16 +1300,25 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
       attachments.heightAnchor.constraint(equalToConstant: attachmentHeight(row) - 6).isActive =
         true
     }
-    cell.addSubview(stack)
+    if isAssistant { stack.addArrangedSubview(actions) }
+    let container = isUser ? MessageBubble() : NSView()
+    container.addSubview(stack)
+    cell.addSubview(container)
     stack.translatesAutoresizingMaskIntoConstraints = false
+    container.translatesAutoresizingMaskIntoConstraints = false
+    let inset: CGFloat = isUser ? 14 : 0
     NSLayoutConstraint.activate([
-      stack.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 12),
-      stack.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -12),
-      stack.topAnchor.constraint(equalTo: cell.topAnchor, constant: 8),
-      body.widthAnchor.constraint(equalTo: stack.widthAnchor),
-      body.heightAnchor.constraint(equalToConstant: max(20, bodyHeight)),
-      header.widthAnchor.constraint(equalTo: stack.widthAnchor),
+      container.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -12),
+      container.topAnchor.constraint(equalTo: cell.topAnchor, constant: 8),
+      container.widthAnchor.constraint(equalToConstant: messageWidth(row) + inset * 2),
+      stack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: inset),
+      stack.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -inset),
+      stack.topAnchor.constraint(equalTo: container.topAnchor, constant: isUser ? 12 : 0),
+      stack.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: isUser ? -12 : 0),
+      bodyView.widthAnchor.constraint(equalTo: stack.widthAnchor),
+      bodyView.heightAnchor.constraint(equalToConstant: max(20, bodyHeight)),
     ])
+    if !isUser { actions.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true }
     return cell
   }
 
@@ -1208,8 +1453,22 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
   }
   func textDidChange(_ notification: Notification) {
     store.composerText = composer.string
+    composer.needsDisplay = true
     updateComposerControls()
     requestsPanel.refresh()
+    refreshCompletion()
+  }
+  func textViewDidChangeSelection(_ notification: Notification) {
+    guard notification.object as? NSTextView === composer else { return }
+    refreshCompletion()
+  }
+  private func refreshCompletion() {
+    guard !showingUsage, window?.firstResponder === composer, store.questionRequest == nil
+    else {
+      completion.dismiss()
+      return
+    }
+    completion.refresh(text: composer.string, cursor: composer.selectedRange().location)
   }
   private func updateComposerControls() {
     let sending = store.composerBusy
@@ -1241,10 +1500,10 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     sendButton.setAccessibilityLabel(sending ? "Sending message" : label)
     sendButton.image = NSImage(
       systemSymbolName: action == .resume
-        ? "play.circle.fill"
+        ? "play.fill"
         : action == .stop
-          ? "stop.circle.fill"
-          : store.queuedEdit == nil ? "arrow.up.circle.fill" : "checkmark.circle.fill",
+          ? "stop.fill"
+          : store.queuedEdit == nil ? "arrow.up" : "checkmark",
       accessibilityDescription: nil)
     let execution = store.execution
     let state =
@@ -1360,15 +1619,60 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
         guard let self, let id = project["id"].string else { return }
         showConversation()
         sidebar.selectProject(id)
-        store.newThread(project: project, warning: warning)
+        if store.isNewConversation {
+          store.setDraftProject(project)
+          if let warning { store.error = warning }
+        } else {
+          store.newThread(project: project, warning: warning)
+        }
       }, closed: { [weak self] in self?.projectPicker = nil })
     projectPicker?.present(on: window)
   }
   @objc private func retry() {
-    if store.hasConnection { store.retry() } else { connect() }
+    guard !reconnecting else { return }
+    connectionAttempt = UUID()
+    let attempt = connectionAttempt
+    do {
+      let repository = try ConnectionRepository()
+      guard
+        let saved = repository.values.environments.first(where: {
+          $0.id == repository.values.selectedID
+        }),
+        saved.id == store.environmentKey || !store.hasConnection,
+        saved.local || saved.cloudEnvironmentID != nil
+      else {
+        if store.hasConnection { store.retry() } else { connect() }
+        return
+      }
+      reconnecting = true
+      let session = store.usageSessionID
+      Task { [weak self] in
+        guard let self else { return }
+        defer { reconnecting = false }
+        do {
+          let settings = try await repository.connectionForLaunch()
+          guard connectionAttempt == attempt, store.usageSessionID == session,
+            let settings
+          else { return }
+          store.connect(settings)
+        } catch {
+          guard connectionAttempt == attempt, store.usageSessionID == session,
+            !(error is CancellationError)
+          else { return }
+          store.error = error.localizedDescription
+          refresh()
+        }
+      }
+    } catch {
+      store.error = error.localizedDescription
+      refresh()
+    }
   }
 
   @objc func connect() {
+    let attempt = UUID()
+    connectionAttempt = attempt
+    let session = store.usageSessionID
     let alert = NSAlert()
     alert.messageText = "Connect to T3"
     alert.informativeText =
@@ -1391,7 +1695,9 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     alert.addButton(withTitle: "Cancel")
     guard let window else { return }
     alert.beginSheetModal(for: window) { [weak self] result in
-      guard result == .alertFirstButtonReturn, let self else { return }
+      guard result == .alertFirstButtonReturn, let self,
+        connectionAttempt == attempt, store.usageSessionID == session
+      else { return }
       let address = endpoint.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
       let credential = token.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
       Task { @MainActor in
@@ -1401,9 +1707,15 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
             pairing.state == .on
             ? try await EnvironmentHTTP.pair(endpoint: url, credential: credential)
             : try ConnectionSettings(endpoint: url, token: credential)
+          try Task.checkCancellation()
+          guard connectionAttempt == attempt, store.usageSessionID == session else { return }
+          guard store.saveDraftsBeforeExit() else {
+            throw T3Error(store.storageError ?? "Save the current drafts before switching servers.")
+          }
           try Credentials.save(settings)
           store.connect(settings)
         } catch {
+          guard connectionAttempt == attempt, store.usageSessionID == session else { return }
           store.error = error.localizedDescription
           refresh()
         }

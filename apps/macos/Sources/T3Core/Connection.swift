@@ -3,8 +3,9 @@ import Foundation
 public struct ConnectionSettings: Codable, Sendable {
   public let endpoint: URL
   public let token: String
+  public let proofKey: Data?
 
-  public init(endpoint: URL, token: String) throws {
+  public init(endpoint: URL, token: String, proofKey: Data? = nil) throws {
     guard let parts = URLComponents(url: endpoint, resolvingAgainstBaseURL: false),
       let host = parts.host, parts.user == nil, parts.password == nil,
       parts.query == nil, parts.fragment == nil,
@@ -17,11 +18,13 @@ public struct ConnectionSettings: Codable, Sendable {
     }
     self.endpoint = endpoint
     self.token = token
+    if let proofKey { _ = try ConnectionProof(rawRepresentation: proofKey) }
+    self.proofKey = proofKey
   }
 
   public static func load(_ file: URL) throws -> Self {
     let decoded = try JSONDecoder().decode(Self.self, from: Data(contentsOf: file))
-    return try Self(endpoint: decoded.endpoint, token: decoded.token)
+    return try Self(endpoint: decoded.endpoint, token: decoded.token, proofKey: decoded.proofKey)
   }
 
   public func request(_ path: String, method: String = "GET", query: [URLQueryItem] = [])
@@ -33,16 +36,25 @@ public struct ConnectionSettings: Codable, Sendable {
     var request = URLRequest(url: parts.url!)
     request.httpMethod = method
     request.timeoutInterval = 25
-    request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+    if let proofKey {
+      // Invalid keys fail closed: never downgrade a proof-bound token to bearer auth.
+      if let proof = try? ConnectionProof(rawRepresentation: proofKey),
+        let jwt = try? proof.jwt(method: method, url: request.url!, token: token)
+      {
+        request.setValue("DPoP \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue(jwt, forHTTPHeaderField: "DPoP")
+      }
+    } else {
+      request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+    }
     request.setValue("2", forHTTPHeaderField: "x-t3-orchestration-protocol")
     return request
   }
 }
 
 public enum EnvironmentHTTP {
-  public static func read(_ request: URLRequest, session: URLSession = .shared) async throws -> JSON
-  {
-    let (data, response) = try await session.data(for: request)
+  public static func read(_ request: URLRequest, session: URLSession? = nil) async throws -> JSON {
+    let (data, response) = try await (session ?? ConnectionHTTP.shared.session!).data(for: request)
     guard let response = response as? HTTPURLResponse else {
       throw T3Error("Invalid server response.")
     }
@@ -100,7 +112,8 @@ public actor RPCConnection {
     self.settings = settings
     let config = URLSessionConfiguration.ephemeral
     config.timeoutIntervalForRequest = 25
-    self.session = URLSession(configuration: config)
+    self.session = URLSession(
+      configuration: config, delegate: ConnectionHTTP.shared, delegateQueue: nil)
   }
 
   public func open() async throws {

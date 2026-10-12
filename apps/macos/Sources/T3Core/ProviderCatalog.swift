@@ -112,6 +112,10 @@ public struct ProviderCatalog: Sendable, Equatable {
     providers.first { $0.id == selection["instanceId"].string }
   }
 
+  public func configuredWorkspaceMode(project: JSON) -> String? {
+    WorkspaceDefaults.configuredMode(settings: settings, project: project)
+  }
+
   public func defaultRuntimeMode(projectID: String) -> String {
     projectModes[projectID] ?? defaultMode
   }

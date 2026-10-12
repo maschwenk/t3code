@@ -11,19 +11,24 @@ import T3Core
     self.controller = controller
     controller.showWindow(nil)
     NSApp.activate(ignoringOtherApps: true)
-    do {
-      if let path = Arguments.value("--connection-file") {
-        let settings = try ConnectionSettings.load(URL(fileURLWithPath: path))
-        if CommandLine.arguments.contains("--remember-connection") {
-          try Credentials.save(settings)
+    let launchSession = store.usageSessionID
+    Task {
+      do {
+        if let path = Arguments.value("--connection-file") {
+          let settings = try ConnectionSettings.load(URL(fileURLWithPath: path))
+          if CommandLine.arguments.contains("--remember-connection") {
+            try Credentials.save(settings)
+          }
+          store.connect(settings, selecting: Arguments.value("--thread-id"))
+        } else if let settings = try await ConnectionRepository().connectionForLaunch() {
+          guard store.usageSessionID == launchSession else { return }
+          store.connect(settings, selecting: Arguments.value("--thread-id"))
         }
-        store.connect(settings, selecting: Arguments.value("--thread-id"))
-      } else if let settings = try Credentials.load() {
-        store.connect(settings, selecting: Arguments.value("--thread-id"))
+      } catch {
+        guard store.usageSessionID == launchSession, !(error is CancellationError) else { return }
+        store.error = error.localizedDescription
+        controller.refresh()
       }
-    } catch {
-      store.error = error.localizedDescription
-      controller.refresh()
     }
   }
 
@@ -57,6 +62,17 @@ import T3Core
         shouldQuit = alert.runModal() == .alertSecondButtonReturn
       }
       if shouldQuit { shouldQuit = await controller?.finishBrowserDownloads() ?? true }
+      if shouldQuit { controller?.stopBrowserHelper() }
+      if shouldQuit, BackendHost.shared.isRunning {
+        do { try await BackendHost.shared.stop() } catch {
+          let alert = NSAlert()
+          alert.messageText = "The local server is still stopping"
+          alert.informativeText = error.localizedDescription
+          alert.addButton(withTitle: "Keep open")
+          alert.runModal()
+          shouldQuit = false
+        }
+      }
       finishingTermination = false
       if !shouldQuit { controller?.showWindow(nil) }
       sender.reply(toApplicationShouldTerminate: shouldQuit)

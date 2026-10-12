@@ -7,9 +7,66 @@ import WebKit
   var onAgentReveal: (() -> Void)?
   var onContextAdded: (() -> Void)?
   var onExpand: (() -> Void)?
+  // Parent may use this for an artifact gallery/reveal UI. Attachment import stays in ClientStore.
+  var onArtifactSaved: ((URL) -> Void)?
+  private var annotationWindows: [BrowserAnnotationWindow] = []
+  private var recordingPage: BrowserPage?
+  private var lastArtifact: (file: URL, thread: String, connection: RPCConnection)?
+  private var recordingOptions = BrowserRecordingOptions()
+  var recordingActive: Bool { pages.values.contains { $0.recording.active } }
+  var recordingSettings: BrowserRecordingOptions { recordingOptions }
+  func configureRecording(_ options: BrowserRecordingOptions) throws {
+    guard !recordingActive else {
+      throw T3Error("Stop recording before changing recording options.")
+    }
+    try options.validate()
+    recordingOptions = options
+    render()
+  }
   private let automationHost = BrowserAutomationHost()
   var agentPaused: Bool { automationHost.paused }
-  func toggleAgentControl() { automationHost.setPaused(!automationHost.paused) }
+  func toggleAgentControl() {
+    automationHost.setPaused(!automationHost.paused)
+    if automationHost.paused { chromiumCommand("stop") }
+  }
+  let chromium = BrowserChromiumController()
+  private var chromiumOpening = Set<String>()
+  private var chromiumURLs: [String: String] = [:]
+  func stopChromiumHelper() { chromium.stop() }
+  func finishBeforeQuit(window: NSWindow?) async -> Bool {
+    let wasPaused = automationHost.paused
+    automationHost.setPaused(true)
+    var allowed = false
+    defer { if !allowed { automationHost.setPaused(wasPaused) } }
+    let recordings = pages.values.filter { $0.recording.active }
+    if !recordings.isEmpty {
+      let alert = NSAlert()
+      alert.messageText = "Browser recording is still running"
+      alert.informativeText =
+        "Save \(recordings.count) recording(s) before quitting, or discard them."
+      alert.addButton(withTitle: "Save and quit")
+      alert.addButton(withTitle: "Keep recording")
+      alert.addButton(withTitle: "Discard recordings and quit")
+      let result =
+        if let window, window.isVisible { await alert.beginSheetModal(for: window) } else {
+          alert.runModal()
+        }
+      if result == .alertSecondButtonReturn { return false }
+      if result == .alertFirstButtonReturn {
+        do { for page in recordings { _ = try await page.recording.finishForQuit() } } catch {
+          NSAlert(error: error).runModal()
+          return false
+        }
+      } else {
+        for page in recordings { page.recording.cancel() }
+      }
+      recordingPage = nil
+    }
+    guard await downloads.finishBeforeQuit(window: window) else { return false }
+    allowed = await chromium.finishBeforeQuit(window: window)
+    return allowed
+  }
+
   private let stopAgent = NSButton(title: "Stop agent", target: nil, action: nil)
   private var automationSurfaces: [String: BrowserAutomationSurface] = [:]
   private var automationMetadata: Task<Void, Never>?
@@ -74,23 +131,34 @@ import WebKit
     super.init(nibName: nil, bundle: nil)
     self.preferences.onChange = { [weak self] in self?.render() }
     self.downloads.onChange = { [weak self] in self?.render() }
+    chromium.onChange = { [weak self] in self?.render() }
+    chromium.onEvent = { [weak self] event, value in self?.chromiumEvent(event, value: value) }
+
     automationHost.handle = { [weak self] request, deadline in
       guard let self else { throw BrowserAutomationError.interrupted }
       return try await self.automate(request, deadline: deadline)
     }
     automationHost.liveTabs = { [weak self] in
-      self?.pages.values.map { page in
-        .object([
-          "threadId": .string(page.threadID), "tabId": .string(page.tabID),
-          "visible": .bool(page.web.window?.isVisible == true && !page.web.isHidden),
+      guard let self else { return [] }
+      let chromiumTabs = self.chromium.pages.values.map { value in
+        JSON.object([
+          "threadId": value["threadId"], "tabId": value["tabId"], "visible": value["visible"],
         ])
-      } ?? []
+      }
+      return chromiumTabs
+        + self.pages.values.map { page in
+          .object([
+            "threadId": .string(page.threadID), "tabId": .string(page.tabID),
+            "visible": .bool(page.web.window?.isVisible == true && !page.web.isHidden),
+          ])
+        }
     }
     automationHost.onChange = { [weak self] in self?.render() }
   }
   required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
   isolated deinit {
     detach()
+    chromium.stop()
     automationMetadata?.cancel()
     automationHost.synchronize(connection: nil, environmentID: nil)
     for surface in automationSurfaces.values { surface.close() }
@@ -230,6 +298,13 @@ import WebKit
       return
     }
     if connection !== nextConnection {
+      chromium.stop()
+      chromiumOpening = []
+      chromiumURLs = [:]
+      recordingPage?.recording.cancel()
+      recordingPage = nil
+    }
+    if connection !== nextConnection {
       automationMetadata?.cancel()
       automationMetadata = nil
       for surface in automationSurfaces.values { surface.close() }
@@ -244,6 +319,7 @@ import WebKit
     detach()
     self.active = active
     connection = nextConnection
+    chromium.environmentID = store.browserEnvironmentID
     endpoint = store.browserEndpoint
     if automationMetadata == nil, let nextConnection { watchAutomationTabs(nextConnection) }
     threadID = nextThread
@@ -350,7 +426,9 @@ import WebKit
       page.web.removeFromSuperview()
       pages.removeValue(forKey: key)
     }
-    for tab in directory.tabs { pages[key(tab.id, thread: threadID)]?.receive(tab) }
+    if !chromium.enabled {
+      for tab in directory.tabs { pages[key(tab.id, thread: threadID)]?.receive(tab) }
+    }
     if selectedID == nil || !live.contains(selectedID!) { selectedID = directory.tabs.first?.id }
     selections[threadID] = selectedID
     showSelected()
@@ -367,6 +445,14 @@ import WebKit
       shownPage = nil
       retainDetachedPage(previous)
       empty.isHidden = false
+      return
+    }
+    if chromium.enabled {
+      shownPage?.picker.cancel()
+      host.show(nil)
+      shownPage = nil
+      empty.isHidden = false
+      handoffChromium(tab, connection: connection, endpoint: endpoint)
       return
     }
     let key = key(tab.id, thread: threadID)
@@ -432,7 +518,21 @@ import WebKit
       self.store.addBrowserContext(context)
       self.onContextAdded?()
     }
-    page.onChange = { [weak self] in self?.render() }
+    page.onChange = { [weak self] in
+      guard let self, store.browserConnection === connection else { return }
+      render()
+    }
+    page.recording.onChange = { [weak self, weak page] in
+      guard let self, let page else { return }
+      if case .saved(let file) = page.recording.state,
+        self.connection === connection, store.browserConnection === connection,
+        lastArtifact?.file != file
+      {
+        lastArtifact = (file, page.threadID, connection)
+        onArtifactSaved?(file)
+      }
+      render()
+    }
     page.onNewTab = { [weak self, weak page] url in
       guard let self, let page else { return }
       if !page.agentDriven, self.threadID == page.threadID, self.active, self.shownPage === page {
@@ -447,6 +547,9 @@ import WebKit
   private func render() {
     guard isViewLoaded else { return }
     renderProfiles()
+    if chromium.nativeRecordingActive != recordingActive {
+      chromium.nativeRecordingActive = recordingActive
+    }
     let downloadError = downloads.items.first?.error
     downloadButton.toolTip =
       downloads.activeCount > 0
@@ -519,17 +622,29 @@ import WebKit
     capture.isEnabled =
       page?.web.url != nil && page?.failure == nil && page?.web.isLoading == false
       && store.canAttach
+    if chromium.enabled {
+      pick.isEnabled = false
+      deviceToggle.isEnabled = false
+      capture.isEnabled = selectedID != nil && chromium.running && store.canAttach
+      back.isEnabled = selectedID != nil && chromium.running
+      forward.isEnabled = back.isEnabled
+      reload.isEnabled = back.isEnabled
+    }
     let message =
-      error ?? page?.failure ?? page?.synchronizationError ?? discoveryError ?? automationHost.error
+      error ?? chromium.error ?? page?.failure ?? page?.synchronizationError ?? discoveryError
+      ?? automationHost.error
     stopAgent.isHidden = automationHost.running == 0 && !automationHost.paused
     stopAgent.title = automationHost.paused ? "Resume agent browser" : "Stop agent"
     status.stringValue =
       message
+      ?? (chromium.enabled ? chromium.state + " · " + chromium.passwordStatus : nil)
       ?? (automationHost.paused
         ? "Agent browser control paused"
         : automationHost.running > 0 ? "Agent is using Browser…" : nil)
       ?? (page?.picker.active == true
         ? "Click an element to add it to your message. Escape cancels." : nil)
+      ?? (recordingPage?.recording.active == true
+        ? "Recording Browser · \(recordingOptions.framesPerSecond) fps target · stop to save" : nil)
       ?? (loading
         ? "Loading browser tabs…"
         : connection == nil
@@ -550,7 +665,9 @@ import WebKit
   }
 
   private func renderEmpty() {
-    let signature = servers.map(\.id).joined(separator: "\n") + "\n\(connection != nil):\(loading)"
+    let signature =
+      servers.map(\.id).joined(separator: "\n")
+      + "\n\(connection != nil):\(loading):\(chromium.enabled):\(chromium.state)"
     guard signature != renderedEmpty || empty.arrangedSubviews.isEmpty else { return }
     renderedEmpty = signature
     for child in empty.arrangedSubviews {
@@ -561,11 +678,14 @@ import WebKit
       image: NSImage(systemSymbolName: "globe", accessibilityDescription: nil)!)
     icon.contentTintColor = .secondaryLabelColor
     icon.heightAnchor.constraint(equalToConstant: 40).isActive = true
-    let title = NSTextField(labelWithString: "No preview yet")
+    let title = NSTextField(
+      labelWithString: chromium.enabled ? "1Password Browser" : "No preview yet")
     title.font = .systemFont(ofSize: 22, weight: .semibold)
     let detail = NSTextField(
       wrappingLabelWithString:
-        "Type a URL above, or run a dev script. Browser-ready localhost servers will show up here automatically."
+        chromium.enabled
+        ? "The live Chromium page and 1Password popup run in a managed floating window. Cookies stay in its selected profile."
+        : "Type a URL above, or run a dev script. Browser-ready localhost servers will show up here automatically."
     )
     detail.font = .systemFont(ofSize: 13)
     detail.textColor = .secondaryLabelColor
@@ -573,6 +693,18 @@ import WebKit
     for child in [icon, title, detail] { empty.addArrangedSubview(child) }
     detail.widthAnchor.constraint(lessThanOrEqualTo: host.widthAnchor, constant: -48).isActive =
       true
+    if chromium.enabled {
+      for (label, action) in [
+        ("Reveal page", #selector(revealChromiumBrowser)),
+        ("1Password", #selector(openChromiumPassword)),
+        ("Close page", #selector(closeChromiumPage)),
+        ("Stop helper", #selector(stopChromium)),
+      ] {
+        let button = NSButton(title: label, target: self, action: action)
+        button.bezelStyle = .inline
+        empty.addArrangedSubview(button)
+      }
+    }
     for server in servers.prefix(8) {
       let button = ActionButton(server.process + " · " + server.url.absoluteString) { [weak self] in
         self?.open(server.url.absoluteString)
@@ -701,6 +833,24 @@ import WebKit
     more.removeAllItems()
     more.addItem(withTitle: "•••")
     for (title, action) in [
+      ("Use 1Password Browser", #selector(useChromiumBrowser)),
+      ("Use Native Browser", #selector(useNativeBrowser)),
+      ("Reveal 1Password Browser", #selector(revealChromiumBrowser)),
+      ("Open 1Password Popup", #selector(openChromiumPassword)),
+      ("Install Official 1Password Extension", #selector(installChromiumPassword)),
+      ("Import 1Password From Browser…", #selector(importChromiumPassword)),
+      ("Close Chromium Page", #selector(closeChromiumPage)),
+      ("Stop Chromium Helper", #selector(stopChromium)),
+      ("Start Recording", #selector(startRecording)),
+      ("Stop Recording and Save", #selector(stopRecording)),
+      ("Cancel Recording", #selector(cancelRecording)),
+      ("Recording: 30 fps", #selector(recordAt30)),
+      ("Recording: 60 fps", #selector(recordAt60)),
+      ("Toggle Mouse Overlay", #selector(toggleRecordingMouse)),
+      ("Toggle Key Overlay", #selector(toggleRecordingKeys)),
+      ("Annotate Screenshot…", #selector(annotatePage)),
+      ("Attach Last Saved Artifact", #selector(attachLastArtifact)),
+      ("Show Saved Browser Artifacts", #selector(showArtifacts)),
       ("Open in Default Browser", #selector(openExternal)),
       ("Reload Without Cache", #selector(hardReload)), ("Zoom In", #selector(zoomIn)),
       ("Zoom Out", #selector(zoomOut)), ("Actual Size", #selector(resetZoom)),
@@ -750,7 +900,9 @@ import WebKit
   }
   @objc func showBrowserSettings() {
     if settingsWindow == nil {
-      settingsWindow = BrowserSettingsWindow(preferences: preferences, profiles: profiles)
+      settingsWindow = BrowserSettingsWindow(
+        preferences: preferences, profiles: profiles, chromium: chromium,
+        onModeChange: { [weak self] in self?.chromiumModeChanged() })
     }
     settingsWindow?.showWindow(nil)
     settingsWindow?.window?.makeKeyAndOrderFront(nil)
@@ -763,8 +915,10 @@ import WebKit
   @objc private func clearProfileCookies() { clearProfile(.cookies) }
   @objc private func clearProfileCache() { clearProfile(.cache) }
   private func clearProfile(_ kinds: BrowserProfiles.DataKinds) {
-    guard let page, let window = view.window else { return }
-    let profile = page.snapshot.profileID
+    guard let window = view.window,
+      let tab = directory.tabs.first(where: { $0.id == selectedID })
+    else { return }
+    let profile = tab.profileID
     let alert = NSAlert()
     alert.messageText =
       kinds == .cookies
@@ -776,9 +930,19 @@ import WebKit
       : "Websites in this profile will download fresh copies of cached content."
     alert.addButton(withTitle: "Clear")
     alert.addButton(withTitle: "Cancel")
-    Task { [profiles] in
-      if await alert.beginSheetModal(for: window) == .alertFirstButtonReturn {
-        await profiles.clear(profile: profile, kinds: kinds)
+    Task { [weak self] in
+      guard let self, await alert.beginSheetModal(for: window) == .alertFirstButtonReturn else {
+        return
+      }
+      do {
+        if chromium.enabled {
+          try await chromium.clearProfile(profile ?? "default", kinds: kinds)
+        } else {
+          await profiles.clear(profile: profile, kinds: kinds)
+        }
+      } catch {
+        self.error = error.localizedDescription
+        render()
       }
     }
   }
@@ -816,22 +980,42 @@ import WebKit
         ?? BrowserDevicePreset.all[0].viewport)
   }
   @objc private func goBack() {
+    if chromium.enabled {
+      chromiumCommand("back")
+      return
+    }
     page?.takeControl()
     page?.web.goBack()
   }
   @objc private func goForward() {
+    if chromium.enabled {
+      chromiumCommand("forward")
+      return
+    }
     page?.takeControl()
     page?.web.goForward()
   }
   @objc private func reloadPage() {
+    if chromium.enabled {
+      chromiumCommand("reload")
+      return
+    }
     page?.takeControl()
     if page?.web.isLoading == true { page?.web.stopLoading() } else { page?.reload() }
   }
   @objc private func hardReload() {
+    if chromium.enabled {
+      chromiumCommand("reload")
+      return
+    }
     page?.takeControl()
     page?.reload(hard: true)
   }
   @objc private func zoomIn() {
+    if chromium.enabled {
+      chromiumCommand("zoom", extra: ["delta": .number(0.1)])
+      return
+    }
     page?.takeControl()
     if let web = page?.web {
       web.pageZoom = min(5, web.pageZoom + 0.1)
@@ -839,6 +1023,10 @@ import WebKit
     }
   }
   @objc private func zoomOut() {
+    if chromium.enabled {
+      chromiumCommand("zoom", extra: ["delta": .number(-0.1)])
+      return
+    }
     page?.takeControl()
     if let web = page?.web {
       web.pageZoom = max(0.25, web.pageZoom - 0.1)
@@ -846,6 +1034,10 @@ import WebKit
     }
   }
   @objc private func resetZoom() {
+    if chromium.enabled {
+      chromiumCommand("zoom", extra: ["factor": .number(1)])
+      return
+    }
     page?.takeControl()
     page?.web.pageZoom = 1
     host.needsLayout = true
@@ -867,14 +1059,139 @@ import WebKit
       page?.reload()
     }
   }
+  @objc func startRecording() {
+    guard let page, let connection, store.browserConnection === connection, !recordingActive else {
+      return
+    }
+    recordingPage = page
+    let options = recordingOptions
+    Task { [weak self, weak page] in
+      guard let self, let page else { return }
+      do {
+        try await page.recording.start(options: options, directory: BrowserArtifacts.directory) {
+          [weak page] options in
+          guard let page else { throw CancellationError() }
+          return try await page.captureImage(
+            mouse: options.showMouse, keys: options.showKeys, deterministic: false)
+        }
+        guard self.connection === connection, store.browserConnection === connection,
+          recordingPage === page
+        else {
+          page.recording.cancel()
+          return
+        }
+      } catch {
+        guard self.connection === connection, store.browserConnection === connection,
+          recordingPage === page
+        else { return }
+        self.error = error.localizedDescription
+        render()
+      }
+    }
+  }
+  @objc func stopRecording() {
+    guard let page = recordingPage, let connection else { return }
+    Task { [weak self] in
+      guard let self else { return }
+      do {
+        let file = try await page.recording.stop()
+        guard self.connection === connection, store.browserConnection === connection,
+          recordingPage === page
+        else { return }
+        recordingPage = nil
+        lastArtifact = (file, page.threadID, connection)
+        render()
+      } catch {
+        guard self.connection === connection, store.browserConnection === connection,
+          recordingPage === page
+        else { return }
+        self.error = error.localizedDescription
+        render()
+      }
+    }
+  }
+  @objc func cancelRecording() {
+    recordingPage?.recording.cancel()
+    recordingPage = nil
+    render()
+  }
+  @objc private func recordAt30() { recordingOptions.framesPerSecond = 30 }
+  @objc private func recordAt60() { recordingOptions.framesPerSecond = 60 }
+  @objc private func toggleRecordingMouse() { recordingOptions.showMouse.toggle() }
+  @objc private func toggleRecordingKeys() { recordingOptions.showKeys.toggle() }
+  @objc func showArtifacts() {
+    do {
+      try FileManager.default.createDirectory(
+        at: BrowserArtifacts.directory,
+        withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+      if !NSWorkspace.shared.open(BrowserArtifacts.directory) {
+        throw T3Error("Could not open saved browser artifacts.")
+      }
+    } catch {
+      self.error = error.localizedDescription
+      render()
+    }
+  }
+  @objc func attachLastArtifact() {
+    guard let artifact = lastArtifact, store.selectedID == artifact.thread,
+      store.browserConnection === artifact.connection, store.canAttach
+    else { return }
+    store.addAttachments([artifact.file])
+    onContextAdded?()
+  }
+  @objc func annotatePage() {
+    if chromium.enabled {
+      captureChromium(annotate: true)
+      return
+    }
+    guard let page, let connection, store.browserConnection === connection else { return }
+    let thread = page.threadID
+    Task { [weak self] in
+      guard let self else { return }
+      do {
+        let image = try await page.captureImage()
+        guard store.selectedID == thread, store.browserConnection === connection else { return }
+        let window = BrowserAnnotationWindow(
+          image: image, pageURL: page.displayedURL?.absoluteString ?? "")
+        window.onSave = { [weak self] file, attach in
+          guard let self else { return }
+          onArtifactSaved?(file)
+          guard store.selectedID == thread, store.browserConnection === connection else { return }
+          lastArtifact = (file, thread, connection)
+          if attach, store.canAttach {
+            store.addAttachments([file])
+            onContextAdded?()
+          }
+        }
+        window.onClose = { [weak self, weak window] in
+          self?.annotationWindows.removeAll { $0 === window }
+        }
+        annotationWindows.append(window)
+        window.showWindow(nil)
+        window.window?.center()
+        window.window?.makeKeyAndOrderFront(nil)
+      } catch {
+        guard store.browserConnection === connection else { return }
+        self.error = error.localizedDescription
+        render()
+      }
+    }
+  }
   @objc private func capturePage() {
+    if chromium.enabled {
+      captureChromium(annotate: false)
+      return
+    }
     guard let page, store.canAttach else { return }
     let threadID = page.threadID
     let endpoint = store.environmentKey
+    let connection = store.browserConnection
     Task {
       do {
         let file = try await page.capture()
-        guard store.selectedID == threadID, store.environmentKey == endpoint, store.canAttach else {
+        guard store.selectedID == threadID, store.environmentKey == endpoint,
+          store.browserConnection === connection, store.canAttach
+        else {
           try? FileManager.default.removeItem(at: file.deletingLastPathComponent())
           return
         }
@@ -891,7 +1208,9 @@ extension BrowserPanel {
   private func openBackgroundPopup(_ url: URL, from source: BrowserPage) {
     guard let connection, let endpoint else { return }
     Task { [weak self, weak source] in
-      guard let self, let source, self.connection === connection else { return }
+      guard let self, let source,
+        self.connection === connection && self.store.browserConnection === connection
+      else { return }
       do {
         let tab = try BrowserTab(
           await connection.call(
@@ -901,7 +1220,7 @@ extension BrowserPanel {
               "profileId": .string(source.snapshot.profileID ?? "default"),
               "viewport": source.snapshot.viewport,
             ])))
-        guard self.connection === connection,
+        guard self.connection === connection && self.store.browserConnection === connection,
           self.pages[key(source.tabID, thread: source.threadID)] === source
         else {
           _ = try? await connection.call(
@@ -922,7 +1241,9 @@ extension BrowserPanel {
         selections[tab.threadID] = tab.id
         automationHost.refreshFocus()
       } catch {
-        guard self.connection === connection else { return }
+        guard self.connection === connection && self.store.browserConnection === connection else {
+          return
+        }
         self.error = error.localizedDescription
         render()
       }
@@ -935,7 +1256,8 @@ extension BrowserPanel {
         let events = try await connection.subscribe("subscribePreviewEvents")
         defer { Task { await connection.cancel(events.id) } }
         for try await event in events.values {
-          guard !Task.isCancelled, self.connection === connection,
+          guard !Task.isCancelled,
+            self.connection === connection && self.store.browserConnection === connection,
             let thread = event["threadId"].string, let tabID = event["tabId"].string
           else { return }
           let key = key(tabID, thread: thread)
@@ -953,7 +1275,9 @@ extension BrowserPanel {
           automationHost.refreshFocus()
         }
       } catch {
-        guard !Task.isCancelled, self.connection === connection else { return }
+        guard !Task.isCancelled,
+          self.connection === connection && self.store.browserConnection === connection
+        else { return }
         self.error = "Browser synchronization ended: " + error.localizedDescription
         render()
       }
@@ -970,11 +1294,18 @@ extension BrowserPanel {
     var listing = try await connection.call(
       "preview.list", payload: .object(["threadId": .string(thread)]))
     try deadline.check()
-    guard self.connection === connection else { throw BrowserAutomationError.interrupted }
+    guard self.connection === connection && self.store.browserConnection === connection else {
+      throw BrowserAutomationError.interrupted
+    }
     let tabs = try listing["sessions"].array.map(BrowserTab.init).filter { $0.threadID == thread }
     let requestedID = request["tabId"].string ?? input["tabId"].string
     var tab = requestedID.flatMap { id in tabs.first { $0.id == id } }
-    if requestedID == nil {
+    if operation == "recordingStop", request["tabIdExplicit"] != .bool(true) {
+      let recordingTabs = pages.values.filter { $0.threadID == thread && $0.recording.active }.map(
+        \.tabID)
+      if recordingTabs.count == 1 { tab = tabs.first { $0.id == recordingTabs[0] } }
+    }
+    if requestedID == nil, tab == nil {
       tab = tabs.first { $0.id == selections[thread] } ?? tabs.first
     } else if tab == nil {
       throw BrowserAutomationError(
@@ -1000,9 +1331,18 @@ extension BrowserPanel {
       }
       tab = try BrowserTab(await connection.call("preview.open", payload: .object(payload)))
     }
+    try deadline.check()
+    guard self.connection === connection, store.browserConnection === connection else {
+      throw BrowserAutomationError.interrupted
+    }
     guard var tab else {
       throw BrowserAutomationError(
         "PreviewAutomationTabNotFoundError", "Open a browser tab before using it.")
+    }
+    if chromium.enabled {
+      return try await automateChromium(
+        tab, operation: operation, input: input,
+        connection: connection, endpoint: endpoint, deadline: deadline)
     }
     let key = key(tab.id, thread: thread)
     let page = pages[key] ?? makePage(tab, connection: connection, endpoint: endpoint)
@@ -1050,7 +1390,8 @@ extension BrowserPanel {
       let expectedPage = page
       func check() throws {
         try deadline.check()
-        guard self.connection === connection, self.pages[key] === expectedPage,
+        guard self.connection === connection && self.store.browserConnection === connection,
+          self.pages[key] === expectedPage,
           page.automation.controlRevision == controlRevision
         else {
           throw BrowserAutomationError.interrupted
@@ -1119,6 +1460,46 @@ extension BrowserPanel {
         page.web.appearance =
           scheme == "system" ? nil : NSAppearance(named: scheme == "dark" ? .darkAqua : .aqua)
         result = .object(["tabId": .string(tab.id), "colorScheme": .string(scheme)])
+      case "recordingStart":
+        guard !page.recording.active else {
+          throw BrowserAutomationError(
+            "PreviewAutomationRecordingAlreadyActiveError", "This browser tab is already recording."
+          )
+        }
+        let options = recordingOptions
+        try await page.recording.start(options: options, directory: BrowserArtifacts.directory) {
+          [weak page] options in
+          guard let page else { throw CancellationError() }
+          return try await page.captureImage(
+            mouse: options.showMouse, keys: options.showKeys, deterministic: false)
+        }
+        try check()
+        recordingPage = page
+        result = .object([
+          "tabId": .string(tab.id), "recording": .bool(true),
+          "startedAt": page.recording.startedAt.map { .string($0.ISO8601Format()) } ?? .null,
+        ])
+      case "recordingStop":
+        guard page.recording.readyToStop else {
+          throw BrowserAutomationError(
+            "PreviewAutomationRecordingNotActiveError", "This browser tab is not recording.")
+        }
+        let file = try await page.recording.stop()
+        try check()
+        if recordingPage === page { recordingPage = nil }
+        let size = try file.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+        var artifact: [String: JSON] = [
+          "id": .string(file.deletingPathExtension().lastPathComponent), "tabId": .string(tab.id),
+          "path": .string(file.path), "mimeType": .string("video/mp4"),
+          "sizeBytes": .number(Double(size)), "createdAt": .string(Date().ISO8601Format()),
+        ]
+        if input["transferToEnvironment"].bool {
+          artifact["uploadedAttachmentId"] = .string(
+            try await BrowserRecordingUpload.upload(
+              file,
+              connection: connection, endpoint: endpoint, deadline: deadline, check: check))
+        }
+        result = .object(artifact)
       case "snapshot":
         let content = try await page.automation.run(operation, input: input, deadline: deadline)
         try check()
@@ -1150,10 +1531,328 @@ extension BrowserPanel {
       let interrupted =
         error is CancellationError
         || (error as? BrowserAutomationError)?.tag == "PreviewAutomationControlInterruptedError"
+      if operation == "recordingStart", interrupted { page.recording.cancel() }
       page.automation.record(
         operation, status: interrupted ? "interrupted" : "failed", id: id,
         started: started, error: error.localizedDescription)
       throw error
+    }
+  }
+
+  private var chromiumEnvironment: String? { store.browserEnvironmentID }
+  private func chromiumModeChanged() {
+    if chromium.enabled {
+      guard !recordingActive else {
+        chromium.enabled = false
+        error = "Save or cancel your recording before switching browsers."
+        render()
+        return
+      }
+      for page in pages.values {
+        page.dispose()
+        page.web.removeFromSuperview()
+      }
+      pages = [:]
+      shownPage = nil
+      for surface in automationSurfaces.values { surface.close() }
+      automationSurfaces = [:]
+      recordingPage?.recording.cancel()
+      recordingPage = nil
+    }
+    chromiumOpening = []
+    chromiumURLs = [:]
+    showSelected()
+    render()
+  }
+  @objc private func useChromiumBrowser() {
+    guard !recordingActive else {
+      error = "Save or cancel your recording before switching browsers."
+      render()
+      return
+    }
+    chromium.enabled = true
+    chromiumModeChanged()
+  }
+  @objc private func useNativeBrowser() {
+    chromium.enabled = false
+    chromiumModeChanged()
+  }
+  @objc private func revealChromiumBrowser() {
+    guard chromium.enabled, let connection, let endpoint,
+      let tab = directory.tabs.first(where: { $0.id == selectedID }),
+      let environment = chromiumEnvironment
+    else { return }
+    if !chromium.owns(environment: environment, thread: tab.threadID, tab: tab.id) {
+      chromiumURLs.removeValue(
+        forKey: BrowserChromiumController.pageKey(
+          environment: environment, thread: tab.threadID, tab: tab.id))
+      handoffChromium(tab, connection: connection, endpoint: endpoint)
+    } else {
+      chromiumCommand("reveal")
+    }
+  }
+  @objc private func openChromiumPassword() { chromiumCommand("popup") }
+  @objc private func closeChromiumPage() { chromiumCommand("close") }
+  @objc private func stopChromium() {
+    Task { [weak self] in
+      guard let self, await chromium.finishBeforeQuit(window: view.window) else { return }
+      chromium.stop()
+      chromiumURLs = [:]
+    }
+  }
+  @objc private func installChromiumPassword() {
+    Task { [weak self] in await self?.chromium.install() }
+  }
+  @objc private func importChromiumPassword() {
+    Task { [weak self] in
+      guard let self else { return }
+      await chromium.importSelectedProfile(window: view.window)
+    }
+  }
+  private func chromiumCommand(_ method: String, extra: [String: JSON] = [:]) {
+    guard let connection, store.browserConnection === connection,
+      let environment = chromiumEnvironment, let threadID, let selectedID
+    else { return }
+    var input = chromium.context(environment: environment, thread: threadID, tab: selectedID)
+    input.merge(extra) { _, new in new }
+    Task { [weak self] in
+      guard let self else { return }
+      do { _ = try await chromium.request(method, input: .object(input)) } catch {
+        guard store.browserConnection === connection else { return }
+        self.error = error.localizedDescription
+        render()
+      }
+    }
+  }
+  private func handoffChromium(_ tab: BrowserTab, connection: RPCConnection, endpoint: URL) {
+    guard let environment = chromiumEnvironment else { return }
+    let key = BrowserChromiumController.pageKey(
+      environment: environment, thread: tab.threadID, tab: tab.id)
+    let url =
+      (try? tab.url.map { try BrowserURL.resolve($0, environment: endpoint).absoluteString })
+      ?? "about:blank"
+    if chromiumURLs[key] == url || chromiumOpening.contains(key) { return }
+    chromiumOpening.insert(key)
+    Task { [weak self] in
+      guard let self else { return }
+      defer { chromiumOpening.remove(key) }
+      do {
+        try await ensureChromium(tab, connection: connection, endpoint: endpoint, show: true)
+        guard self.connection === connection, store.browserConnection === connection,
+          chromium.enabled
+        else { return }
+        if chromiumURLs[key] != url {
+          let input = chromium.context(environment: environment, thread: tab.threadID, tab: tab.id)
+            .merging(["url": .string(url)]) { _, new in new }
+          _ = try await chromium.request("navigate", input: .object(input))
+        }
+        guard self.connection === connection, store.browserConnection === connection,
+          chromium.enabled
+        else { return }
+        chromiumURLs[key] = url
+      } catch {
+        guard self.connection === connection, store.browserConnection === connection,
+          chromium.enabled
+        else { return }
+        self.error = error.localizedDescription
+        render()
+      }
+    }
+  }
+  private func ensureChromium(
+    _ tab: BrowserTab, connection: RPCConnection, endpoint: URL, show: Bool
+  )
+    async throws
+  {
+    guard let environment = chromiumEnvironment, chromium.enabled,
+      self.connection === connection, store.browserConnection === connection
+    else { throw BrowserAutomationError.interrupted }
+    let key = BrowserChromiumController.pageKey(
+      environment: environment, thread: tab.threadID, tab: tab.id)
+    guard !chromium.owns(environment: environment, thread: tab.threadID, tab: tab.id) else {
+      return
+    }
+    let url =
+      try tab.url.map { try BrowserURL.resolve($0, environment: endpoint).absoluteString }
+      ?? "about:blank"
+    var payload = chromium.context(environment: environment, thread: tab.threadID, tab: tab.id)
+    payload["url"] = .string(url)
+    payload["profileId"] = .string(tab.profileID ?? preferences.values.defaultProfileID)
+    payload["viewport"] = tab.viewport
+    payload["show"] = .bool(show)
+    _ = try await chromium.request("open", input: .object(payload))
+    guard self.connection === connection, store.browserConnection === connection, chromium.enabled,
+      chromiumEnvironment == environment
+    else { throw BrowserAutomationError.interrupted }
+    chromiumURLs[key] = url
+  }
+  private func chromiumEvent(_ event: String, value: JSON) {
+    guard let connection, let endpoint, store.browserConnection === connection,
+      value["environmentID"].string == chromiumEnvironment,
+      let thread = value["threadId"].string, let tab = value["tabId"].string
+    else { return }
+    if event == "interrupted" {
+      automationHost.setPaused(true)
+      return
+    }
+    if event == "newPage", thread == threadID, let url = value["url"].string {
+      open(url, newTab: true)
+      return
+    }
+    guard event == "closed" || event == "page" && !value["loading"].bool else { return }
+    let environment = chromiumEnvironment
+    Task { [weak self] in
+      guard let self else { return }
+      do {
+        let listing = try await connection.call(
+          "preview.list", payload: .object(["threadId": .string(thread)]))
+        guard self.connection === connection, store.browserConnection === connection,
+          chromiumEnvironment == environment, chromium.enabled,
+          listing["sessions"].array.contains(where: {
+            $0["tabId"].string == tab && $0["threadId"].string == thread
+          })
+        else { return }
+        if event == "closed" {
+          _ = try await connection.call(
+            "preview.close", payload: .object(["threadId": .string(thread), "tabId": .string(tab)]))
+          return
+        }
+        guard let raw = value["url"].string, let url = URL(string: raw),
+          ["http", "https"].contains(url.scheme ?? ""), raw.utf8.count <= 2048
+        else { return }
+        _ = try BrowserURL.resolve(url, environment: endpoint)
+        let key = BrowserChromiumController.pageKey(
+          environment: environment ?? "", thread: thread, tab: tab)
+        guard chromium.pages[key]?["url"].string == raw else { return }
+        chromiumURLs[key] = raw
+        _ = try await connection.call(
+          "preview.reportStatus",
+          payload: .object([
+            "threadId": .string(thread), "tabId": .string(tab),
+            "navStatus": .object([
+              "_tag": .string("Success"), "url": .string(raw),
+              "title": .string(String((value["title"].string ?? "").prefix(512))),
+            ]),
+            "canGoBack": value["canGoBack"], "canGoForward": value["canGoForward"],
+          ]))
+      } catch {
+        guard self.connection === connection, store.browserConnection === connection else { return }
+        self.error = error.localizedDescription
+        render()
+      }
+    }
+  }
+  private func automateChromium(
+    _ initial: BrowserTab, operation: String, input: JSON,
+    connection: RPCConnection, endpoint: URL, deadline: BrowserAutomationDeadline
+  ) async throws -> JSON {
+    guard let environment = chromiumEnvironment else { throw BrowserAutomationError.interrupted }
+    var tab = initial
+    if operation == "navigate" || operation == "open" && input["url"].string != nil {
+      let url = try navigationURL(input, environment: endpoint)
+      tab = try BrowserTab(
+        await connection.call(
+          "preview.navigate",
+          payload: .object([
+            "threadId": .string(tab.threadID), "tabId": .string(tab.id),
+            "url": .string(url.absoluteString),
+          ])))
+    }
+    if operation == "resize" {
+      let viewport = try automationViewport(input)
+      tab = try BrowserTab(
+        await connection.call(
+          "preview.resize",
+          payload: .object([
+            "threadId": .string(tab.threadID), "tabId": .string(tab.id), "viewport": viewport.json,
+          ])))
+    }
+    try deadline.check()
+    guard self.connection === connection, store.browserConnection === connection,
+      chromiumEnvironment == environment
+    else { throw BrowserAutomationError.interrupted }
+    let presentation = input["open"] == .null ? input["show"] : input["open"]
+    let show = presentation == .null ? preferences.values.showAgentPreview : presentation.bool
+    try await ensureChromium(tab, connection: connection, endpoint: endpoint, show: show)
+    var action = input
+    if operation == "navigate" || operation == "open" {
+      action = .object([
+        "url": .string(
+          try tab.url.map { try BrowserURL.resolve($0, environment: endpoint).absoluteString }
+            ?? "about:blank"),
+        "readiness": input["readiness"] == .null ? .string("load") : input["readiness"],
+      ])
+    }
+    if operation == "resize" { action = .object(["viewport": tab.viewport]) }
+    var payload = chromium.context(environment: environment, thread: tab.threadID, tab: tab.id)
+    payload["operation"] = .string(operation == "open" ? "navigate" : operation)
+    payload["input"] = action
+    let remaining = deadline.remaining.components
+    let milliseconds = max(
+      1, Int(remaining.seconds * 1000 + remaining.attoseconds / 1_000_000_000_000_000))
+    payload["timeoutMs"] = .number(Double(milliseconds))
+    let result = try await chromium.request(
+      "automation", input: .object(payload), milliseconds: milliseconds)
+    try deadline.check()
+    guard self.connection === connection, store.browserConnection === connection,
+      chromiumEnvironment == environment, chromium.enabled
+    else { throw BrowserAutomationError.interrupted }
+    return result
+  }
+  private func captureChromium(annotate: Bool) {
+    guard let connection, let endpoint, let threadID,
+      let tab = directory.tabs.first(where: { $0.id == selectedID })
+    else { return }
+    Task { [weak self] in
+      guard let self else { return }
+      do {
+        let result = try await automateChromium(
+          tab, operation: "snapshot", input: .object([:]),
+          connection: connection, endpoint: endpoint,
+          deadline: BrowserAutomationDeadline(milliseconds: 30_000))
+        guard store.selectedID == threadID, store.browserConnection === connection,
+          let encoded = result["screenshot"]["data"].string,
+          let data = Data(base64Encoded: encoded), let image = NSImage(data: data)
+        else { return }
+        if annotate {
+          let window = BrowserAnnotationWindow(image: image, pageURL: result["url"].string ?? "")
+          window.onSave = { [weak self] file, attach in
+            guard let self else { return }
+            onArtifactSaved?(file)
+            guard store.selectedID == threadID, store.browserConnection === connection else {
+              return
+            }
+            lastArtifact = (file, threadID, connection)
+            if attach, store.canAttach {
+              store.addAttachments([file])
+              onContextAdded?()
+            }
+          }
+          window.onClose = { [weak self, weak window] in
+            self?.annotationWindows.removeAll { $0 === window }
+          }
+          annotationWindows.append(window)
+          window.showWindow(nil)
+          window.window?.makeKeyAndOrderFront(nil)
+        } else {
+          try FileManager.default.createDirectory(
+            at: BrowserArtifacts.directory, withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700])
+          let file = BrowserArtifacts.directory.appendingPathComponent(
+            "chromium-" + UUID().uuidString + ".png")
+          try data.write(to: file, options: .atomic)
+          lastArtifact = (file, threadID, connection)
+          onArtifactSaved?(file)
+          if store.canAttach {
+            store.addAttachments([file])
+            onContextAdded?()
+          }
+        }
+      } catch {
+        guard store.browserConnection === connection else { return }
+        self.error = error.localizedDescription
+        render()
+      }
     }
   }
 
@@ -1206,6 +1905,46 @@ extension BrowserPanel {
       }
       return viewport
     default: throw T3Error("Unknown viewport mode.")
+    }
+  }
+}
+
+extension BrowserPanel: NSMenuItemValidation {
+  func validateMenuItem(_ item: NSMenuItem) -> Bool {
+    switch item.action {
+    case #selector(startRecording):
+      return !chromium.enabled && page?.web.url != nil && !recordingActive
+    case #selector(stopRecording): return recordingPage?.recording.readyToStop == true
+    case #selector(cancelRecording): return recordingActive
+    case #selector(recordAt30):
+      item.state = recordingOptions.framesPerSecond == 30 ? .on : .off
+      return !recordingActive
+    case #selector(recordAt60):
+      item.state = recordingOptions.framesPerSecond == 60 ? .on : .off
+      return !recordingActive
+    case #selector(toggleRecordingMouse):
+      item.state = recordingOptions.showMouse ? .on : .off
+      return !recordingActive
+    case #selector(toggleRecordingKeys):
+      item.state = recordingOptions.showKeys ? .on : .off
+      return !recordingActive
+    case #selector(annotatePage):
+      return chromium.enabled
+        ? selectedID != nil && chromium.running
+        : page?.web.url != nil && page?.web.isLoading == false
+    case #selector(useChromiumBrowser):
+      item.state = chromium.enabled ? .on : .off
+      return !recordingActive
+    case #selector(useNativeBrowser):
+      item.state = chromium.enabled ? .off : .on
+      return true
+    case #selector(stopChromium): return chromium.running
+    case #selector(openChromiumPassword), #selector(closeChromiumPage):
+      return chromium.enabled && chromium.running && selectedID != nil
+    case #selector(attachLastArtifact):
+      return lastArtifact?.thread == store.selectedID
+        && lastArtifact?.connection === store.browserConnection && store.canAttach
+    default: return true
     }
   }
 }

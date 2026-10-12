@@ -66,6 +66,26 @@ public struct ThreadExecution: Sendable {
   private var providerThreads: [String: JSON] = [:]
   private var turns: [String: JSON] = [:]
   private var failures: [String: JSON] = [:]
+  private struct UsageReport: Sendable {
+    let ordinal: Int
+    let usage: ContextUsage
+  }
+  private var liveReports: [String: UsageReport] = [:]
+  private var providerReports: [String: ContextUsage] = [:]
+  private var compactedReports: [String: ContextUsage] = [:]
+  private var compactableItems: Set<String> = []
+  public private(set) var hasDismissedResumeCompaction = false
+  public var selectedProviderThread: JSON {
+    thread["activeProviderThreadId"].string.flatMap { providerThreads[$0] } ?? .null
+  }
+  public var liveProviderTurnUsage: ContextUsage? {
+    thread["activeProviderThreadId"].string.flatMap { liveReports[$0]?.usage }
+  }
+  public var contextUsage: ContextUsage? {
+    guard let id = thread["activeProviderThreadId"].string else { return nil }
+    return liveReports[id]?.usage ?? providerReports[id] ?? compactedReports[id]
+  }
+  public var hasCompactableConversation: Bool { !compactableItems.isEmpty }
 
   public init(_ projection: JSON = .null) {
     func indexed(_ values: JSON) -> [String: JSON] {
@@ -83,6 +103,13 @@ public struct ThreadExecution: Sendable {
     turns = indexed(projection["providerTurns"])
     failures = indexed(
       .array(projection["turnItems"].array.filter { $0["type"].string == "error" }))
+    for provider in providerThreads.values { recordProviderUsage(provider) }
+    for turn in turns.values { recordLiveUsage(turn) }
+    let visible = projection["visibleTurnItems"].array
+    let items = visible.isEmpty ? projection["turnItems"].array : visible.map { $0["item"] }
+    for item in items { recordContextItem(item) }
+    hasDismissedResumeCompaction = projection["runtimeRequests"].array.contains(
+      where: ContextUsage.hasPermanentDismissal)
     rebuild()
   }
 
@@ -99,16 +126,26 @@ public struct ThreadExecution: Sendable {
       if let id { sessions[id] = payload }
     case "provider-session.detached":
       if let id = payload["providerSessionId"].string { sessions.removeValue(forKey: id) }
-    case "provider-thread.updated": if let id { providerThreads[id] = payload }
+    case "provider-thread.updated":
+      if let id {
+        providerThreads[id] = payload
+        recordProviderUsage(payload)
+      }
     case "provider-turn.updated":
       guard let id else { return }
       let previous = turns[id]
+      recordLiveUsage(payload)
+      turns[id] = payload
       guard
         previous?["runAttemptId"] != payload["runAttemptId"]
           || previous?["status"] != payload["status"]
       else { return }
-      turns[id] = payload
+    case "runtime-request.updated":
+      hasDismissedResumeCompaction =
+        hasDismissedResumeCompaction || ContextUsage.hasPermanentDismissal(payload)
+      return
     case "turn-item.updated":
+      recordContextItem(payload)
       guard payload["type"].string == "error", let id else { return }
       failures[id] = payload
     default:
@@ -121,6 +158,59 @@ public struct ThreadExecution: Sendable {
   public func hidesQueuedMessage(_ item: JSON) -> Bool {
     item["type"].string == "user_message" && item["inputIntent"].string == "queued_turn"
       && hiddenUserMessageIDs.contains(item["messageId"].string ?? "")
+  }
+
+  private mutating func recordProviderUsage(_ provider: JSON) {
+    guard let id = provider["id"].string,
+      let usage = ContextUsage(
+        report: provider["contextUsage"], updatedAt: provider["updatedAt"].string)
+    else { return }
+    if let previous = providerReports[id],
+      (ThreadDates.parse(usage.updatedAt) ?? .distantPast)
+        < (ThreadDates.parse(previous.updatedAt) ?? .distantPast)
+    {
+      return
+    }
+    providerReports[id] = usage
+  }
+
+  private mutating func recordLiveUsage(_ turn: JSON) {
+    guard let providerID = turn["providerThreadId"].string, turn["id"].string != nil,
+      let usage = ContextUsage(report: turn["tokenUsage"], live: true)
+    else { return }
+    let ordinal = turn["ordinal"].int ?? 0
+    if let previous = liveReports[providerID] {
+      guard ordinal >= previous.ordinal else { return }
+      if ordinal == previous.ordinal,
+        (ThreadDates.parse(usage.updatedAt) ?? .distantPast)
+          < (ThreadDates.parse(previous.usage.updatedAt) ?? .distantPast)
+      {
+        return
+      }
+    }
+    liveReports[providerID] = UsageReport(ordinal: ordinal, usage: usage)
+  }
+
+  private mutating func recordContextItem(_ item: JSON) {
+    if item["type"].string == "user_message", let id = item["id"].string {
+      let text =
+        item["text"].string?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+      if text != "/compact" || !item["attachments"].array.isEmpty {
+        compactableItems.insert(id)
+      } else {
+        compactableItems.remove(id)
+      }
+    }
+    guard let usage = ContextUsage.compaction(item),
+      let id = item["providerThreadId"].string ?? thread["activeProviderThreadId"].string
+    else { return }
+    if let previous = compactedReports[id],
+      (ThreadDates.parse(usage.updatedAt) ?? .distantPast)
+        < (ThreadDates.parse(previous.updatedAt) ?? .distantPast)
+    {
+      return
+    }
+    compactedReports[id] = usage
   }
 
   private mutating func rebuild() {

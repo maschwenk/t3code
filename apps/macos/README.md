@@ -1,9 +1,10 @@
 # T3 Native prototype
 
-A macOS 14+ AppKit client for an existing T3 protocol-v2 server. The interface uses
+A macOS 14+ AppKit client for a T3 protocol-v2 server. The interface uses
 native tables and text controls, with isolated WebKit views for document previews. Agents,
 SQLite, Git, terminals, and remote access still belong to the existing server.
-Closing this app does not stop that server or its agents.
+It reconnects to saved environments or starts its bundled server on first launch.
+Closing this app leaves external servers running and stops only its own server child.
 About T3 Native shows the build's source revision and whether it includes local changes.
 
 The client supports grouped active/pinned/settled/snoozed threads, project filtering,
@@ -13,7 +14,11 @@ history with older pages, streamed text and activity, per-thread drafts, new thr
 message submission, and stopping a run. New threads use the project filter when set,
 then the current thread's project. Configured project and environment model defaults
 take precedence over the current model, and permissions use the configured defaults.
-New threads use the project's workspace root; they do not create a worktree.
+New conversations remain saved local drafts until their first message. Choose the
+project, model options, permissions, and current checkout or new worktree before
+sending. Workspace defaults follow project overrides, environment settings, then
+the project's JSONC `t3.json`. Worktrees use a selected base branch and the existing server launch contract.
+An uncertain first launch retries the original command; newer edits remain saved.
 
 Open an existing project folder with ⌘O or the folder-plus button. The picker browses
 the connected server, including remote environments. Chat → New Project (⌘⇧N)
@@ -24,8 +29,8 @@ Scratch, choose or create a project first.
 Search matches thread titles, projects and branches. Use ↑/↓ to browse matches,
 Return to open one, or Escape to clear the search. The folder button limits the
 list to a project. Hover a thread for Settle and Snooze; archived and parked
-threads use compact rows. Connections and Browser Settings are in the sidebar's
-Settings menu.
+threads use compact rows. Open Settings with the sidebar gear or ⌘,; Browser
+Settings also remain available in the View menu.
 
 The composer discovers provider instances, models, and model options from the
 server. The searchable model picker supports account tabs, device-local favorites
@@ -40,6 +45,19 @@ results omitted from the live feed can be loaded on demand; stale fetches cannot
 replace a newer streaming revision. Commands, searches, file changes, and reasoning
 collapse into expandable work groups. Expanding preserves the full activity text;
 errors and pending questions or approvals stay outside collapsed groups.
+
+The composer offers workspace files/folders with @, provider skills with $, and
+provider commands with /. Suggestions follow the selected account and workspace;
+↑/↓ and Return/Tab select, and Escape dismisses. Context usage comes from provider
+reports and live turns. Compatible idle conversations can compact older context.
+
+Settings includes global thread defaults, restart and usage-limit recovery,
+inactive-thread settling, notifications, appearance, providers, scheduled prompts,
+connections, and storage diagnostics. Appearance applies to this Mac; server
+settings apply to the connected environment. Existing project overrides continue
+to apply. Account sign-in uses the provider's existing authentication flow.
+Model visibility, ordering, and favorites are scoped to the environment on this Mac.
+Scheduled prompts run once or at a recurring interval through the shared server scheduler.
 
 Questions appear one at a time. Write a custom answer or attach files in the main
 composer, then use Next or ⌘ Return to advance and submit the final answers.
@@ -175,8 +193,19 @@ default, and clear a profile's website data. Removing a profile clears its data;
 existing tabs stay open. Settings also saves the default viewport, zoom and
 appearance for new pages, where conversation links open, and whether agent
 actions show a floating preview. Agents use the same default profile and viewport;
-an explicit show/hide request overrides the preview preference. Browser profile
-import from other applications is not yet supported.
+an explicit show/hide request overrides the preview preference. The managed
+Chromium option can import the 1Password extension package from a selected browser
+profile; it does not copy that browser's cookies, logins, or passwords.
+
+Browser Settings offers an optional Chromium companion for 1Password. Its live
+page opens in a managed floating window, and browser tools operate on that page.
+The genuine 1Password extension can be installed from the official Chrome Web Store
+or imported from a selected installed profile. Desktop unlock uses 1Password's
+[additional-browser setup](https://support.1password.com/additional-browsers/),
+which requires an Apple-signed browser in Applications and explicit user trust.
+The default ad-hoc development build does not satisfy that signing requirement.
+Actual vault unlock and autofill require user verification; the WebKit panel cannot
+run Chromium extensions. The two engines have separate cookie stores.
 
 The device toolbar offers the same viewport presets as Electron, rotation, and
 custom CSS dimensions (press Return to apply). Previews fit the panel without
@@ -184,8 +213,9 @@ changing responsive breakpoints or reloading the page. These are viewport sizes;
 the browser still uses macOS WebKit, without mobile user-agent or touch emulation.
 Select an element with the pointer button to add its URL, selector and HTML to the
 message draft. Escape cancels; selected links do not navigate. Selection currently
-covers the main document and open shadow roots. Rich annotations, React source
-attribution and frame selection remain incomplete.
+covers the main document and open shadow roots. Pen, rectangle, and arrow annotations
+can be saved or attached with their page context. React source attribution and
+frame selection remain incomplete.
 
 Use the download button, or View → Browser Downloads, to see progress, cancel a
 download or show its file in Finder. Downloads you start use the native Save
@@ -204,19 +234,32 @@ for that conversation and returns download handling to the native Save dialog.
 Switching tabs or conversations keeps ongoing agent actions attached to their page.
 This does not stop the agent's other work or page scripts already running.
 Snapshots include a screenshot, accessible page tree, interactive elements and
-action history. Console/network diagnostics, recordings, cross-frame locators
-and remote JavaScript object handles remain incomplete.
+action history. The cursor animates between agent actions and appears in page
+captures. Recordings use H.264 MP4 with a 30/60 fps target, constrained by WebKit
+capture throughput, and stop at the time/size limits. Artifacts can be attached to
+the composer or uploaded for broker downloads. Console/network diagnostics,
+cross-frame locators, and remote JavaScript object handles remain incomplete.
 
-Provider setup and T3 Connect account/relay discovery remain in the
-existing app. Markdown supports native headings,
+Connections supports saved Mac environments, local server start/stop, T3 Connect
+sign-in, environment discovery, and host linking. It preserves saved external
+environments and existing phone/iPad connections. The native host uses separate
+userdata at ~/Library/Application Support/T3Native/server and refuses live ~/.t3.
+Host linking and authentication remain explicit user actions.
+
+Markdown supports native headings,
 lists, task lists, quotes, code blocks, tables, and selectable links. Copy-message
 actions preserve the original Markdown; code blocks have a Copy code context action.
-Syntax highlighting, inline images, file/citation chips, math, and diagrams remain incomplete.
+Code blocks have syntax colors, Copy/Wrap controls, and horizontal overflow.
+Interface/code fonts, sizes, wrapping, and chat width follow Appearance settings.
+Inline images, file/citation chips, math, and diagrams remain incomplete.
 
 ## Build and run
 
 Requires Apple Silicon and Xcode with Swift 6.2 or later. Swift Package Manager fetches the pinned
-Swift Markdown and cmark parser dependencies; the native client needs no JavaScript build.
+Swift Markdown and cmark parser dependencies. Packaging also requires the checkout's
+Node and pnpm toolchain and builds the shared server/web client. The app bundles
+arm64 Node and a physical runtime dependency closure; it does not need a sibling
+checkout or a separately installed Node to launch.
 GhosttyKit is vendored for arm64 only; Intel Macs are not supported. Ordinary app
 builds need neither Zig nor a Metal compiler. To rebuild GhosttyKit, install the
 Xcode Metal toolchain (`xcodebuild -downloadComponent MetalToolchain`) and run
@@ -229,6 +272,7 @@ version and verified when packaging. After installing workspace dependencies,
 `node apps/macos/update-playwright.mjs` regenerates it with its notices and checksum.
 
 ```sh
+pnpm install --frozen-lockfile
 swift test --package-path apps/macos
 apps/macos/build.sh
 open 'apps/macos/.build/T3 Native.app'
@@ -238,6 +282,10 @@ The script creates an ad-hoc-signed local app, separate from the installed T3 ap
 It is not a notarized distributable. Quit the prototype before rebuilding its bundle.
 An optional first argument chooses the output bundle, for example
 `apps/macos/build.sh "$HOME/Applications/T3 Native.app"`.
+To sign the app and Chromium helper with an installed Apple signing identity, set
+`T3_NATIVE_SIGN_IDENTITY` to that identity's name or fingerprint when running the script.
+Packaging authenticates the pinned official Electron arm64 archive and compares
+every runtime file and symlink before copying it. The original runtime is never re-signed.
 
 Choose **Connect**, enter the server's base URL and a pairing token from its
 Connections settings. Pairing requests `orchestration:read`,
@@ -245,8 +293,8 @@ Connections settings. Pairing requests `orchestration:read`,
 the pairing option to use an existing bearer token. HTTPS direct endpoints and
 HTTP loopback endpoints are supported. When the session expires, pair again.
 
-The native client does not open a database or launch a server. Connecting it to a
-live environment makes all thread actions operate on that environment.
+Connecting to a live environment makes all thread actions operate on that environment.
+The optional native host owns a separate data directory and never adopts an existing listener.
 Use a separately running server with a pruned database copy for development; see
 the root AGENTS.md test-data procedure.
 

@@ -5,6 +5,29 @@ public struct RenderedCodeBlock {
   public let range: NSRange
   public let code: String
   public let language: String?
+  public let surfaceRange: NSRange?
+  public let headerRange: NSRange?
+  public let contentWidth: CGFloat
+  public let wraps: Bool
+  public init(
+    range: NSRange, code: String, language: String?, surfaceRange: NSRange? = nil,
+    headerRange: NSRange? = nil, contentWidth: CGFloat = 0, wraps: Bool = true
+  ) {
+    self.range = range
+    self.code = code
+    self.language = language
+    self.surfaceRange = surfaceRange
+    self.headerRange = headerRange
+    self.contentWidth = contentWidth
+    self.wraps = wraps
+  }
+}
+
+public struct RenderedMarkdownTable {
+  public let range: NSRange
+  public let columns: Int
+  public let rows: Int
+  public let contentWidth: CGFloat
 }
 
 public struct RenderedMarkdownTask {
@@ -17,32 +40,42 @@ public struct RenderedMarkdown {
   public let text: NSAttributedString
   public let codeBlocks: [RenderedCodeBlock]
   public let tasks: [RenderedMarkdownTask]
+  public let tables: [RenderedMarkdownTable]
+  public let contentWidth: CGFloat
+  public let configuration: MarkdownConfiguration
   public init(
-    text: NSAttributedString, codeBlocks: [RenderedCodeBlock], tasks: [RenderedMarkdownTask] = []
+    text: NSAttributedString, codeBlocks: [RenderedCodeBlock], tasks: [RenderedMarkdownTask] = [],
+    tables: [RenderedMarkdownTable] = [], contentWidth: CGFloat = 0,
+    configuration: MarkdownConfiguration = MarkdownConfiguration()
   ) {
     self.text = text
     self.codeBlocks = codeBlocks
     self.tasks = tasks
+    self.tables = tables
+    self.contentWidth = contentWidth
+    self.configuration = configuration
   }
 }
 
 @MainActor public enum MarkdownRenderer {
   public static func render(
     _ source: String, width: CGFloat, headingLevelOffset: Int = 0,
-    taskLinks: Bool = false, resolveLink: ((String) -> URL?)? = nil
+    taskLinks: Bool = false, configuration: MarkdownConfiguration = MarkdownConfiguration(),
+    resolveLink: ((String) -> URL?)? = nil
   ) -> RenderedMarkdown {
     let renderer = Renderer(
       source: source, width: width, headingLevelOffset: headingLevelOffset,
-      taskLinks: taskLinks, resolveLink: resolveLink)
+      taskLinks: taskLinks, configuration: configuration, resolveLink: resolveLink)
     for block in Document(parsing: source).children { renderer.block(block) }
     return RenderedMarkdown(
-      text: renderer.output, codeBlocks: renderer.codeBlocks, tasks: renderer.tasks)
+      text: renderer.output, codeBlocks: renderer.codeBlocks, tasks: renderer.tasks,
+      tables: renderer.tables, contentWidth: renderer.contentWidth, configuration: configuration)
   }
 
   public static func height(of text: NSAttributedString, width: CGFloat) -> CGFloat {
     let storage = NSTextStorage(attributedString: text)
-    let layout = NSLayoutManager()
-    let container = NSTextContainer(size: NSSize(width: width, height: .greatestFiniteMagnitude))
+    let layout = MarkdownLayoutManager()
+    let container = MarkdownTextContainer(text: text, width: width)
     container.lineFragmentPadding = 0
     storage.addLayoutManager(layout)
     layout.addTextContainer(container)
@@ -59,22 +92,29 @@ public struct RenderedMarkdown {
     var quote = false
     var tableBlock: NSTextTableBlock?
     var alignment = NSTextAlignment.left
+    var code = false
+    var header = false
   }
   let width: CGFloat
   let headingLevelOffset: Int
   let output = NSMutableAttributedString(string: "")
   var codeBlocks: [RenderedCodeBlock] = []
   var tasks: [RenderedMarkdownTask] = []
+  var tables: [RenderedMarkdownTable] = []
+  var contentWidth: CGFloat
+  private let configuration: MarkdownConfiguration
   private let source: NSString
   private var lineStarts: [Int] = []
   private let taskLinks: Bool
   private let resolveLink: ((String) -> URL?)?
   init(
     source: String, width: CGFloat, headingLevelOffset: Int, taskLinks: Bool,
-    resolveLink: ((String) -> URL?)?
+    configuration: MarkdownConfiguration, resolveLink: ((String) -> URL?)?
   ) {
     self.source = source as NSString
     self.taskLinks = taskLinks
+    self.configuration = configuration
+    self.contentWidth = max(120, width)
     self.resolveLink = resolveLink
     lineStarts = [0]
     var previous: UInt16 = 0
@@ -90,39 +130,23 @@ public struct RenderedMarkdown {
     self.headingLevelOffset = min(5, max(0, headingLevelOffset))
   }
 
-  func block(_ node: any Markup, style: Style = Style(), prefix: String = "") {
+  func block(_ node: any Markup, style suppliedStyle: Style? = nil, prefix: String = "") {
+    var style = suppliedStyle ?? Style()
+    if suppliedStyle == nil { style.font = configuration.bodyFont() }
     switch node {
     case let heading as Heading:
       var headingStyle = style
-      headingStyle.font = .systemFont(
-        ofSize: [22.0, 19, 17, 15, 14, 14][min(5, max(0, heading.level + headingLevelOffset - 1))],
+      headingStyle.font = configuration.bodyFont(
+        size: [22.0, 19, 17, 15, 14, 14][min(5, max(0, heading.level + headingLevelOffset - 1))]
+          * configuration.fontSize / 14,
         weight: .semibold)
       paragraph(
-        inline(heading, style: headingStyle), style: headingStyle, prefix: prefix, before: 10)
+        inline(heading, style: headingStyle), style: headingStyle, prefix: prefix,
+        before: configuration.polished ? 18 : 10)
     case let paragraph as Paragraph:
       self.paragraph(inline(paragraph, style: style), style: style, prefix: prefix)
     case let code as CodeBlock:
-      var codeStyle = style
-      codeStyle.font = .monospacedSystemFont(ofSize: 12.5, weight: .regular)
-      codeStyle.indent = min(width - 60, codeStyle.indent + 10)
-      if let language = code.language, !language.isEmpty {
-        var labelStyle = style
-        labelStyle.font = .systemFont(ofSize: 10, weight: .medium)
-        labelStyle.color = .secondaryLabelColor
-        paragraph(
-          NSAttributedString(string: language, attributes: attributes(labelStyle)),
-          style: labelStyle, prefix: prefix, after: 2)
-      }
-      let start = output.length
-      let text = NSMutableAttributedString(string: code.code, attributes: attributes(codeStyle))
-      text.addAttribute(
-        .backgroundColor, value: NSColor.quaternaryLabelColor.withAlphaComponent(0.08),
-        range: NSRange(location: 0, length: text.length))
-      paragraph(text, style: codeStyle, prefix: code.language == nil ? prefix : "")
-      codeBlocks.append(
-        RenderedCodeBlock(
-          range: NSRange(location: start, length: output.length - start), code: code.code,
-          language: code.language))
+      renderCode(code, style: style, prefix: prefix)
     case let quote as BlockQuote:
       var quoted = style
       quoted.indent = min(width - 60, quoted.indent + 18)
@@ -217,7 +241,7 @@ public struct RenderedMarkdown {
 
   private func paragraph(
     _ text: NSAttributedString, style: Style, prefix: String = "", before: CGFloat = 0,
-    after: CGFloat = 8
+    after: CGFloat? = nil
   ) {
     let start = output.length
     if !prefix.isEmpty {
@@ -228,14 +252,22 @@ public struct RenderedMarkdown {
       output.append(NSAttributedString(string: "\n", attributes: attributes(style)))
     }
     let paragraph = NSMutableParagraphStyle()
-    paragraph.lineSpacing = 3
-    paragraph.paragraphSpacing = after
+    paragraph.lineSpacing = style.code ? 3 : configuration.lineSpacing
+    paragraph.paragraphSpacing = after ?? configuration.paragraphSpacing
     paragraph.paragraphSpacingBefore = before
     paragraph.headIndent = style.indent
     paragraph.firstLineHeadIndent = prefix.isEmpty ? style.indent : max(0, style.indent - 22)
     paragraph.tabStops = [NSTextTab(textAlignment: .left, location: style.indent)]
     paragraph.defaultTabInterval = 24
     paragraph.alignment = style.alignment
+    if style.code && configuration.polished {
+      paragraph.lineBreakMode = configuration.wrapCode ? .byCharWrapping : .byClipping
+      paragraph.defaultTabInterval = configuration.codeFontSize * 2.4
+    }
+    if style.header {
+      paragraph.minimumLineHeight = 27
+      paragraph.maximumLineHeight = 27
+    }
     if let tableBlock = style.tableBlock { paragraph.textBlocks = [tableBlock] }
     let range = NSRange(location: start, length: output.length - start)
     output.addAttribute(.paragraphStyle, value: paragraph, range: range)
@@ -256,13 +288,20 @@ public struct RenderedMarkdown {
       switch child {
       case let text as Text:
         result.append(NSAttributedString(string: text.string, attributes: attributes(style)))
-      case is SoftBreak, is LineBreak:
+      case is SoftBreak:
+        result.append(
+          NSAttributedString(
+            string: configuration.polished ? " " : "\n", attributes: attributes(style)))
+      case is LineBreak:
         result.append(NSAttributedString(string: "\n", attributes: attributes(style)))
       case let code as InlineCode:
         var attrs = attributes(style)
-        attrs[.font] = NSFont.monospacedSystemFont(
-          ofSize: max(11, style.font.pointSize - 1), weight: .regular)
-        attrs[.backgroundColor] = NSColor.quaternaryLabelColor.withAlphaComponent(0.12)
+        attrs[.font] = configuration.codeFont(size: max(11, style.font.pointSize - 1))
+        if configuration.polished {
+          attrs[.t3InlineCode] = true
+        } else {
+          attrs[.backgroundColor] = NSColor.quaternaryLabelColor.withAlphaComponent(0.12)
+        }
         result.append(NSAttributedString(string: code.code, attributes: attrs))
       case is Strong:
         var strong = style
@@ -310,36 +349,160 @@ public struct RenderedMarkdown {
     return url
   }
 
+  private func renderCode(_ code: CodeBlock, style: Style, prefix: String) {
+    var codeStyle = style
+    codeStyle.font = configuration.codeFont()
+    codeStyle.indent = min(width - 60, style.indent + 10)
+    codeStyle.code = true
+    let surfaceStart = output.length
+    var headerRange: NSRange?
+    var surfaceWidth = width - style.indent
+    if configuration.polished {
+      codeStyle.color = MarkdownPalette.codeText
+      codeStyle.indent = 0
+      if !configuration.wrapCode {
+        surfaceWidth = max(surfaceWidth, longestLine(code.code, font: codeStyle.font) + 28)
+      }
+      let table = NSTextTable()
+      table.numberOfColumns = 1
+      table.layoutAlgorithm = .fixedLayoutAlgorithm
+      table.setValue(surfaceWidth, type: .absoluteValueType, for: .width)
+      let cell = NSTextTableBlock(
+        table: table, startingRow: 0, rowSpan: 1, startingColumn: 0, columnSpan: 1)
+      cell.setWidth(14, type: .absoluteValueType, for: .padding)
+      codeStyle.tableBlock = cell
+      var headerStyle = codeStyle
+      headerStyle.font = .systemFont(ofSize: 11, weight: .medium)
+      headerStyle.header = true
+      // Reserve header space without adding button titles to selected/copied code.
+      paragraph(NSAttributedString(string: ""), style: headerStyle, after: 0)
+      headerRange = NSRange(location: surfaceStart, length: output.length - surfaceStart)
+    } else if let language = code.language, !language.isEmpty {
+      var labelStyle = style
+      labelStyle.font = .systemFont(ofSize: 10, weight: .medium)
+      labelStyle.color = .secondaryLabelColor
+      paragraph(
+        NSAttributedString(string: language, attributes: attributes(labelStyle)),
+        style: labelStyle, prefix: prefix, after: 2)
+    }
+    let start = output.length
+    let text = NSMutableAttributedString(string: code.code, attributes: attributes(codeStyle))
+    if configuration.polished {
+      MarkdownSyntaxHighlighter.apply(to: text, language: code.language)
+    } else {
+      text.addAttribute(
+        .backgroundColor,
+        value: NSColor.quaternaryLabelColor.withAlphaComponent(0.08),
+        range: NSRange(location: 0, length: text.length))
+    }
+    paragraph(
+      text, style: codeStyle,
+      prefix: configuration.polished || code.language != nil ? "" : prefix,
+      after: configuration.polished ? 0 : nil)
+    if configuration.polished {
+      output.addAttribute(
+        .t3BlockLayoutWidth, value: surfaceWidth,
+        range: NSRange(location: surfaceStart, length: output.length - surfaceStart))
+    }
+    codeBlocks.append(
+      RenderedCodeBlock(
+        range: NSRange(location: start, length: output.length - start), code: code.code,
+        language: code.language,
+        surfaceRange: configuration.polished
+          ? NSRange(location: surfaceStart, length: output.length - surfaceStart) : nil,
+        headerRange: headerRange, contentWidth: surfaceWidth, wraps: configuration.wrapCode))
+    contentWidth = max(contentWidth, surfaceWidth + style.indent)
+    if configuration.polished {
+      paragraph(NSAttributedString(string: ""), style: style, after: 4)
+    }
+  }
+
+  private func longestLine(_ text: String, font: NSFont) -> CGFloat {
+    text.split(separator: "\n", omittingEmptySubsequences: false)
+      .reduce(CGFloat(0)) {
+        max($0, (String($1) as NSString).size(withAttributes: [.font: font]).width)
+      }
+  }
+
   private func renderTable(_ source: Table, style: Style) {
+    let start = output.length
+    let columns = max(1, source.maxColumnCount)
+    let rows = [Array(source.head.children)] + source.body.children.map { Array($0.children) }
+    // Build each cell once; measure the same attributed content that TextKit will display.
+    let cells = rows.enumerated().map { rowIndex, row in
+      row.map { cell -> NSAttributedString in
+        var cellStyle = style
+        if rowIndex == 0 {
+          cellStyle.font = configuration.bodyFont(
+            size: configuration.polished ? configuration.fontSize : configuration.fontSize - 1,
+            weight: .semibold)
+        }
+        return inline(cell, style: cellStyle)
+      }
+    }
     let table = NSTextTable()
-    table.numberOfColumns = source.maxColumnCount
+    table.numberOfColumns = columns
     table.layoutAlgorithm = .fixedLayoutAlgorithm
     table.collapsesBorders = true
-    table.setValue(max(60, width - style.indent), type: .absoluteValueType, for: .width)
-    let rows = [Array(source.head.children)] + source.body.children.map { Array($0.children) }
-    for (rowIndex, row) in rows.enumerated() {
+    let availableWidth = max(60, width - style.indent)
+    var columnWidths = Array(repeating: availableWidth / CGFloat(columns), count: columns)
+    if !configuration.wrapTables {
+      for row in cells {
+        for (column, cell) in row.enumerated() {
+          columnWidths[column] = max(columnWidths[column], cell.size().width + 24)
+        }
+      }
+    }
+    let tableWidth = columnWidths.reduce(0, +)
+    table.setValue(tableWidth, type: .absoluteValueType, for: .width)
+    if !configuration.wrapTables {
+      table.setValue(tableWidth, type: .absoluteValueType, for: .minimumWidth)
+    }
+    contentWidth = max(contentWidth, tableWidth + style.indent)
+    for (rowIndex, row) in cells.enumerated() {
       for (column, cell) in row.enumerated() {
         let block = NSTextTableBlock(
           table: table, startingRow: rowIndex, rowSpan: 1, startingColumn: column, columnSpan: 1)
-        block.setValue(
-          100 / CGFloat(max(1, source.maxColumnCount)), type: .percentageValueType, for: .width)
-        block.setWidth(7, type: .absoluteValueType, for: .padding)
-        block.setWidth(0.5, type: .absoluteValueType, for: .border)
+        block.setValue(columnWidths[column], type: .absoluteValueType, for: .width)
+        if !configuration.wrapTables {
+          block.setValue(columnWidths[column] - 20, type: .absoluteValueType, for: .minimumWidth)
+        }
+        block.setWidth(configuration.polished ? 10 : 7, type: .absoluteValueType, for: .padding)
+        if configuration.polished {
+          block.setWidth(0, type: .absoluteValueType, for: .border)
+          block.setWidth(
+            rowIndex == 0 ? 1 : 0.5, type: .absoluteValueType, for: .border, edge: .maxY)
+        } else {
+          block.setWidth(0.5, type: .absoluteValueType, for: .border)
+        }
         block.setBorderColor(.separatorColor)
         block.backgroundColor =
-          rowIndex == 0 ? NSColor.quaternaryLabelColor.withAlphaComponent(0.08) : .clear
+          rowIndex == 0
+          ? NSColor.quaternaryLabelColor.withAlphaComponent(configuration.polished ? 0.05 : 0.08)
+          : .clear
         var cellStyle = style
         cellStyle.indent = 0
         cellStyle.tableBlock = block
-        if rowIndex == 0 { cellStyle.font = .systemFont(ofSize: 13, weight: .semibold) }
+        if rowIndex == 0 {
+          cellStyle.font = configuration.bodyFont(
+            size: configuration.polished ? configuration.fontSize : configuration.fontSize - 1,
+            weight: .semibold)
+        }
         switch source.columnAlignments[column] {
         case .center: cellStyle.alignment = .center
         case .right: cellStyle.alignment = .right
         default: cellStyle.alignment = .left
         }
-        paragraph(inline(cell, style: cellStyle), style: cellStyle, after: 0)
+        paragraph(cell, style: cellStyle, after: 0)
       }
     }
+    output.addAttribute(
+      .t3BlockLayoutWidth, value: tableWidth,
+      range: NSRange(location: start, length: output.length - start))
+    tables.append(
+      RenderedMarkdownTable(
+        range: NSRange(location: start, length: output.length - start), columns: columns,
+        rows: rows.count, contentWidth: tableWidth))
     paragraph(NSAttributedString(string: ""), style: style, after: 2)
   }
 }

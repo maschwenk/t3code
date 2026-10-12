@@ -7,6 +7,7 @@ macos_root="$(cd "$(dirname "$0")" && pwd)"
 swift build --package-path "$macos_root" -c release
 binary_dir="$(swift build --package-path "$macos_root" -c release --show-bin-path)"
 bundle="${1:-$macos_root/.build/T3 Native.app}"
+sign_identity="${T3_NATIVE_SIGN_IDENTITY:--}"
 mkdir -p "$bundle/Contents/MacOS" "$bundle/Contents/Resources/Licenses"
 cp -f "$macos_root"/Licenses/* "$bundle/Contents/Resources/Licenses/"
 cp -R "$binary_dir/T3Native_T3Native.bundle" "$bundle/Contents/Resources/"
@@ -35,5 +36,11 @@ fi
 /usr/libexec/PlistBuddy -c "Add :T3SourceRevision string $revision" "$bundle/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Add :T3SourceModified bool $modified" "$bundle/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Add :T3BuildDate string $(date -u +%Y-%m-%dT%H:%M:%SZ)" "$bundle/Contents/Info.plist"
-codesign --force --sign - "$bundle"
+node "$macos_root/package-backend.mjs" "$bundle"
+node "$macos_root/../desktop/scripts/ensure-electron-runtime.mjs"
+node "$macos_root/build-chromium-helper.mjs" \
+  --output "$bundle/Contents/Resources/chromium-helper" \
+  --runtime "$macos_root/../desktop/node_modules/electron/dist/Electron.app" \
+  --sign "$sign_identity"
+codesign --force --sign "$sign_identity" "$bundle"
 printf '%s\n' "$bundle"

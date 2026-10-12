@@ -16,7 +16,7 @@ struct BrowserAutomationError: LocalizedError {
 struct BrowserAutomationDeadline {
   let end: ContinuousClock.Instant
   init(milliseconds: Int) {
-    end = .now.advanced(by: .milliseconds(min(60_000, max(1, milliseconds))))
+    end = .now.advanced(by: .milliseconds(min(120_000, max(1, milliseconds))))
   }
   var remaining: Duration { ContinuousClock.now.duration(to: end) }
   func check() throws {
@@ -52,7 +52,7 @@ struct BrowserAutomationDeadline {
   private var activityTasks: [Task<Void, Never>] = []
   static let operations = [
     "status", "open", "navigate", "snapshot", "click", "type", "press", "scroll", "evaluate",
-    "waitFor", "resize", "setColorScheme",
+    "waitFor", "resize", "setColorScheme", "recordingStart", "recordingStop",
   ]
 
   init() {
@@ -155,7 +155,8 @@ struct BrowserAutomationDeadline {
     else { return }
     seen.append(id)
     if seen.count > 256 { seen.removeFirst() }
-    let timeoutMs = min(60_000, max(1, request["timeoutMs"].int ?? 15_000))
+    let maximum = request["operation"].string == "recordingStop" ? 120_000 : 60_000
+    let timeoutMs = min(maximum, max(1, request["timeoutMs"].int ?? 15_000))
     // Match Electron's response margin so a page timeout does not evict a healthy host.
     let deadline = BrowserAutomationDeadline(
       milliseconds: timeoutMs - min(1_500, (timeoutMs + 4) / 5))

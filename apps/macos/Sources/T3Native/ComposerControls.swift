@@ -12,7 +12,10 @@ import T3Core
     self.action = #selector(performAction)
   }
   required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-  @objc private func performAction() { invoke() }
+  @objc private func performAction() {
+    guard isEnabled else { return }
+    invoke()
+  }
 }
 
 @MainActor final class ActionMenuItem: NSMenuItem {
@@ -23,7 +26,10 @@ import T3Core
     target = self
   }
   required init(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-  @objc private func performAction() { invoke() }
+  @objc private func performAction() {
+    guard isEnabled else { return }
+    invoke()
+  }
 }
 
 @MainActor final class ActionTextField: NSTextField, NSTextFieldDelegate {
@@ -38,154 +44,353 @@ import T3Core
 
 @MainActor final class ComposerControls: NSStackView, NSPopoverDelegate {
   private let store: ClientStore
-  private var fingerprint: String = ""
+  private var fingerprint = ""
   private var previousCatalog = ProviderCatalog()
-  private var modelPopover: NSPopover?
+  private var popover: NSPopover?
   private weak var previousResponder: NSResponder?
+  private struct Presentation {
+    let pill: ComposerPill
+    let full: String
+    let compact: String
+    let primary: Bool
+  }
+  private var presentations: [Presentation] = []
+  private var separators: [NSView] = []
+  private var overflow: ComposerPill?
+  private var fullWidth: CGFloat = 0
+  private var compactWidth: CGFloat = 0
+  private var layoutMode = -1
+  var minimumCompactWidth: CGFloat {
+    let count = presentations.filter(\.primary).count + (overflow == nil ? 0 : 1)
+    return CGFloat(count) * 36 + CGFloat(max(0, count - 1)) * 6
+  }
   init(store: ClientStore) {
     self.store = store
     super.init(frame: .zero)
     orientation = .horizontal
     alignment = .centerY
-    spacing = 6
+    spacing = 9
     setHuggingPriority(.defaultLow, for: .horizontal)
   }
   required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
   func refresh() {
-    if modelPopover?.isShown == true {
-      (modelPopover?.contentViewController as? ModelPicker)?.refresh()
+    let selected = store.selectedThread
+    let enabled =
+      store.canEditThread && store.catalogReady && (!store.isNewConversation || !store.composerBusy)
+    let fingerprint =
+      "\(store.environmentKey)|\(store.projectSessionID)|\(selected?.id ?? "")|\(selected?.model ?? .null)|\(selected?.runtimeMode ?? "")|\(selected?.interactionMode ?? "")|\(enabled)"
+    guard fingerprint != self.fingerprint || store.catalog != previousCatalog else {
+      (popover?.contentViewController as? ModelPicker)?.refresh()
       return
     }
-    let selected = store.selectedThread
-    let enabled = store.canEditThread && store.catalogReady
-    let fingerprint =
-      "\(selected?.id ?? "")|\(selected?.model ?? .null)|\(selected?.runtimeMode ?? "")|\(selected?.interactionMode ?? "")|\(enabled)"
-    guard fingerprint != self.fingerprint || store.catalog != previousCatalog else { return }
+    popover?.performClose(nil)
     self.fingerprint = fingerprint
     previousCatalog = store.catalog
     for view in arrangedSubviews {
       removeArrangedSubview(view)
       view.removeFromSuperview()
     }
+    presentations = []
+    separators = []
+    overflow = nil
+    layoutMode = -1
     guard let selected else { return }
-    let model = ActionButton(
+    let provider = store.catalog.provider(for: selected.model)
+    let model = ComposerPill(
       store.catalog.model(for: selected.model)?.name ?? selected.model["model"].string
         ?? "Choose model"
     ) { [weak self] in self?.showModels() }
+    model.image = provider.flatMap { ProviderArtwork.accountImage($0) }
+    model.contentTintColor = .secondaryLabelColor
     model.setAccessibilityLabel("Model")
-    model.toolTip = store.catalog.provider(for: selected.model)?.name
+    model.toolTip = [
+      provider?.name,
+      store.catalog.model(for: selected.model)?.name ?? selected.model["model"].string,
+    ].compactMap { $0 }.joined(separator: " — ")
     model.isEnabled = enabled
+    model.widthAnchor.constraint(lessThanOrEqualToConstant: 240).isActive = true
     addArrangedSubview(model)
+    presentations.append(
+      Presentation(
+        pill: model, full: model.title.replacingOccurrences(of: "  ⌄", with: ""),
+        compact: store.catalog.model(for: selected.model)?.shortName ?? "Model", primary: true))
+    var hasReasoning = false
     for descriptor in store.catalog.descriptors(for: selected.model) {
       guard let id = descriptor["id"].string else { continue }
       let stored = selected.model["options"].array.first { $0["id"].string == id }?["value"]
       let value = stored ?? descriptor["currentValue"]
       let label = descriptor["label"].string ?? id
-      let control: ActionButton
+      let control: ComposerPill
       if descriptor["type"].string == "boolean" {
-        control = ActionButton(label) { [weak store] in
+        control = ComposerPill(label, symbol: value.bool ? "checkmark.circle" : "circle") {
+          [weak store] in
           store?.setModelOption(id, value: .bool(!value.bool))
         }
-        control.setButtonType(.switch)
-        control.state = value.bool ? .on : .off
       } else {
         let options = descriptor["options"].array
         let current = options.first { $0["id"] == value } ?? options.first { $0["isDefault"].bool }
-        control = ActionButton(current?["label"].string ?? label, action: {})
-        control.invoke = { [weak store, weak control] in
-          let menu = NSMenu()
-          for option in options {
-            let item = ActionMenuItem(option["label"].string ?? option["id"].string ?? "") {
-              [weak store] in store?.setModelOption(id, value: option["id"])
-            }
-            item.state = option["id"] == current?["id"] ? .on : .off
-            item.toolTip = option["description"].string
-            menu.addItem(item)
-          }
-          if let control {
-            menu.popUp(positioning: nil, at: NSPoint(x: 0, y: control.bounds.height), in: control)
-          }
+        control = ComposerPill(
+          current?["label"].string ?? label,
+          symbol: id.lowercased().contains("reason") || id == "effort"
+            ? "brain" : "slider.horizontal.3", action: {})
+        control.invoke = { [weak self, weak control, weak store] in
+          guard let self, let control else { return }
+          showOptions(
+            label,
+            options: options.map { option in
+              ComposerOption(
+                title: option["label"].string ?? option["id"].string ?? "",
+                description: option["description"].string,
+                selected: option["id"] == current?["id"],
+                badge: option["isDefault"].bool ? "Default" : nil,
+                action: { [weak store] in store?.setModelOption(id, value: option["id"]) })
+            }, width: 210, anchor: control)
         }
       }
+      addSeparator()
       control.isEnabled = enabled
       control.setAccessibilityLabel(label)
-      control.toolTip = descriptor["description"].string ?? label
+      control.toolTip =
+        label + ": " + control.title.replacingOccurrences(of: "  ⌄", with: "")
+        + (descriptor["description"].string.map { " — " + $0 } ?? "")
       addArrangedSubview(control)
+      let reasoning =
+        !hasReasoning
+        && (id.lowercased().contains("reason") || id == "effort"
+          || id.lowercased().contains("thinking"))
+      hasReasoning = hasReasoning || reasoning
+      presentations.append(
+        Presentation(
+          pill: control, full: control.title.replacingOccurrences(of: "  ⌄", with: ""),
+          compact: control.title.replacingOccurrences(of: "  ⌄", with: ""), primary: reasoning))
     }
-    let runtime = ActionButton(Self.modeLabel(selected.runtimeMode), action: {})
-    runtime.setAccessibilityLabel("Runtime mode")
+    addSeparator()
+    let runtime = ComposerPill(
+      Self.modeLabel(selected.runtimeMode),
+      symbol: selected.runtimeMode == "full-access" ? "lock.open" : "lock", action: {})
+    runtime.setAccessibilityLabel("Permissions")
+    runtime.toolTip = Self.modeLabel(selected.runtimeMode)
     runtime.isEnabled = enabled
-    runtime.invoke = { [weak store, weak runtime] in
-      guard let store else { return }
-      let modes = store.catalog.provider(for: selected.model)?.runtimeModes ?? []
-      let menu = NSMenu()
-      for mode in modes.isEmpty ? ["approval-required", "full-access"] : modes {
-        let item = ActionMenuItem(Self.modeLabel(mode)) { [weak store] in
-          store?.setRuntimeMode(mode)
-        }
-        item.state = mode == selected.runtimeMode ? .on : .off
-        menu.addItem(item)
-      }
-      if let runtime {
-        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: runtime.bounds.height), in: runtime)
-      }
+    runtime.invoke = { [weak self, weak runtime, weak store] in
+      guard let self, let runtime else { return }
+      let modes = provider?.runtimeModes ?? []
+      showOptions(
+        nil,
+        options: (modes.isEmpty ? ["approval-required", "full-access"] : modes).map { mode in
+          ComposerOption(
+            title: Self.modeLabel(mode), description: Self.modeDescription(mode),
+            symbol: Self.modeSymbol(mode), selected: mode == selected.runtimeMode,
+            action: { [weak store] in store?.setRuntimeMode(mode) })
+        }, width: 420, anchor: runtime)
     }
     addArrangedSubview(runtime)
+    let compactRuntime =
+      selected.runtimeMode == "full-access"
+      ? "Access"
+      : selected.runtimeMode == "approval-required"
+        ? "Ask" : selected.runtimeMode == "auto-accept-edits" ? "Edits" : "Auto"
+    presentations.append(
+      Presentation(
+        pill: runtime, full: Self.modeLabel(selected.runtimeMode), compact: compactRuntime,
+        primary: true))
+    if store.catalog.planModeEnabled, provider?.showInteractionMode == true {
+      let plan = ComposerPill(
+        selected.interactionMode == "plan" ? "Plan" : "Build", symbol: "list.bullet.clipboard"
+      ) { [weak store] in
+        store?.setInteractionMode(selected.interactionMode == "plan" ? "default" : "plan")
+      }
+      plan.isEnabled = enabled
+      plan.setAccessibilityLabel("Interaction mode")
+      plan.toolTip = selected.interactionMode == "plan" ? "Plan" : "Build"
+      addArrangedSubview(plan)
+      presentations.append(
+        Presentation(
+          pill: plan, full: selected.interactionMode == "plan" ? "Plan" : "Build", compact: "",
+          primary: false))
+    }
+    if presentations.contains(where: { !$0.primary }) {
+      let more = ComposerPill("", symbol: "ellipsis") { [weak self] in self?.showOverflow() }
+      more.setAccessibilityLabel("More conversation options")
+      more.toolTip = "More conversation options"
+      more.isEnabled = enabled
+      addArrangedSubview(more)
+      overflow = more
+    }
+    fullWidth =
+      presentations.reduce(0) {
+        $0
+          + min(
+            $1.pill === model ? 240 : CGFloat.greatestFiniteMagnitude,
+            max(36, $1.pill.intrinsicContentSize.width))
+      }
+      + CGFloat(separators.count) + CGFloat(max(0, presentations.count + separators.count - 1)) * 9
+    compactWidth =
+      presentations.filter(\.primary).reduce(0) { result, item in
+        item.pill.displayLabel(item.compact)
+        return result + max(36, item.pill.intrinsicContentSize.width)
+      } + (overflow == nil ? 0 : 36)
+      + CGFloat(max(0, presentations.filter(\.primary).count + (overflow == nil ? 0 : 1) - 1)) * 6
+    adaptLayout()
+    needsLayout = true
+  }
+
+  override func layout() {
+    adaptLayout()
+    super.layout()
+  }
+
+  private func adaptLayout() {
+    guard !presentations.isEmpty else { return }
+    let available = bounds.width
+    let mode = available <= 0 || available >= fullWidth ? 0 : available >= compactWidth ? 1 : 2
+    guard mode != layoutMode else { return }
+    layoutMode = mode
+    spacing = mode == 0 ? 9 : 6
+    for item in presentations {
+      item.pill.isHidden = mode != 0 && !item.primary
+      item.pill.displayLabel(mode == 0 ? item.full : mode == 1 ? item.compact : "")
+      // Some providers have no artwork. An icon-only model control still needs a visible affordance.
+      if item.pill === presentations.first?.pill, item.pill.image == nil {
+        item.pill.image = NSImage(systemSymbolName: "cpu", accessibilityDescription: nil)
+      }
+    }
+    for separator in separators { separator.isHidden = mode != 0 }
+    overflow?.isHidden = mode == 0
+  }
+
+  func overflowMenu() -> NSMenu {
+    let menu = NSMenu()
+    menu.autoenablesItems = false
+    guard let selected = store.selectedThread else { return menu }
+    let enabled =
+      store.canEditThread && store.catalogReady && (!store.isNewConversation || !store.composerBusy)
+    for descriptor in store.catalog.descriptors(for: selected.model) {
+      guard let id = descriptor["id"].string else { continue }
+      let label = descriptor["label"].string ?? id
+      let value =
+        selected.model["options"].array.first { $0["id"].string == id }?["value"]
+        ?? descriptor["currentValue"]
+      if descriptor["type"].string == "boolean" {
+        let item = ActionMenuItem(label) { [weak store] in
+          store?.setModelOption(id, value: .bool(!value.bool))
+        }
+        item.state = value.bool ? .on : .off
+        item.isEnabled = enabled
+        menu.addItem(item)
+      } else {
+        let group = NSMenuItem(title: label, action: nil, keyEquivalent: "")
+        let options = NSMenu()
+        options.autoenablesItems = false
+        for option in descriptor["options"].array {
+          let item = ActionMenuItem(option["label"].string ?? option["id"].string ?? "") {
+            [weak store] in store?.setModelOption(id, value: option["id"])
+          }
+          item.state = option["id"] == value ? .on : .off
+          item.toolTip = option["description"].string
+          item.isEnabled = enabled
+          options.addItem(item)
+        }
+        group.submenu = options
+        group.isEnabled = enabled
+        menu.addItem(group)
+      }
+    }
     if store.catalog.planModeEnabled,
       store.catalog.provider(for: selected.model)?.showInteractionMode == true
     {
-      let plan = ActionButton("Plan") { [weak store] in
+      let item = ActionMenuItem("Plan mode") { [weak store] in
         store?.setInteractionMode(selected.interactionMode == "plan" ? "default" : "plan")
       }
-      plan.setButtonType(.switch)
-      plan.state = selected.interactionMode == "plan" ? .on : .off
-      plan.isEnabled = enabled
-      addArrangedSubview(plan)
+      item.state = selected.interactionMode == "plan" ? .on : .off
+      item.isEnabled = enabled
+      menu.addItem(item)
     }
-    for view in arrangedSubviews {
-      if let button = view as? NSButton {
-        button.bezelStyle = .inline
-        button.controlSize = .small
-        button.font = .systemFont(ofSize: 11)
-      }
+    return menu
+  }
+
+  private func showOverflow() {
+    guard store.canEditThread, store.catalogReady, let overflow else { return }
+    overflowMenu().popUp(positioning: nil, at: NSPoint(x: 0, y: overflow.bounds.maxY), in: overflow)
+  }
+
+  private func addSeparator() {
+    let line = NSBox()
+    line.boxType = .separator
+    line.widthAnchor.constraint(equalToConstant: 1).isActive = true
+    line.heightAnchor.constraint(equalToConstant: 16).isActive = true
+    addArrangedSubview(line)
+    separators.append(line)
+  }
+
+  private func showOptions(
+    _ heading: String?, options: [ComposerOption], width: CGFloat, anchor: NSView
+  ) {
+    popover?.performClose(nil)
+    previousResponder = window?.firstResponder
+    let next = NSPopover()
+    next.behavior = .transient
+    next.delegate = self
+    let controller = ComposerOptionsPopover(heading, options: options, width: width) {
+      [weak self] in
+      self?.popover?.performClose(nil)
     }
+    next.contentViewController = controller
+    next.contentSize = controller.contentSize
+    popover = next
+    next.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .minY)
   }
 
   func showModels() {
-    if modelPopover?.isShown == true {
-      modelPopover?.performClose(nil)
+    if popover?.isShown == true {
+      popover?.performClose(nil)
       return
     }
     guard store.canEditThread, store.catalogReady, let anchor = arrangedSubviews.first else {
       return
     }
     previousResponder = window?.firstResponder
-    let popover = NSPopover()
-    popover.behavior = .transient
-    popover.delegate = self
-    popover.contentViewController = ModelPicker(store: store) { [weak self] in
-      self?.modelPopover?.performClose(nil)
+    let next = NSPopover()
+    next.behavior = .transient
+    next.delegate = self
+    next.contentViewController = ModelPicker(store: store) { [weak self] in
+      self?.popover?.performClose(nil)
     }
-    popover.contentSize = NSSize(width: 520, height: 350)
-    modelPopover = popover
-    popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .minY)
+    next.contentSize = NSSize(width: 440, height: 340)
+    popover = next
+    next.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .minY)
   }
 
   func popoverDidClose(_ notification: Notification) {
-    modelPopover = nil
+    popover = nil
     fingerprint = ""
     refresh()
     if let previousResponder { window?.makeFirstResponder(previousResponder) }
   }
-
   static func modeLabel(_ mode: String) -> String {
     switch mode {
-    case "approval-required": "Ask for approval"
-    case "auto-accept-edits": "Accept edits"
+    case "approval-required": "Supervised"
+    case "auto-accept-edits": "Auto-accept edits"
     case "auto": "Auto"
     case "full-access": "Full access"
     default: mode
+    }
+  }
+  static func modeDescription(_ mode: String) -> String? {
+    switch mode {
+    case "approval-required": "Ask before commands and file changes."
+    case "auto-accept-edits": "Auto-approve edits, ask before other actions."
+    case "auto": "Supported providers approve routine actions; others still ask."
+    case "full-access": "Allow commands and edits without prompts."
+    default: nil
+    }
+  }
+  static func modeSymbol(_ mode: String) -> String {
+    switch mode {
+    case "auto-accept-edits": "pencil"
+    case "auto": "sparkles"
+    case "full-access": "lock.open"
+    default: "lock"
     }
   }
 }

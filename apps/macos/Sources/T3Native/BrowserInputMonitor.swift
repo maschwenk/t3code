@@ -29,6 +29,9 @@ import WebKit
     while let view = target {
       if let web = view as? WKWebView, let page = pages.object(forKey: web) {
         page.takeControl()
+        if page.recording.active {
+          page.automation.cursor.humanInput(event, web: web)
+        }
         return
       }
       target = view.superview

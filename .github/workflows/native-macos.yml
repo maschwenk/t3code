@@ -17,9 +17,29 @@ permissions:
 jobs:
   native:
     runs-on: macos-15
-    timeout-minutes: 10
+    timeout-minutes: 20
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
     steps:
       - uses: actions/checkout@v6
       - run: test "$(uname -m)" = arm64
+      - uses: voidzero-dev/setup-vp@v1.21.2
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: |
+            args:
+              - --filter=t3...
+              - --filter=@t3tools/desktop...
+      - run: cp .env.example .env
+      - run: node --test apps/macos/chromium-helper/*.test.mjs
       - run: swift test --package-path apps/macos
       - run: apps/macos/build.sh
+      - name: Verify packaged browser
+        env:
+          T3_CHROMIUM_TEST_APP: ${{ github.workspace }}/apps/macos/.build/T3 Native.app/Contents/Resources/chromium-helper/T3 Browser.app
+        run: node --test apps/macos/chromium-helper/runtime.test.mjs
+      - name: Verify packaged backend
+        env:
+          T3_NATIVE_SMOKE_RESOURCES: ${{ github.workspace }}/apps/macos/.build/T3 Native.app/Contents/Resources
+        run: swift test --package-path apps/macos --filter BackendRuntimeSmokeTests

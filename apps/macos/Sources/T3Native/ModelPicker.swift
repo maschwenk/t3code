@@ -41,6 +41,7 @@ final class ModelPicker: NSViewController, NSTableViewDataSource,
   private var rows: [Row] = []
   private var instanceID: String?
   private var favoritesOnly = false
+  private var preferences = ModelPickerPreferences()
   private var favorites: Set<ModelIdentity> = []
   private var expandedLegacy: Set<String> = []
   private var previousSelection: JSON?
@@ -59,6 +60,8 @@ final class ModelPicker: NSViewController, NSTableViewDataSource,
     {
       favorites = saved
     }
+    preferences = ModelPickerPreferences(environment: environment)
+    favorites = preferences.favorites
     instanceID = store.selectedThread?.model["instanceId"].string
     favoritesOnly =
       !favorites.isEmpty
@@ -73,17 +76,22 @@ final class ModelPicker: NSViewController, NSTableViewDataSource,
 
   override func loadView() {
     view = SurfaceView(raised: true)
-    view.frame = NSRect(x: 0, y: 0, width: 520, height: 350)
+    view.frame = NSRect(x: 0, y: 0, width: 440, height: 340)
     rail.orientation = .vertical
-    rail.alignment = .leading
+    rail.alignment = .centerX
     rail.spacing = 3
-    rail.edgeInsets = NSEdgeInsets(top: 10, left: 8, bottom: 10, right: 8)
+    rail.edgeInsets = NSEdgeInsets(top: 10, left: 6, bottom: 10, right: 6)
     railScroll.documentView = rail
     railScroll.hasVerticalScroller = true
     railScroll.drawsBackground = false
     rail.translatesAutoresizingMaskIntoConstraints = false
     rail.widthAnchor.constraint(equalTo: railScroll.widthAnchor).isActive = true
     search.placeholderString = "Search models…"
+    search.font = .systemFont(ofSize: 14)
+    search.isBezeled = false
+    search.drawsBackground = false
+    search.focusRingType = .none
+    search.heightAnchor.constraint(equalToConstant: 34).isActive = true
     search.setAccessibilityLabel("Search models")
     search.sendsSearchStringImmediately = true
     search.sendsWholeSearchString = true
@@ -95,7 +103,8 @@ final class ModelPicker: NSViewController, NSTableViewDataSource,
     table.delegate = self
     table.target = self
     table.action = #selector(clicked)
-    table.rowHeight = 48
+    table.rowHeight = 58
+    table.selectionHighlightStyle = .regular
     table.intercellSpacing = .zero
     table.backgroundColor = .clear
     table.setAccessibilityLabel("Models")
@@ -124,7 +133,7 @@ final class ModelPicker: NSViewController, NSTableViewDataSource,
       railScroll.leadingAnchor.constraint(equalTo: view.leadingAnchor),
       railScroll.topAnchor.constraint(equalTo: view.topAnchor),
       railScroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-      railScroll.widthAnchor.constraint(equalToConstant: 150),
+      railScroll.widthAnchor.constraint(equalToConstant: 56),
       right.leadingAnchor.constraint(equalTo: railScroll.trailingAnchor),
       right.trailingAnchor.constraint(equalTo: view.trailingAnchor),
       right.topAnchor.constraint(equalTo: view.topAnchor),
@@ -169,23 +178,28 @@ final class ModelPicker: NSViewController, NSTableViewDataSource,
       rail.removeArrangedSubview(child)
       child.removeFromSuperview()
     }
-    func add(_ title: String, selected: Bool, action: @escaping () -> Void) {
-      let button = ActionButton(title, action: action)
-      button.setButtonType(.pushOnPushOff)
-      button.state = selected ? .on : .off
-      button.bezelStyle = .inline
-      button.alignment = .left
-      button.font = .systemFont(ofSize: 12)
-      button.cell?.lineBreakMode = .byTruncatingTail
+    func add(
+      _ title: String, image: NSImage?, badge: String = "", selected: Bool,
+      action: @escaping () -> Void
+    ) {
+      let button = ModelAccountButton(badge, selected: selected, action: action)
+      button.image = image
+      button.toolTip = title
+      button.setAccessibilityLabel(title)
       rail.addArrangedSubview(button)
-      button.widthAnchor.constraint(equalTo: rail.widthAnchor, constant: -16).isActive = true
+      button.widthAnchor.constraint(equalToConstant: 40).isActive = true
+      button.heightAnchor.constraint(equalToConstant: 44).isActive = true
     }
-    add("★ Favorites", selected: favoritesOnly) { [weak self] in self?.filter(nil, favorites: true)
-    }
+    add(
+      "Favorites", image: NSImage(systemSymbolName: "star.fill", accessibilityDescription: nil),
+      selected: favoritesOnly
+    ) { [weak self] in self?.filter(nil, favorites: true) }
     for provider in catalog.providers {
-      add(provider.name, selected: !favoritesOnly && instanceID == provider.id) { [weak self] in
-        self?.filter(provider.id, favorites: false)
-      }
+      add(
+        provider.name, image: ProviderArtwork.image(provider.driver),
+        badge: provider.driver == "codex" ? "" : SidebarProviderMark.initials(provider.name),
+        selected: !favoritesOnly && instanceID == provider.id
+      ) { [weak self] in self?.filter(provider.id, favorites: false) }
     }
   }
 
@@ -205,9 +219,32 @@ final class ModelPicker: NSViewController, NSTableViewDataSource,
       else { return nil }
       return choice.id
     }()
-    let matches = index.results(
+    preferences = ModelPickerPreferences(environment: environment)
+    favorites = preferences.favorites
+    var matches = index.results(
       query: search.stringValue, instanceID: favoritesOnly ? nil : instanceID,
-      favoritesOnly: favoritesOnly, favorites: favorites)
+      favoritesOnly: favoritesOnly, favorites: favorites
+    )
+    .filter { !preferences.hidden.contains($0.id) || $0.model.custom }
+    if search.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+      let positions = Dictionary(
+        uniqueKeysWithValues: catalog.providers.flatMap { provider in
+          preferences.models(provider.models, instanceID: provider.id).enumerated().map {
+            (ModelIdentity(instanceID: provider.id, modelID: $0.element.id), $0.offset)
+          }
+        })
+      let providers = Dictionary(
+        uniqueKeysWithValues: catalog.providers.enumerated().map { ($0.element.id, $0.offset) })
+      matches = matches.enumerated().sorted { a, b in
+        let left = (
+          providers[a.element.provider.id] ?? Int.max, positions[a.element.id] ?? Int.max, a.offset
+        )
+        let right = (
+          providers[b.element.provider.id] ?? Int.max, positions[b.element.id] ?? Int.max, b.offset
+        )
+        return left < right
+      }.map(\.element)
+    }
     let searching = !search.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     if !searching && !favoritesOnly, let instanceID {
       rows = matches.filter { !$0.model.legacy }.map(Row.model)
@@ -316,11 +353,9 @@ final class ModelPicker: NSViewController, NSTableViewDataSource,
       label.frame = NSRect(x: 10, y: 15, width: table.bounds.width - 20, height: 20)
       label.autoresizingMask = [.width]
     case .model(let choice):
-      let selected = store.selectedThread.map { ModelIdentity($0.model) == choice.id } ?? false
       let title = NSTextField(
-        labelWithString: (selected ? "✓ " : "") + choice.model.name
-          + (choice.model.badge == "new" ? " · New" : ""))
-      title.font = .systemFont(ofSize: 12, weight: .medium)
+        labelWithString: choice.model.name + (choice.model.badge == "new" ? "  NEW" : ""))
+      title.font = .systemFont(ofSize: 14, weight: .regular)
       title.textColor =
         store.modelDisabledReason(choice) == nil ? .labelColor : .secondaryLabelColor
       title.lineBreakMode = .byTruncatingTail
@@ -328,16 +363,15 @@ final class ModelPicker: NSViewController, NSTableViewDataSource,
         labelWithString: choice.provider.name
           + (choice.model.subProvider.map { " · " + $0 } ?? "")
           + (choice.model.legacy ? " · Legacy" : choice.model.custom ? " · Custom" : ""))
-      detail.font = .systemFont(ofSize: 10)
+      detail.font = .systemFont(ofSize: 12)
       detail.textColor = .secondaryLabelColor
       detail.lineBreakMode = .byTruncatingTail
       let favorite = favorites.contains(choice.id)
       let star = ActionButton("") { [weak self] in
         guard let self else { return }
         if !self.favorites.insert(choice.id).inserted { self.favorites.remove(choice.id) }
-        if let data = try? JSONEncoder().encode(self.favorites) {
-          UserDefaults.standard.set(data, forKey: self.favoritesKey)
-        }
+        self.preferences.favorites = self.favorites
+        try? self.preferences.save(environment: self.environment)
         self.reloadResults()
       }
       star.isBordered = false
@@ -349,7 +383,7 @@ final class ModelPicker: NSViewController, NSTableViewDataSource,
       let labels = NSStackView(views: [title, detail])
       labels.orientation = .vertical
       labels.alignment = .leading
-      labels.spacing = 3
+      labels.spacing = 5
       cell.addSubview(labels)
       cell.addSubview(star)
       labels.translatesAutoresizingMaskIntoConstraints = false
@@ -366,5 +400,50 @@ final class ModelPicker: NSViewController, NSTableViewDataSource,
       ])
     }
     return cell
+  }
+
+  func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
+    ModelSelectionRow()
+  }
+}
+
+@MainActor private final class ModelSelectionRow: NSTableRowView {
+  override func drawSelection(in dirtyRect: NSRect) {
+    NSColor.labelColor.withAlphaComponent(0.08).setFill()
+    NSBezierPath(roundedRect: bounds.insetBy(dx: 2, dy: 2), xRadius: 9, yRadius: 9).fill()
+  }
+  override var isEmphasized: Bool {
+    get { false }
+    set {}
+  }
+}
+
+@MainActor private final class ModelAccountButton: NSButton {
+  let selectedAccount: Bool
+  let invoke: () -> Void
+  init(_ badge: String, selected: Bool, action: @escaping () -> Void) {
+    selectedAccount = selected
+    invoke = action
+    super.init(frame: .zero)
+    title = badge
+    font = .systemFont(ofSize: 8, weight: .semibold)
+    imagePosition = badge.isEmpty ? .imageOnly : .imageAbove
+    isBordered = false
+    contentTintColor = selected ? .labelColor : .secondaryLabelColor
+    symbolConfiguration = .init(pointSize: 23, weight: .regular)
+    target = self
+    self.action = #selector(choose)
+  }
+  required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+  @objc private func choose() { invoke() }
+  override func draw(_ dirtyRect: NSRect) {
+    if selectedAccount {
+      NSColor.controlAccentColor.setFill()
+      NSBezierPath(
+        roundedRect: NSRect(x: bounds.maxX - 3, y: 7, width: 3, height: bounds.height - 14),
+        xRadius: 1.5, yRadius: 1.5
+      ).fill()
+    }
+    super.draw(dirtyRect)
   }
 }

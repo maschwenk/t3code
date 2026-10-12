@@ -58,8 +58,13 @@ import T3Core
   private(set) var storageError: String?
   private(set) var commandsInFlight: Set<String> = []
   private(set) var creatingThread = false
-  private var pendingNewThread: (configuration: NewThreadConfiguration, command: JSON)?
+  private(set) var conversationDrafts: [String: NewConversationDraft] = [:] {
+    didSet { scheduleDraftSave() }
+  }
+  var selectedDraft: NewConversationDraft? { selectedID.flatMap { conversationDrafts[$0] } }
+  var isNewConversation: Bool { selectedDraft != nil }
   var onChange: (() -> Void)?
+  var onShellEvent: ((JSON, RPCConnection, URL) -> Void)?
   private var connection: RPCConnection?
   var terminalConnection: RPCConnection? { ready ? connection : nil }
   private(set) var browserEnvironmentID: String?
@@ -100,7 +105,7 @@ import T3Core
     if let current = self.settings, current.endpoint != settings.endpoint,
       !drafts.isEmpty || !questionDrafts.isEmpty || !pending.isEmpty || !attachmentDrafts.isEmpty
         || !queuedEdits.isEmpty || !questionResponses.isEmpty || !deliveries.isEmpty
-        || !planSubmissions.isEmpty,
+        || !planSubmissions.isEmpty || !conversationDrafts.isEmpty,
       !flushDrafts()
     {
       error = "Save the current drafts before switching servers."
@@ -124,6 +129,7 @@ import T3Core
       questionPages = [:]
       questionResponses = [:]
       planSubmissions = [:]
+      conversationDrafts = [:]
       selectedRequestID = nil
       catalog = ProviderCatalog(planModeEnabled: preferences.bool(forKey: "planModeEnabled"))
       do {
@@ -137,6 +143,7 @@ import T3Core
         questionPages = saved.questionPages ?? [:]
         questionResponses = saved.questionResponses ?? [:]
         planSubmissions = saved.planSubmissions ?? [:]
+        conversationDrafts = saved.conversations ?? [:]
         draftEndpoint = settings.endpoint
         storageError = nil
       } catch {
@@ -185,6 +192,7 @@ import T3Core
                 startAttachmentUploads()
                 if let selectedID,
                   shell.threads[selectedID] != nil || archives.threads[selectedID] != nil
+                    || conversationDrafts[selectedID] != nil
                 {
                   select(selectedID, force: true)
                 } else if let requested = Arguments.value("--thread-id"),
@@ -196,6 +204,7 @@ import T3Core
                 }
               }
             }
+            onShellEvent?(value, connection, settings.endpoint)
             notify()
           }
           throw T3Error("Live connection ended.")
@@ -251,7 +260,6 @@ import T3Core
     catalogReady = false
     commandsInFlight = []
     creatingThread = false
-    pendingNewThread = nil
     sending = []
     for job in uploadJobs.values { job.task.cancel() }
     uploadJobs = [:]
@@ -402,7 +410,7 @@ import T3Core
           questions: questionDrafts, attachments: attachmentDrafts.filter { !$0.value.isEmpty },
           queuedEdits: queuedEdits, deliveries: deliveries,
           questionPages: questionPages, questionResponses: questionResponses,
-          planSubmissions: planSubmissions),
+          planSubmissions: planSubmissions, conversations: conversationDrafts),
         for: draftEndpoint)
       storageError = nil
       return true
@@ -443,7 +451,16 @@ import T3Core
   }
 
   var selectedThread: ThreadSummary? {
-    selectedID.flatMap { shell.threads[$0] ?? archives.threads[$0] }
+    selectedID.flatMap {
+      shell.threads[$0] ?? archives.threads[$0] ?? conversationDrafts[$0]?.summary
+    }
+  }
+  var activeSidebarThreads: [String: ThreadSummary] {
+    var result = shell.threads
+    for draft in conversationDrafts.values where result[draft.id] == nil {
+      if let summary = draft.summary { result[draft.id] = summary }
+    }
+    return result
   }
   var environmentKey: String { settings?.endpoint.absoluteString ?? "disconnected" }
   func usageCall(_ method: String, payload: JSON = .object([:]), session: UUID) async throws -> JSON
@@ -583,7 +600,8 @@ import T3Core
 
   var changingSettings: Bool { commandsInFlight.contains((selectedID ?? "") + ":settings") }
   var canEditThread: Bool {
-    ready && thread?.synchronized == true && selectedThread?.archived == false && !changingSettings
+    ready && (isNewConversation || thread?.synchronized == true)
+      && selectedThread?.archived == false && !changingSettings
   }
 
   func setModel(_ selection: JSON) {
@@ -591,6 +609,10 @@ import T3Core
       provider.available,
       catalog.model(for: selection) != nil
     else { return }
+    if isNewConversation {
+      updateConversationDraft { $0.model = selection }
+      return
+    }
     let changingModel =
       selection["model"] != selectedThread.model["model"]
       || selection["instanceId"] != selectedThread.model["instanceId"]
@@ -610,6 +632,9 @@ import T3Core
   func modelDisabledReason(_ choice: ModelChoice) -> String? {
     guard catalogReady, canEditThread else {
       return "Wait for the thread to connect and finish updating."
+    }
+    if isNewConversation, pending[selectedID ?? ""]?.launch != nil {
+      return "Retry the pending first message before changing its model."
     }
     guard choice.provider.available else {
       return choice.provider.unavailableReason ?? "This provider is unavailable."
@@ -648,6 +673,10 @@ import T3Core
       supported.contains(mode)
         || (supported.isEmpty && ["approval-required", "full-access"].contains(mode))
     else { return }
+    if isNewConversation {
+      updateConversationDraft { $0.runtimeMode = mode }
+      return
+    }
     performThreadCommand(
       "thread.runtime-mode.set", fields: ["runtimeMode": .string(mode)], key: "settings")
   }
@@ -657,6 +686,10 @@ import T3Core
       catalog.provider(for: selectedThread.model)?.showInteractionMode == true,
       ["default", "plan"].contains(mode)
     else { return }
+    if isNewConversation {
+      updateConversationDraft { $0.interactionMode = mode }
+      return
+    }
     performThreadCommand(
       "thread.interaction-mode.set", fields: ["interactionMode": .string(mode)], key: "settings")
   }
@@ -1062,7 +1095,7 @@ import T3Core
     loadingHistory = false
     error = nil
     notify()
-    guard let connection, ready else { return }
+    guard !isNewConversation, let connection, ready else { return }
     detail = Task {
       do {
         let subscription = try await connection.subscribe(
@@ -1341,6 +1374,14 @@ import T3Core
       return "Wait for the thread to connect."
     }
     if sending.contains(threadID) { return "Sending…" }
+    // An uncertain first launch must replay its original request, even if the user edits the draft.
+    if pending[id]?.launch != nil { return nil }
+    if let draft = selectedDraft, draft.workspaceMode == "worktree", draft.branch == nil {
+      return "Select a base branch for the new worktree."
+    }
+    if let model = selectedDraft?.model, catalog.provider(for: model)?.available != true {
+      return "Choose an available provider account."
+    }
     if commandsInFlight.contains(threadID + ":queue") { return "Wait for the queue update." }
     if importingAttachments.contains(id) { return "Adding attachments…" }
     let attachments = attachmentDrafts[id] ?? []
@@ -1583,16 +1624,32 @@ import T3Core
     let text = drafts[draftID] ?? ""
     let attachments = attachmentDrafts[draftID] ?? []
     let edit = queuedEdit
-    let command =
+    var command =
       pending[draftID].flatMap {
-        $0.matches(text: text, attachments: attachments, delivery: delivery, edit: edit) ? $0 : nil
+        if $0.launch != nil { return $0 }
+        return $0.matches(text: text, attachments: attachments, delivery: delivery, edit: edit)
+          ? $0 : nil
       }
       ?? PendingSubmission(
         text: text, attachments: (edit?.attachments ?? []) + attachments.compactMap(\.wire),
         localAttachmentIDs: attachments.map(\.id), delivery: delivery, queuedRunID: edit?.runID,
         retainedAttachmentIDs: edit?.attachments.compactMap { $0["id"].string },
         context: edit?.retainedContext)
+    if let draft = selectedDraft, command.launch == nil {
+      do {
+        let launch = try draft.launch(command)
+        command = PendingSubmission(
+          text: command.text, command: command.command, message: command.message,
+          attachments: command.attachments, localAttachmentIDs: command.localAttachmentIDs,
+          delivery: command.delivery, launch: launch)
+      } catch {
+        self.error = error.localizedDescription
+        notify()
+        return
+      }
+    }
     pending[draftID] = command
+    let submitted = command
     guard flushDrafts() else { return }
     let generation = generation
     let repository = attachmentRepository
@@ -1608,23 +1665,31 @@ import T3Core
       }
       do {
         _ = try await connection.call(
-          "orchestration.dispatchCommand",
-          payload: command.payload(threadID: id))
+          submitted.launch == nil ? "orchestration.dispatchCommand" : "orchestration.launchThread",
+          payload: submitted.launch ?? submitted.payload(threadID: id))
         guard self.generation == generation else { return }
-        if drafts[draftID] == text { drafts[draftID] = "" }
-        let sentIDs = Set(command.localAttachmentIDs ?? [])
+        if submitted.launch != nil {
+          conversationDrafts.removeValue(forKey: id)
+          if selectedID == id { select(id, force: true) }
+        }
+        if drafts[draftID] == submitted.text { drafts[draftID] = "" }
+        let sentIDs = Set(submitted.localAttachmentIDs ?? [])
         attachmentDrafts[draftID]?.removeAll { sentIDs.contains($0.id) }
         for id in sentIDs { attachmentUploads.removeValue(forKey: id) }
         pending.removeValue(forKey: draftID)
         if let edit { queuedEdits.removeValue(forKey: edit.runID) }
         if flushDrafts() {
-          for attachment in attachments { repository?.remove(attachment) }
+          for attachment in attachments where sentIDs.contains(attachment.id) {
+            repository?.remove(attachment)
+          }
         }
       } catch {
-        guard self.generation == generation else { return }
+        guard self.generation == generation, selectedID == id else { return }
         self.error =
           error.localizedDescription
-          + " Your draft is preserved. Retrying the unchanged message reuses the same command."
+          + (submitted.launch == nil
+            ? " Your draft is preserved. Retrying the unchanged message reuses the same command."
+            : " Retry sends the original first message. Any newer edits remain saved for the next message.")
       }
     }
   }
@@ -1723,6 +1788,86 @@ import T3Core
     return project
   }
 
+  func updateConversationDraft(_ edit: (inout NewConversationDraft) -> Void) {
+    guard let id = selectedID, var draft = conversationDrafts[id],
+      !sending.contains(id), pending[id]?.launch == nil
+    else { return }
+    edit(&draft)
+    conversationDrafts[id] = draft
+    error = nil
+    notify()
+  }
+
+  func setDraftProject(_ project: JSON) {
+    guard isNewConversation else { return }
+    updateConversationDraft { draft in
+      draft.project = project
+      draft.branch = nil
+    }
+  }
+
+  func startWithoutProject() {
+    guard canCreateThread, catalog.scratchWorkspaceRoot != nil else { return }
+    let session = projectSessionID
+    let selection = selectionGeneration
+    Task {
+      do {
+        let scratch = try await projectCall(
+          "projects.ensureScratch", payload: .object([:]), session: session)
+        let project = try await self.project(
+          id: scratch.requiredString("projectId"), session: session)
+        guard selectionGeneration == selection else { return }
+        if isNewConversation { setDraftProject(project) } else { newThread(project: project) }
+      } catch {
+        guard session == projectSessionID, selectionGeneration == selection else { return }
+        self.error = error.localizedDescription
+        notify()
+      }
+    }
+  }
+
+  func compactContext() {
+    guard canEditThread, !isNewConversation, !composerBusy, execution.activeRunID == nil,
+      let id = selectedID, let connection
+    else { return }
+    let command = Commands.message(
+      threadID: id, text: "/compact", commandID: UUID().uuidString, messageID: UUID().uuidString)
+    let generation = generation
+    sending.insert(id)
+    notify()
+    Task {
+      defer {
+        if self.generation == generation {
+          sending.remove(id)
+          notify()
+        }
+      }
+      do { _ = try await connection.call("orchestration.dispatchCommand", payload: command) } catch
+      { if self.generation == generation { self.error = error.localizedDescription } }
+    }
+  }
+
+  func resolveNewDraftWorkspaceMode(project: JSON, session: UUID) async throws -> String {
+    guard ready, session == projectSessionID else {
+      throw T3Error("The project connection changed.")
+    }
+    if let configured = catalog.configuredWorkspaceMode(project: project) { return configured }
+    let file = try? await projectCall(
+      "projects.readFile",
+      payload: .object([
+        "cwd": project["workspaceRoot"], "relativePath": .string("t3.json"),
+      ]), session: session)
+    try Task.checkCancellation()
+    guard ready, session == projectSessionID else {
+      throw T3Error("The project connection changed.")
+    }
+    if let configured = catalog.configuredWorkspaceMode(project: project) { return configured }
+    guard let file, !file["truncated"].bool, let contents = file["contents"].string,
+      contents.utf8.count <= 1_048_576
+    else { return "local" }
+    return WorkspaceDefaults.fileMode(contents: contents) ?? "local"
+  }
+
   func newThread(
     projectID: String? = nil, project openedProject: JSON? = nil, warning: String? = nil
   ) {
@@ -1753,20 +1898,16 @@ import T3Core
           project = try await self.project(
             id: scratch.requiredString("projectId"), session: session)
         }
+        let workspaceMode = try await resolveNewDraftWorkspaceMode(
+          project: project, session: session)
         let configuration = try catalog.newThreadConfiguration(project: project, carrying: template)
-        let command: JSON
-        if let pendingNewThread, pendingNewThread.configuration == configuration {
-          command = pendingNewThread.command
-        } else {
-          command = configuration.command(id: UUID().uuidString)
-          pendingNewThread = (configuration, command)
-        }
-        _ = try await projectCall(
-          "orchestration.dispatchCommand", payload: command, session: session)
-        pendingNewThread = nil
+        let draft = NewConversationDraft(
+          project: project, configuration: configuration, workspaceMode: workspaceMode)
+        conversationDrafts[draft.id] = draft
+        guard flushDrafts() else { return }
         if selectionGeneration == selection {
           showingArchives = false
-          select(try command.requiredString("threadId"))
+          select(draft.id)
         }
         error = warning
       } catch {

@@ -7,6 +7,7 @@ import WebKit
   let web: WKWebView
   let picker: BrowserElementPicker
   let automation: BrowserAutomationPage
+  let recording = BrowserRecording()
   let tabID: String
   let threadID: String
   let environment: URL
@@ -21,6 +22,7 @@ import WebKit
   private(set) var synchronizationError: String?
   private(set) var snapshot: BrowserTab
   private let connection: RPCConnection
+  private var disposed = false
   private var observations: [NSKeyValueObservation] = []
   private var expectedReports: [JSON] = []
   private var pendingReport: JSON?
@@ -101,6 +103,9 @@ import WebKit
   }
 
   func dispose() {
+    disposed = true
+    onChange = nil
+    recording.cancel()
     automation.interrupt()
     picker.dispose()
     automation.invalidate()
@@ -151,21 +156,27 @@ import WebKit
         ]))
   }
 
+  func captureImage(mouse: Bool = true, keys: Bool = true, deterministic: Bool = true) async throws
+    -> NSImage
+  {
+    try await BrowserCapture.image(
+      web: web, cursor: automation.cursor, mouse: mouse,
+      keys: keys, deterministic: deterministic)
+  }
   func capture() async throws -> URL {
-    let configuration = WKSnapshotConfiguration()
-    configuration.snapshotWidth = min(1_600, web.bounds.width) as NSNumber
-    let image = try await web.takeSnapshot(configuration: configuration)
-    guard let data = image.tiffRepresentation,
-      let bitmap = NSBitmapImageRep(data: data),
-      let png = bitmap.representation(using: .png, properties: [:])
-    else { throw T3Error("Could not capture this page.") }
+    let image = try await captureImage()
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
       "t3-browser-" + UUID().uuidString)
     try FileManager.default.createDirectory(
       at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
     let url = directory.appendingPathComponent("Browser screenshot.png")
-    try png.write(to: url, options: .atomic)
-    return url
+    do {
+      try BrowserAnnotationRenderer.png(image).write(to: url, options: .atomic)
+      return url
+    } catch {
+      try? FileManager.default.removeItem(at: directory)
+      throw error
+    }
   }
 
   func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
@@ -225,6 +236,7 @@ import WebKit
   }
 
   private func report(kind: String, error: NSError? = nil) {
+    guard !disposed else { return }
     guard let url = error?.userInfo[NSURLErrorFailingURLErrorKey] as? URL ?? web.url ?? serverURL,
       ["http", "https"].contains(url.scheme ?? ""), url.absoluteString.utf8.count <= 2_048
     else { return }
@@ -253,8 +265,10 @@ import WebKit
         if expectedReports.count > 16 { expectedReports.removeFirst() }
         do {
           _ = try await connection.call("preview.reportStatus", payload: input)
+          guard !disposed, !Task.isCancelled else { return }
           synchronizationError = nil
         } catch {
+          guard !disposed, !Task.isCancelled else { return }
           expectedReports.removeAll { $0 == input["navStatus"] }
           if lastReport == input { lastReport = nil }
           synchronizationError = "Browser tab could not sync: " + error.localizedDescription

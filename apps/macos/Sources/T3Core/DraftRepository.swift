@@ -12,11 +12,13 @@ public struct PendingSubmission: Codable, Sendable, Equatable {
   public let retainedAttachmentIDs: [String]?
   public let context: JSON?
   public let continuationOf: String?
+  public let launch: JSON?
   public init(
     text: String, command: String = UUID().uuidString, message: String = UUID().uuidString,
     attachments: [JSON]? = nil, localAttachmentIDs: [String]? = nil,
     delivery: MessageDelivery? = nil, queuedRunID: String? = nil,
-    retainedAttachmentIDs: [String]? = nil, context: JSON? = nil, continuationOf: String? = nil
+    retainedAttachmentIDs: [String]? = nil, context: JSON? = nil, continuationOf: String? = nil,
+    launch: JSON? = nil
   ) {
     self.text = text
     self.command = command
@@ -28,6 +30,7 @@ public struct PendingSubmission: Codable, Sendable, Equatable {
     self.retainedAttachmentIDs = retainedAttachmentIDs
     self.context = context
     self.continuationOf = continuationOf
+    self.launch = launch
   }
   public func matches(
     text: String, attachments: [DraftAttachment], delivery: MessageDelivery = .auto,
@@ -64,6 +67,7 @@ public struct SavedDrafts: Codable, Sendable, Equatable {
   public var questionPages: [String: Int]?
   public var questionResponses: [String: PendingQuestionResponse]?
   public var planSubmissions: [String: PendingPlanSubmission]?
+  public var conversations: [String: NewConversationDraft]?
   public init(
     messages: [String: String] = [:], submissions: [String: PendingSubmission] = [:],
     questions: [String: [String: QuestionDraft]] = [:],
@@ -71,7 +75,8 @@ public struct SavedDrafts: Codable, Sendable, Equatable {
     queuedEdits: [String: QueuedEdit]? = nil, deliveries: [String: MessageDelivery]? = nil,
     questionPages: [String: Int]? = nil,
     questionResponses: [String: PendingQuestionResponse]? = nil,
-    planSubmissions: [String: PendingPlanSubmission]? = nil
+    planSubmissions: [String: PendingPlanSubmission]? = nil,
+    conversations: [String: NewConversationDraft]? = nil
   ) {
     self.messages = messages
     self.submissions = submissions
@@ -82,6 +87,7 @@ public struct SavedDrafts: Codable, Sendable, Equatable {
     self.questionPages = questionPages
     self.questionResponses = questionResponses
     self.planSubmissions = planSubmissions
+    self.conversations = conversations
   }
 }
 

@@ -17,6 +17,7 @@ final class SidebarView: NSStackView, NSTableViewDataSource, NSTableViewDelegate
     case thread(SidebarThreadPresentation)
   }
   private let store: ClientStore
+  var onSettings: (() -> Void)?
   var onShowUsage: (() -> Void)?
   var onThreadChosen: (() -> Void)?
   var onNewThread: (() -> Void)?
@@ -62,6 +63,7 @@ final class SidebarView: NSStackView, NSTableViewDataSource, NSTableViewDelegate
   private var projectID: String?
   private var pendingProjectID: String?
   var selectedProjectID: String? { projectID }
+  func focusSearch() { window?.makeFirstResponder(search) }
   private var previousProjects: [String: String] = [:]
   private var restoringSelection = false
   private var refreshTimer: Task<Void, Never>?
@@ -156,7 +158,12 @@ final class SidebarView: NSStackView, NSTableViewDataSource, NSTableViewDelegate
 
   func refresh(revealSelection: Bool = false) {
     let now = Date()
-    let projectNames = store.shell.projects.merging(store.archives.projects) { current, _ in current
+    var projectNames = store.shell.projects.merging(store.archives.projects) { current, _ in current
+    }
+    for draft in store.conversationDrafts.values {
+      if let id = draft.project["id"].string, projectNames[id] == nil {
+        projectNames[id] = draft.project["title"].string ?? "Project"
+      }
     }
     previousProjects = projectNames
     if let projectID, projectNames[projectID] != nil { pendingProjectID = nil }
@@ -172,7 +179,7 @@ final class SidebarView: NSStackView, NSTableViewDataSource, NSTableViewDelegate
     openProjectButton.isEnabled = store.ready && store.catalogReady
     let query = search.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
     clearSearchButton.isHidden = search.stringValue.isEmpty
-    let source = store.showingArchives ? store.archives.threads : store.shell.threads
+    let source = store.showingArchives ? store.archives.threads : store.activeSidebarThreads
     let filtered = source.values.filter { thread in
       (projectID == nil || thread.projectID == projectID)
         && (query.isEmpty
@@ -335,7 +342,7 @@ final class SidebarView: NSStackView, NSTableViewDataSource, NSTableViewDelegate
         ?? SidebarThreadCell(frame: .zero)
       let thread = value.thread
       cell.configure(
-        value, enabled: value.enabled,
+        value, enabled: value.enabled && store.conversationDrafts[thread.id] == nil,
         quickAction: { [weak self] in
           guard let self, self.store.ready, !self.store.lifecycleBusy(thread.id) else { return }
           if thread.lifecycle.snoozed(at: Date()) {
@@ -447,6 +454,10 @@ final class SidebarView: NSStackView, NSTableViewDataSource, NSTableViewDelegate
   }
 
   private func showSettings() {
+    if let onSettings {
+      onSettings()
+      return
+    }
     let menu = NSMenu()
     menu.autoenablesItems = false
     menu.addItem(ActionMenuItem("Connections…") { [weak self] in self?.onConnect?() })
@@ -464,6 +475,7 @@ final class SidebarView: NSStackView, NSTableViewDataSource, NSTableViewDelegate
   private func contextMenu(for row: Int) -> NSMenu? {
     guard rows.indices.contains(row), case .thread(let value) = rows[row] else { return nil }
     let thread = value.thread
+    guard store.conversationDrafts[thread.id] == nil else { return nil }
     let menu = NSMenu()
     menu.autoenablesItems = false
     let enabled = store.ready && !store.lifecycleBusy(thread.id)
@@ -522,7 +534,7 @@ final class SidebarView: NSStackView, NSTableViewDataSource, NSTableViewDelegate
   }
 
   private func rename(_ thread: ThreadSummary) {
-    guard let window, store.ready else { return }
+    guard let window, store.ready, store.conversationDrafts[thread.id] == nil else { return }
     let alert = NSAlert()
     alert.messageText = "Rename thread"
     let name = NSTextField(string: thread.title)

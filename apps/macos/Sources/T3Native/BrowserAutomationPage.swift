@@ -3,6 +3,7 @@ import T3Core
 import WebKit
 
 @MainActor final class BrowserAutomationPage {
+  let cursor: BrowserAgentCursor
   private let web: WKWebView
   private let world = WKContentWorld.world(name: "T3BrowserAutomation")
   private var installed = false
@@ -20,9 +21,15 @@ import WebKit
       forResource: "BrowserAutomation", withExtension: "js", subdirectory: "Resources")!
     return try! String(contentsOf: file, encoding: .utf8)
   }()
-  init(web: WKWebView) { self.web = web }
+  init(web: WKWebView) {
+    self.web = web
+    cursor = BrowserAgentCursor(frame: web.bounds)
+    cursor.autoresizingMask = [.width, .height]
+    web.addSubview(cursor, positioned: .above, relativeTo: nil)
+  }
   func interrupt() {
     controlRevision = UUID()
+    cursor.hide()
     for call in calls.values { call.finish(.failure(BrowserAutomationError.interrupted)) }
   }
   func invalidate() {
@@ -102,6 +109,24 @@ import WebKit
       try check()
       return result
     }
+    if ["type", "scroll", "press"].contains(operation) {
+      let target = try await query("pointer", input: input, deadline: deadline)
+      try check()
+      if case .number(let x) = target["x"], case .number(let y) = target["y"] {
+        let duration = try cursor.move(css: CGPoint(x: x, y: y), zoom: web.pageZoom)
+        if duration > 0 { try await Task.sleep(for: .seconds(duration)) }
+        try check()
+      }
+      // Do not display typed text: it may be a password or another secret.
+      let key = input["key"].string ?? "key"
+      let modifiers = input["modifiers"].array.compactMap(\.string)
+      let label =
+        key.count > 1 || modifiers.contains("Meta") || modifiers.contains("Control")
+        ? (modifiers + [key]).joined(separator: "+") : "key"
+      cursor.showFeedback(
+        operation == "type"
+          ? "Agent typing" : operation == "scroll" ? "Agent scroll" : "Agent " + label)
+    }
     if operation == "press" {
       try await press(input, deadline: deadline)
       try check()
@@ -120,7 +145,29 @@ import WebKit
         continue
       }
       if operation == "click" {
-        try click(result)
+        guard case .number(let x) = result["x"], case .number(let y) = result["y"] else {
+          throw T3Error("Browser target did not provide coordinates.")
+        }
+        // Seed the first movement so the agent is visibly approaching its first target.
+        if cursor.target == nil {
+          _ = try cursor.move(
+            css: CGPoint(
+              x: min(16, web.bounds.width / web.pageZoom / 2),
+              y: min(16, web.bounds.height / web.pageZoom / 2)), zoom: web.pageZoom, animate: false)
+        }
+        let duration = try cursor.move(css: CGPoint(x: x, y: y), zoom: web.pageZoom)
+        if duration > 0 { try await Task.sleep(for: .seconds(duration)) }
+        try check()
+        // Layout or scrolling can change during the transition; resolve the target again.
+        let resolved = try await query(operation, input: input, deadline: deadline)
+        try check()
+        if resolved["pending"].bool { continue }
+        guard case .number(let rx) = resolved["x"], case .number(let ry) = resolved["y"] else {
+          throw T3Error("Browser target no longer provides coordinates.")
+        }
+        _ = try cursor.move(css: CGPoint(x: rx, y: ry), zoom: web.pageZoom, animate: false)
+        cursor.click()
+        try click(resolved)
         return .null
       }
       if ["type", "scroll", "waitFor"].contains(operation) { return .null }

@@ -3,7 +3,10 @@ import SwiftUI
 import T3Core
 
 @MainActor final class BrowserSettingsWindow: NSWindowController {
-  init(preferences: BrowserPreferences, profiles: BrowserProfiles) {
+  init(
+    preferences: BrowserPreferences, profiles: BrowserProfiles, chromium: BrowserChromiumController,
+    onModeChange: @escaping () -> Void
+  ) {
     let window = NSWindow(
       contentRect: NSRect(x: 0, y: 0, width: 620, height: 660),
       styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
@@ -12,7 +15,9 @@ import T3Core
     window.isReleasedWhenClosed = false
     window.minSize = NSSize(width: 520, height: 500)
     window.contentView = NSHostingView(
-      rootView: BrowserSettings(preferences: preferences, profiles: profiles))
+      rootView: BrowserSettings(
+        preferences: preferences, profiles: profiles, chromium: chromium, onModeChange: onModeChange
+      ))
     window.center()
   }
   required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -21,6 +26,9 @@ import T3Core
 private struct BrowserSettings: View {
   @ObservedObject var preferences: BrowserPreferences
   let profiles: BrowserProfiles
+  @ObservedObject var chromium: BrowserChromiumController
+  let onModeChange: () -> Void
+  @State private var removeExtension = false
   @State private var editing: BrowserProfile?
   @State private var adding = false
   @State private var name = ""
@@ -35,6 +43,55 @@ private struct BrowserSettings: View {
     Form {
       if let error = preferences.error {
         Text(error).foregroundStyle(.orange).textSelection(.enabled)
+      }
+      Section("1Password Browser") {
+        Toggle("Use managed Chromium browser", isOn: $chromium.enabled).disabled(
+          chromium.nativeRecordingActive
+        )
+        .onChange(of: chromium.enabled) { _, _ in onModeChange() }
+        Text(
+          "The live page opens in a managed floating window. 1Password runs its genuine browser extension there."
+        )
+        .font(.caption).foregroundStyle(.secondary)
+        Text(chromium.state + " · " + chromium.passwordStatus).font(.caption)
+        if !chromium.available {
+          Text("This app needs its packaged Apple Silicon Chromium helper.").foregroundStyle(
+            .orange)
+        }
+        if let error = chromium.error {
+          Text(error).foregroundStyle(.orange).textSelection(.enabled)
+        }
+        HStack {
+          Button("Install official 1Password extension") { Task { await chromium.install() } }
+          Button("Import from browser…") {
+            Task { await chromium.importSelectedProfile(window: nil) }
+          }
+        }.disabled(!chromium.available)
+        Button("Remove 1Password extension", role: .destructive) { removeExtension = true }
+          .disabled(chromium.extensions.isEmpty)
+          .confirmationDialog(
+            "Remove the managed 1Password extension?", isPresented: $removeExtension
+          ) {
+            Button("Remove extension", role: .destructive) {
+              Task { await chromium.removeExtension() }
+            }
+          }
+        Button("Stop Chromium helper") {
+          Task { if await chromium.finishBeforeQuit(window: nil) { chromium.stop() } }
+        }.disabled(!chromium.running)
+        Text(
+          "For desktop unlock, choose an Apple code signed T3 Browser in Applications using 1Password Settings → Browser → Add Browser. Trust grants the browser access to unlocked 1Password information for saving and filling. This setup is your choice; T3 does not unlock your vault."
+        )
+        .font(.caption).foregroundStyle(.secondary)
+        Button("Show T3 Browser in Finder") {
+          NSWorkspace.shared.activateFileViewerSelecting([
+            Bundle.main.bundleURL.appendingPathComponent(
+              "Contents/Resources/chromium-helper/T3 Browser.app")
+          ])
+        }.disabled(!chromium.available)
+        Link(
+          "1Password browser setup",
+          destination: URL(string: "https://support.1password.com/additional-browsers/")!)
       }
       Section("New tabs") {
         Picker("Default profile", selection: binding(\.defaultProfileID)) {
@@ -161,8 +218,12 @@ private struct BrowserSettings: View {
         busy = true
         Task { @MainActor in
           do {
+            if chromium.enabled {
+              try await chromium.clearProfile(profile.id, kinds: .all)
+            } else {
+              await profiles.clear(profile: profile.id, kinds: .all)
+            }
             if remove { try preferences.remove(profile.id) }
-            await profiles.clear(profile: profile.id, kinds: .all)
           } catch { preferences.error = error.localizedDescription }
           busy = false
           confirmation = nil
