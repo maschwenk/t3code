@@ -27,5 +27,13 @@ cat > "$bundle/Contents/Info.plist" <<'PLIST'
 <key>NSPrincipalClass</key><string>NSApplication</string>
 </dict></plist>
 PLIST
+revision="$(git -C "$macos_root" -c core.fsmonitor=false rev-parse HEAD 2>/dev/null || printf unknown)"
+modified=false
+if [[ -n "$(git -C "$macos_root" -c core.fsmonitor=false status --porcelain -- . 2>/dev/null)" ]]; then
+  modified=true
+fi
+/usr/libexec/PlistBuddy -c "Add :T3SourceRevision string $revision" "$bundle/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Add :T3SourceModified bool $modified" "$bundle/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Add :T3BuildDate string $(date -u +%Y-%m-%dT%H:%M:%SZ)" "$bundle/Contents/Info.plist"
 codesign --force --sign - "$bundle"
 printf '%s\n' "$bundle"

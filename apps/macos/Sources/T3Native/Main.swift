@@ -24,6 +24,17 @@ import T3Core
   }
 
   func applicationWillTerminate(_ notification: Notification) { store.disconnect() }
+
+  @objc func showAbout() {
+    let bundle = Bundle.main
+    let revision = bundle.object(forInfoDictionaryKey: "T3SourceRevision") as? String ?? "unknown"
+    let modified = bundle.object(forInfoDictionaryKey: "T3SourceModified") as? Bool ?? false
+    let built = bundle.object(forInfoDictionaryKey: "T3BuildDate") as? String ?? "unknown"
+    NSApp.orderFrontStandardAboutPanel(options: [
+      .version: String(revision.prefix(12)) + (modified ? " + local changes" : ""),
+      .credits: NSAttributedString(string: "Source: \(revision)\nBuilt: \(built)"),
+    ])
+  }
   func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
     guard !finishingTermination else { return .terminateLater }
     finishingTermination = true
@@ -86,9 +97,9 @@ enum Arguments {
     let mainMenu = NSMenu()
     let appItem = NSMenuItem()
     let appMenu = NSMenu()
-    appMenu.addItem(
+    let aboutItem = appMenu.addItem(
       withTitle: "About T3 Native",
-      action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+      action: #selector(AppDelegate.showAbout), keyEquivalent: "")
     appMenu.addItem(.separator())
     appMenu.addItem(
       withTitle: "Quit T3 Native", action: #selector(NSApplication.terminate(_:)),
@@ -107,6 +118,7 @@ enum Arguments {
     mainMenu.addItem(edit)
     app.mainMenu = mainMenu
     let delegate = AppDelegate()
+    aboutItem.target = delegate
     app.delegate = delegate
     withExtendedLifetime(delegate) { app.run() }
   }

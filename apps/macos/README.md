@@ -4,6 +4,7 @@ A macOS 14+ AppKit client for an existing T3 protocol-v2 server. The interface u
 native tables and text controls, with isolated WebKit views for document previews. Agents,
 SQLite, Git, terminals, and remote access still belong to the existing server.
 Closing this app does not stop that server or its agents.
+About T3 Native shows the build's source revision and whether it includes local changes.
 
 The client supports grouped active/pinned/settled/snoozed threads, project filtering,
 search, archived history and restore, rename, pin, settle, snooze, and shared unread
