@@ -1,21 +1,37 @@
 // Extract the same pinned injected selector engine used by the Electron client.
-import { readFileSync, writeFileSync, copyFileSync } from "node:fs";
-import { resolve, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
-import { runInNewContext } from "node:vm";
-import { createHash } from "node:crypto";
-const root = dirname(fileURLToPath(import.meta.url));
-const source = resolve(process.argv[2] ?? "apps/desktop/node_modules/playwright-core");
-const pkg = JSON.parse(readFileSync(resolve(source, "package.json"), "utf8"));
-if (pkg.name !== "playwright-core" || pkg.version !== "1.60.0") throw Error("Expected playwright-core 1.60.0");
-const bundle = readFileSync(resolve(source, "lib/coreBundle.js"), "utf8");
+import * as NodeFS from "node:fs";
+import * as NodePath from "node:path";
+import * as NodeURL from "node:url";
+import * as NodeVM from "node:vm";
+import * as NodeCrypto from "node:crypto";
+const root = NodePath.dirname(NodeURL.fileURLToPath(import.meta.url));
+const source = NodePath.resolve(process.argv[2] ?? "apps/desktop/node_modules/playwright-core");
+const pkg = JSON.parse(NodeFS.readFileSync(NodePath.resolve(source, "package.json"), "utf8"));
+if (pkg.name !== "playwright-core" || pkg.version !== "1.60.0")
+  throw Error("Expected playwright-core 1.60.0");
+const bundle = NodeFS.readFileSync(NodePath.resolve(source, "lib/coreBundle.js"), "utf8");
 const marker = "source3 = ";
 const start = bundle.indexOf(marker);
 const end = bundle.indexOf(";\n  }\n});", start);
 if (start < 0 || end < 0) throw Error("Injected runtime was not found");
-const script = runInNewContext(bundle.slice(start + marker.length, end), Object.create(null), { timeout: 1000 });
+const script = NodeVM.runInNewContext(
+  bundle.slice(start + marker.length, end),
+  Object.create(null),
+  { timeout: 1000 },
+);
 if (typeof script !== "string" || script.length < 100000) throw Error("Invalid injected runtime");
-writeFileSync(resolve(root, "Sources/T3Native/Resources/PlaywrightInjected.js"), script);
-writeFileSync(resolve(root, "Vendor/PLAYWRIGHT_VERSION"), pkg.version + "\n");
-writeFileSync(resolve(root, "Vendor/PLAYWRIGHT_SHA256"), createHash("sha256").update(script).digest("hex") + "  Sources/T3Native/Resources/PlaywrightInjected.js\n");
-for (const file of ["LICENSE", "NOTICE"]) copyFileSync(resolve(source, file), resolve(root, "Licenses/playwright-" + file + ".txt"));
+NodeFS.writeFileSync(
+  NodePath.resolve(root, "Sources/T3Native/Resources/PlaywrightInjected.js"),
+  script,
+);
+NodeFS.writeFileSync(NodePath.resolve(root, "Vendor/PLAYWRIGHT_VERSION"), pkg.version + "\n");
+NodeFS.writeFileSync(
+  NodePath.resolve(root, "Vendor/PLAYWRIGHT_SHA256"),
+  NodeCrypto.createHash("sha256").update(script).digest("hex") +
+    "  Sources/T3Native/Resources/PlaywrightInjected.js\n",
+);
+for (const file of ["LICENSE", "NOTICE"])
+  NodeFS.copyFileSync(
+    NodePath.resolve(source, file),
+    NodePath.resolve(root, "Licenses/playwright-" + file + ".txt"),
+  );
