@@ -282,6 +282,9 @@ extension ParitySmoke {
       print(
         "Browser smoke: full-height layout, conversation/hide state retention, private cookie isolation"
       )
+      try await browserAutomation(
+        panel: panel, store: store, connection: connection, threadID: threadID,
+        alternate: alternate, fixture: fixture)
       try await cleanTabs()
     } catch {
       try? await cleanTabs()

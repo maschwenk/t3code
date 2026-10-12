@@ -4,8 +4,15 @@ import WebKit
 
 @MainActor final class BrowserPanel: NSViewController {
   var onClose: (() -> Void)?
+  var onAgentReveal: (() -> Void)?
   var onContextAdded: (() -> Void)?
   var onExpand: (() -> Void)?
+  private let automationHost = BrowserAutomationHost()
+  var agentPaused: Bool { automationHost.paused }
+  func toggleAgentControl() { automationHost.setPaused(!automationHost.paused) }
+  private let stopAgent = NSButton(title: "Stop agent", target: nil, action: nil)
+  private var automationSurfaces: [String: BrowserAutomationSurface] = [:]
+  private var automationMetadata: Task<Void, Never>?
   private let store: ClientStore
   private let profiles = BrowserProfiles()
   private let tabs = NSStackView()
@@ -52,10 +59,26 @@ import WebKit
   init(store: ClientStore) {
     self.store = store
     super.init(nibName: nil, bundle: nil)
+    automationHost.handle = { [weak self] request, deadline in
+      guard let self else { throw BrowserAutomationError.interrupted }
+      return try await self.automate(request, deadline: deadline)
+    }
+    automationHost.liveTabs = { [weak self] in
+      self?.pages.values.map { page in
+        .object([
+          "threadId": .string(page.threadID), "tabId": .string(page.tabID),
+          "visible": .bool(page.web.window?.isVisible == true && !page.web.isHidden),
+        ])
+      } ?? []
+    }
+    automationHost.onChange = { [weak self] in self?.render() }
   }
   required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
   isolated deinit {
     detach()
+    automationMetadata?.cancel()
+    automationHost.synchronize(connection: nil, environmentID: nil)
+    for surface in automationSurfaces.values { surface.close() }
     for page in pages.values { page.dispose() }
   }
 
@@ -121,6 +144,10 @@ import WebKit
     retry.bezelStyle = .inline
     footer.addArrangedSubview(status)
     footer.addArrangedSubview(retry)
+    stopAgent.target = self
+    stopAgent.action = #selector(toggleAgent)
+    stopAgent.bezelStyle = .inline
+    footer.addArrangedSubview(stopAgent)
     footer.setContentHuggingPriority(.required, for: .vertical)
     status.setContentHuggingPriority(.defaultLow, for: .horizontal)
     let stack = NSStackView(views: [top, navigation, divider, devices, host, footer])
@@ -173,6 +200,8 @@ import WebKit
     _ = view
     let nextConnection = store.browserConnection
     let nextThread = store.selectedID
+    automationHost.synchronize(
+      connection: nextConnection, environmentID: store.browserEnvironmentID)
     let contextChanged =
       connection !== nextConnection || threadID != nextThread || self.active != active
     guard contextChanged else {
@@ -180,6 +209,10 @@ import WebKit
       return
     }
     if connection !== nextConnection {
+      automationMetadata?.cancel()
+      automationMetadata = nil
+      for surface in automationSurfaces.values { surface.close() }
+      automationSurfaces = [:]
       for page in pages.values {
         page.dispose()
         page.web.removeFromSuperview()
@@ -191,10 +224,17 @@ import WebKit
     self.active = active
     connection = nextConnection
     endpoint = store.browserEndpoint
+    if automationMetadata == nil, let nextConnection { watchAutomationTabs(nextConnection) }
     threadID = nextThread
     shownPage?.picker.cancel()
+    let detachedPage = shownPage
     host.show(nil)
     shownPage = nil
+    if let detachedPage,
+      let surface = automationSurfaces[key(detachedPage.tabID, thread: detachedPage.threadID)]
+    {
+      surface.attach(detachedPage, show: false, title: "Browser")
+    }
     empty.isHidden = false
     directory = BrowserDirectory(threadID: nextThread ?? "")
     selectedID = nextThread.flatMap { selections[$0] }
@@ -315,32 +355,14 @@ import WebKit
     if let existing = pages[key] {
       page = existing
     } else {
-      page = BrowserPage(
-        tab: tab, environment: endpoint, connection: connection,
-        dataStore: profiles.dataStore(profile: tab.profileID))
-      pages[key] = page
-      page.picker.onChange = { [weak self] in self?.render() }
-      page.picker.onError = { [weak self] message in
-        self?.error = message
-        self?.render()
-      }
-      page.picker.onSelection = { [weak self, weak page] context in
-        guard let self, let page, self.shownPage === page, self.active,
-          self.store.selectedID == page.threadID, self.connection === self.store.browserConnection
-        else { return }
-        self.store.addBrowserContext(context)
-        self.onContextAdded?()
-      }
-      page.onChange = { [weak self] in self?.render() }
-      page.onNewTab = { [weak self, weak page] url in
-        guard let self, let page, self.threadID == page.threadID, self.active else { return }
-        self.open(url.absoluteString, newTab: true, profile: tab.profileID)
-      }
+      page = makePage(tab, connection: connection, endpoint: endpoint)
     }
     if shownPage !== page {
       shownPage?.picker.cancel()
       host.show(nil)
       shownPage = page
+      automationSurfaces[key]?.viewport.show(nil)
+      automationSurfaces[key]?.window.orderOut(nil)
       host.show(page.web)
     }
     page.receive(tab)
@@ -348,8 +370,39 @@ import WebKit
     empty.isHidden = !page.web.isHidden
   }
 
+  private func makePage(_ tab: BrowserTab, connection: RPCConnection, endpoint: URL) -> BrowserPage
+  {
+    let page = BrowserPage(
+      tab: tab, environment: endpoint, connection: connection,
+      dataStore: profiles.dataStore(profile: tab.profileID))
+    pages[key(tab.id, thread: tab.threadID)] = page
+    page.picker.onChange = { [weak self] in self?.render() }
+    page.picker.onError = { [weak self] message in
+      self?.error = message
+      self?.render()
+    }
+    page.picker.onSelection = { [weak self, weak page] context in
+      guard let self, let page, self.shownPage === page, self.active,
+        self.store.selectedID == page.threadID, self.connection === self.store.browserConnection
+      else { return }
+      self.store.addBrowserContext(context)
+      self.onContextAdded?()
+    }
+    page.onChange = { [weak self] in self?.render() }
+    page.onNewTab = { [weak self, weak page] url in
+      guard let self, let page else { return }
+      if self.threadID == page.threadID, self.active, self.shownPage === page {
+        self.open(url.absoluteString, newTab: true, profile: tab.profileID)
+      } else {
+        self.openBackgroundPopup(url, from: page)
+      }
+    }
+    return page
+  }
+
   private func render() {
     guard isViewLoaded else { return }
+    automationHost.refreshFocus()
     let tabLabels = directory.tabs.map { tab in
       return tab.id + "\n" + tabTitle(tab)
         + "\n" + (tab.url?.absoluteString ?? "")
@@ -411,9 +464,15 @@ import WebKit
     capture.isEnabled =
       page?.web.url != nil && page?.failure == nil && page?.web.isLoading == false
       && store.canAttach
-    let message = error ?? page?.failure ?? page?.synchronizationError ?? discoveryError
+    let message =
+      error ?? page?.failure ?? page?.synchronizationError ?? discoveryError ?? automationHost.error
+    stopAgent.isHidden = automationHost.running == 0 && !automationHost.paused
+    stopAgent.title = automationHost.paused ? "Resume agent browser" : "Stop agent"
     status.stringValue =
       message
+      ?? (automationHost.paused
+        ? "Agent browser control paused"
+        : automationHost.running > 0 ? "Agent is using Browser…" : nil)
       ?? (page?.picker.active == true
         ? "Click an element to add it to your message. Escape cancels." : nil)
       ?? (loading
@@ -425,7 +484,7 @@ import WebKit
             : page?.web.isLoading == true ? "Loading…" : "")
     status.isHidden = status.stringValue.isEmpty
     retry.isHidden = message == nil
-    footer.isHidden = status.isHidden && retry.isHidden
+    footer.isHidden = status.isHidden && retry.isHidden && stopAgent.isHidden
     renderEmpty()
   }
 
@@ -592,6 +651,7 @@ import WebKit
       more.lastItem?.action = action
     }
   }
+  @objc private func toggleAgent() { toggleAgentControl() }
   @objc private func togglePicker() {
     guard let page, store.canAddBrowserContext else { return }
     if page.picker.active { page.picker.cancel() } else { page.picker.start() }
@@ -653,6 +713,7 @@ import WebKit
   @objc private func hidePanel() { onClose?() }
   @objc private func expandPanel() { onExpand?() }
   @objc private func retryBrowser() {
+    if automationHost.error != nil { automationHost.retry() }
     if error != nil || discoveryError != nil {
       self.active = false
       refresh(active: true)
@@ -676,6 +737,309 @@ import WebKit
         self.error = error.localizedDescription
         render()
       }
+    }
+  }
+}
+
+extension BrowserPanel {
+  private func openBackgroundPopup(_ url: URL, from source: BrowserPage) {
+    guard let connection, let endpoint else { return }
+    Task { [weak self, weak source] in
+      guard let self, let source, self.connection === connection else { return }
+      do {
+        let tab = try BrowserTab(
+          await connection.call(
+            "preview.open",
+            payload: .object([
+              "threadId": .string(source.threadID), "url": .string(url.absoluteString),
+              "profileId": .string(source.snapshot.profileID ?? "default"),
+              "viewport": source.snapshot.viewport,
+            ])))
+        guard self.connection === connection,
+          self.pages[key(source.tabID, thread: source.threadID)] === source
+        else {
+          _ = try? await connection.call(
+            "preview.close",
+            payload: .object(["threadId": .string(tab.threadID), "tabId": .string(tab.id)]))
+          return
+        }
+        let page = makePage(tab, connection: connection, endpoint: endpoint)
+        let surface = BrowserAutomationSurface()
+        surface.onStop = { [weak self] in self?.automationHost.setPaused(true) }
+        automationSurfaces[key(tab.id, thread: tab.threadID)] = surface
+        surface.attach(
+          page, show: source.web.window?.isVisible == true,
+          title: "Browser · "
+            + (store.shell.threads[tab.threadID]?.title ?? "Background conversation"))
+        page.receive(tab)
+        selections[tab.threadID] = tab.id
+        automationHost.refreshFocus()
+      } catch {
+        guard self.connection === connection else { return }
+        self.error = error.localizedDescription
+        render()
+      }
+    }
+  }
+  private func watchAutomationTabs(_ connection: RPCConnection) {
+    automationMetadata = Task { [weak self] in
+      guard let self else { return }
+      do {
+        let events = try await connection.subscribe("subscribePreviewEvents")
+        defer { Task { await connection.cancel(events.id) } }
+        for try await event in events.values {
+          guard !Task.isCancelled, self.connection === connection,
+            let thread = event["threadId"].string, let tabID = event["tabId"].string
+          else { return }
+          let key = key(tabID, thread: thread)
+          if event["type"].string == "closed" {
+            automationHost.interrupt(threadID: thread)
+            automationSurfaces.removeValue(forKey: key)?.close()
+            pages.removeValue(forKey: key)?.dispose()
+          } else if !(active && self.threadID == thread),
+            let tab = try? BrowserTab(event["snapshot"]), let page = pages[key]
+          {
+            page.receive(tab)
+            automationSurfaces[key]?.viewport.setting =
+              (try? BrowserViewport(tab.viewport)) ?? .fill
+          }
+          automationHost.refreshFocus()
+        }
+      } catch {
+        guard !Task.isCancelled, self.connection === connection else { return }
+        self.error = "Browser synchronization ended: " + error.localizedDescription
+        render()
+      }
+    }
+  }
+
+  func automate(_ request: JSON, deadline: BrowserAutomationDeadline) async throws -> JSON {
+    _ = view
+    try deadline.check()
+    guard let connection, let endpoint else { throw BrowserAutomationError.interrupted }
+    let thread = try request.requiredString("threadId")
+    let operation = try request.requiredString("operation")
+    let input = request["input"]
+    var listing = try await connection.call(
+      "preview.list", payload: .object(["threadId": .string(thread)]))
+    try deadline.check()
+    guard self.connection === connection else { throw BrowserAutomationError.interrupted }
+    let tabs = try listing["sessions"].array.map(BrowserTab.init).filter { $0.threadID == thread }
+    let requestedID = request["tabId"].string ?? input["tabId"].string
+    var tab = requestedID.flatMap { id in tabs.first { $0.id == id } }
+    if requestedID == nil {
+      tab = tabs.first { $0.id == selections[thread] } ?? tabs.first
+    } else if tab == nil {
+      throw BrowserAutomationError(
+        "PreviewAutomationTabNotFoundError",
+        "That browser tab no longer belongs to this conversation.")
+    }
+    if operation == "status", tab == nil {
+      return .object([
+        "available": .bool(false), "visible": .bool(false), "tabId": .null, "url": .null,
+        "title": .null, "loading": .bool(false),
+      ])
+    }
+    if operation == "open", tab == nil || input["reuseExistingTab"] == .bool(false) {
+      var payload: [String: JSON] = [
+        "threadId": .string(thread), "viewport": try BrowserViewport(width: 1280, height: 800).json,
+      ]
+      if let url = input["url"].string {
+        payload["url"] = .string(
+          try BrowserURL.resolve(BrowserURL.normalize(url), environment: endpoint).absoluteString)
+      }
+      tab = try BrowserTab(await connection.call("preview.open", payload: .object(payload)))
+    }
+    guard var tab else {
+      throw BrowserAutomationError(
+        "PreviewAutomationTabNotFoundError", "Open a browser tab before using it.")
+    }
+    let key = key(tab.id, thread: thread)
+    let page = pages[key] ?? makePage(tab, connection: connection, endpoint: endpoint)
+    guard !page.picker.active else { throw BrowserAutomationError.interrupted }
+    let id = request["requestId"].string ?? UUID().uuidString
+    let started = Date().ISO8601Format()
+    page.automation.record(operation, status: "running", id: id, started: started)
+    do {
+      let reveal =
+        operation == "open"
+        && (input["open"] == .null ? input["show"] : input["open"]) != .bool(false)
+      if reveal, self.threadID == thread {
+        selections[thread] = tab.id
+        selectedID = tab.id
+        onAgentReveal?()
+      }
+      if self.active, self.threadID == thread, selectedID == tab.id {
+        listing = try await connection.call(
+          "preview.list", payload: .object(["threadId": .string(thread)]))
+        try directory.snapshot(listing)
+        reconcile()
+      }
+      if page.web.superview == nil || page.web.window == nil {
+        let surface = automationSurfaces[key] ?? BrowserAutomationSurface()
+        automationSurfaces[key] = surface
+        surface.onStop = { [weak self] in self?.automationHost.setPaused(true) }
+        surface.attach(
+          page, show: reveal,
+          title: "Browser · " + (store.shell.threads[thread]?.title ?? "Background conversation"))
+      } else if reveal, let surface = automationSurfaces[key], shownPage !== page {
+        surface.window.orderFront(nil)
+      }
+      page.receive(tab)
+      let expectedPage = page
+      func check() throws {
+        try deadline.check()
+        guard self.connection === connection, self.pages[key] === expectedPage else {
+          throw BrowserAutomationError.interrupted
+        }
+      }
+      if operation == "navigate" || operation == "open" && input["url"].string != nil {
+        let url = try navigationURL(input, environment: endpoint)
+        tab = try BrowserTab(
+          await connection.call(
+            "preview.navigate",
+            payload: .object([
+              "threadId": .string(thread), "tabId": .string(tab.id),
+              "url": .string(url.absoluteString),
+            ])))
+        try check()
+        page.receive(tab, navigate: true)
+        let readiness = input["readiness"].string ?? "load"
+        while readiness != "none" {
+          try check()
+          if let error = page.failure { throw T3Error(error) }
+          if readiness == "domContentLoaded", page.navigationCommitted {
+            let state = try await page.automation.query("ready", deadline: deadline).string
+            if state == "interactive" || state == "complete" { break }
+          } else if !page.navigationPending && !page.web.isLoading && page.web.url != nil
+            && page.web.url?.absoluteString != "about:blank"
+          {
+            break
+          }
+          try await Task.sleep(for: .milliseconds(40))
+        }
+      }
+      let result: JSON
+      switch operation {
+      case "open", "navigate", "status":
+        result = try await automationStatus(page, deadline: deadline)
+      case "resize":
+        let viewport = try automationViewport(input)
+        tab = try BrowserTab(
+          await connection.call(
+            "preview.resize",
+            payload: .object([
+              "threadId": .string(thread), "tabId": .string(tab.id), "viewport": viewport.json,
+            ])))
+        try check()
+        page.receive(tab)
+        let surface = shownPage === page ? host : automationSurfaces[key]?.viewport
+        surface?.setting = viewport
+        surface?.layoutSubtreeIfNeeded()
+        var measured = JSON.null
+        repeat {
+          try check()
+          measured = try await page.automation.query("viewport", deadline: deadline)
+          if viewport.width == nil
+            || measured["width"].int == viewport.width && measured["height"].int == viewport.height
+          {
+            break
+          }
+          try await Task.sleep(for: .milliseconds(40))
+        } while true
+        result = .object(["tabId": .string(tab.id), "setting": viewport.json, "viewport": measured])
+      case "setColorScheme":
+        let scheme = input["colorScheme"].string ?? "system"
+        guard ["system", "light", "dark"].contains(scheme) else {
+          throw T3Error("Unknown browser appearance.")
+        }
+        page.web.appearance =
+          scheme == "system" ? nil : NSAppearance(named: scheme == "dark" ? .darkAqua : .aqua)
+        result = .object(["tabId": .string(tab.id), "colorScheme": .string(scheme)])
+      case "snapshot":
+        let content = try await page.automation.run(operation, input: input, deadline: deadline)
+        try check()
+        let file = try await page.capture()
+        defer { try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
+        try check()
+        let data = try Data(contentsOf: file)
+        guard data.count <= 16 * 1024 * 1024 else {
+          throw BrowserAutomationError(
+            "PreviewAutomationResultTooLargeError",
+            "The browser screenshot is too large. Reduce the viewport and retry.")
+        }
+        guard case .object(var fields) = content, let image = NSBitmapImageRep(data: data) else {
+          throw T3Error("Could not capture the browser.")
+        }
+        fields["screenshot"] = .object([
+          "mimeType": .string("image/png"), "data": .string(data.base64EncodedString()),
+          "width": .number(Double(image.pixelsWide)), "height": .number(Double(image.pixelsHigh)),
+        ])
+        fields["actionTimeline"] = .array(page.automation.actions)
+        result = .object(fields)
+      default: result = try await page.automation.run(operation, input: input, deadline: deadline)
+      }
+      try check()
+      page.automation.record(operation, status: "succeeded", id: id, started: started)
+      render()
+      return result
+    } catch {
+      page.automation.record(
+        operation, status: error is CancellationError ? "interrupted" : "failed", id: id,
+        started: started, error: error.localizedDescription)
+      throw error
+    }
+  }
+
+  private func automationStatus(_ page: BrowserPage, deadline: BrowserAutomationDeadline)
+    async throws -> JSON
+  {
+    var status: [String: JSON] = [
+      "available": .bool(true),
+      "visible": .bool(page.web.window?.isVisible == true && !page.web.isHidden),
+      "tabId": .string(page.tabID),
+      "url": page.displayedURL.map { .string($0.absoluteString) } ?? .null,
+      "title": page.web.title.map(JSON.string) ?? .null, "loading": .bool(page.web.isLoading),
+      "viewportSetting": page.snapshot.viewport,
+    ]
+    if page.web.url != nil {
+      status["viewport"] = try await page.automation.query("viewport", deadline: deadline)
+    }
+    return .object(status)
+  }
+  private func navigationURL(_ input: JSON, environment: URL) throws -> URL {
+    let target = input["target"]
+    let raw: String
+    if target["kind"].string == "environment-port" {
+      let port = try target.requiredInt("port")
+      guard (1...65535).contains(port) else { throw T3Error("Invalid local-server port.") }
+      let path = target["path"].string ?? "/"
+      raw =
+        (target["protocol"].string ?? "http") + "://localhost:\(port)"
+        + (path.hasPrefix("/") ? path : "/" + path)
+    } else {
+      raw = try (target["kind"].string == "url" ? target : input).requiredString("url")
+    }
+    return try BrowserURL.resolve(BrowserURL.normalize(raw), environment: environment)
+  }
+  private func automationViewport(_ input: JSON) throws -> BrowserViewport {
+    switch input["mode"].string {
+    case "fill": return .fill
+    case "freeform":
+      return try BrowserViewport(
+        width: input.requiredInt("width"), height: input.requiredInt("height"))
+    case "preset":
+      guard
+        var viewport = BrowserDevicePreset.all.first(where: { $0.id == input["preset"].string })?
+          .viewport
+      else { throw T3Error("Unknown device preset.") }
+      if let orientation = input["orientation"].string,
+        (orientation == "landscape") != (viewport.width! > viewport.height!)
+      {
+        viewport = viewport.rotated
+      }
+      return viewport
+    default: throw T3Error("Unknown viewport mode.")
     }
   }
 }

@@ -3,11 +3,13 @@ set -euo pipefail
 [[ "$(uname -m)" == arm64 ]] || { echo 'T3 Native requires Apple Silicon.' >&2; exit 1; }
 macos_root="$(cd "$(dirname "$0")" && pwd)"
 (cd "$macos_root/Vendor" && shasum -a 256 --check GHOSTTY_SHA256)
+(cd "$macos_root" && shasum -a 256 --check Vendor/PLAYWRIGHT_SHA256)
 swift build --package-path "$macos_root" -c release
 binary_dir="$(swift build --package-path "$macos_root" -c release --show-bin-path)"
 bundle="${1:-$macos_root/.build/T3 Native.app}"
 mkdir -p "$bundle/Contents/MacOS" "$bundle/Contents/Resources/Licenses"
 cp -f "$macos_root"/Licenses/* "$bundle/Contents/Resources/Licenses/"
+cp -R "$binary_dir/T3Native_T3Native.bundle" "$bundle/Contents/Resources/"
 cp "$binary_dir/T3Native" "$bundle/Contents/MacOS/T3Native"
 cat > "$bundle/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>

@@ -6,6 +6,7 @@ import WebKit
 @MainActor final class BrowserPage: NSObject, WKNavigationDelegate, WKUIDelegate {
   let web: WKWebView
   let picker: BrowserElementPicker
+  let automation: BrowserAutomationPage
   let tabID: String
   let threadID: String
   let environment: URL
@@ -24,6 +25,8 @@ import WebKit
   private var retryURL: URL?
   private var requestedURL: URL?
   private var started = false
+  private(set) var navigationPending = false
+  private(set) var navigationCommitted = false
   var displayedURL: URL? { failure == nil ? web.url ?? snapshot.url : retryURL ?? snapshot.url }
 
   init(tab: BrowserTab, environment: URL, connection: RPCConnection, dataStore: WKWebsiteDataStore)
@@ -38,6 +41,7 @@ import WebKit
     configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
     web = WKWebView(frame: .zero, configuration: configuration)
     picker = BrowserElementPicker(web: web)
+    automation = BrowserAutomationPage(web: web)
     super.init()
     web.navigationDelegate = self
     web.uiDelegate = self
@@ -92,6 +96,7 @@ import WebKit
 
   func dispose() {
     picker.dispose()
+    automation.invalidate()
     web.stopLoading()
     web.navigationDelegate = nil
     web.uiDelegate = nil
@@ -108,6 +113,8 @@ import WebKit
       }
     } else {
       requestedURL = web.url
+      navigationPending = true
+      navigationCommitted = false
       if hard { web.reloadFromOrigin() } else { web.reload() }
     }
     onChange?()
@@ -115,6 +122,8 @@ import WebKit
 
   private func load(_ url: URL) {
     requestedURL = url
+    navigationPending = true
+    navigationCommitted = false
     failure = nil
     if web.load(URLRequest(url: url)) == nil { rejectedNavigation(url) }
   }
@@ -147,12 +156,20 @@ import WebKit
   }
 
   func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+    navigationPending = true
+    navigationCommitted = false
     picker.cancel()
+    automation.invalidate()
     failure = nil
     retryURL = nil
     onChange?()
   }
+  func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+    automation.invalidate()
+    navigationCommitted = true
+  }
   func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+    navigationPending = false
     if webView.url?.absoluteString == "about:blank", let requestedURL,
       ["http", "https"].contains(requestedURL.scheme ?? "")
     {
@@ -171,11 +188,14 @@ import WebKit
     withError error: any Error
   ) { failed(error) }
   func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+    navigationPending = false
+    automation.invalidate()
     failure = "This page’s web process stopped. Reload to restore it."
     onChange?()
   }
   private func failed(_ error: any Error) {
     guard (error as NSError).code != NSURLErrorCancelled else { return }
+    navigationPending = false
     requestedURL = nil
     failure = error.localizedDescription
     retryURL = (error as NSError).userInfo[NSURLErrorFailingURLErrorKey] as? URL ?? serverURL

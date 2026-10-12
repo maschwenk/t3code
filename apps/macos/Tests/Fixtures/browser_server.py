@@ -10,6 +10,7 @@ input,button{{font:inherit;padding:10px;margin:12px 0}} main{{max-width:600px}}<
 <label>Draft <input id=draft placeholder="Keep this while switching tabs"></label><br>
 <a id=next href=/two>Go to page two</a><br><br>
 <a id=popup href=/two target=_blank>Open page two in a new tab</a><br><br>
+<button id=trusted onclick="window.trustedClick=event.isTrusted">Trusted click</button><br>
 <button id=spa onclick="history.pushState(null,'','/one?step=2');document.title='Browser fixture SPA'">Change route without reload</button><br>
 <button onclick="document.cookie='fixture=shared; path=/';document.getElementById('cookie').textContent=document.cookie">Set test cookie</button>
 <p id=cookie></p><label>Upload fixture <input type=file></label>

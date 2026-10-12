@@ -60,6 +60,7 @@ import T3Core
   var onChange: (() -> Void)?
   private var connection: RPCConnection?
   var terminalConnection: RPCConnection? { ready ? connection : nil }
+  private(set) var browserEnvironmentID: String?
   var browserConnection: RPCConnection? { ready ? connection : nil }
   var browserEndpoint: URL? { ready ? settings?.endpoint : nil }
   private var settings: ConnectionSettings?
@@ -152,6 +153,7 @@ import T3Core
         let connection = RPCConnection(settings: settings)
         usageSessionID = UUID()
         usageLimits = UsageLimitsSnapshot()
+        browserEnvironmentID = nil
         self.connection = connection
         let started = Date()
         do {
@@ -412,7 +414,10 @@ import T3Core
           guard self.generation == generation else { return }
           try catalog.apply(event)
           usageLimits.apply(event)
-          if event["type"].string == "snapshot" { catalogReady = true }
+          if event["type"].string == "snapshot" {
+            browserEnvironmentID = event["config"]["environment"]["environmentId"].string
+            catalogReady = true
+          }
           startAttachmentUploads()
           notify()
         }

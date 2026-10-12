@@ -160,8 +160,19 @@ the browser still uses macOS WebKit, without mobile user-agent or touch emulatio
 Select an element with the pointer button to add its URL, selector and HTML to the
 message draft. Escape cancels; selected links do not navigate. Selection currently
 covers the main document and open shadow roots. Rich annotations, React source
-attribution, frame selection, downloads, agent browser automation and profile
-management remain incomplete. Provider setup and T3 Connect account/relay discovery remain in the
+attribution, frame selection, downloads and profile management remain incomplete.
+
+Agents can open, navigate, inspect, click, type, press keys, scroll and resize the
+native browser through T3's existing browser tools. Background actions preserve
+the selected conversation and its browser state; an agent can show a separate
+preview window. Stop agent in the browser, or View → Pause Agent Browser, pauses
+browser control and cancels queued actions. Resume Agent Browser enables it again.
+This does not stop the agent's other work or page scripts already running.
+Snapshots include a screenshot, accessible page tree, interactive elements and
+action history. Console/network diagnostics, recordings, cross-frame locators
+and remote JavaScript object handles remain incomplete.
+
+Provider setup and T3 Connect account/relay discovery remain in the
 existing app. Markdown supports native headings,
 lists, task lists, quotes, code blocks, tables, and selectable links. Copy-message
 actions preserve the original Markdown; code blocks have a Copy code context action.
@@ -178,6 +189,9 @@ Xcode Metal toolchain (`xcodebuild -downloadComponent MetalToolchain`) and run
 Ghostty revision in `Vendor/GHOSTTY_VERSION`, with crash reporting disabled.
 Dependency notices ship in the app's Resources/Licenses directory. To rebuild
 with modified dependency sources, pass `GHOSTTY_ALLOW_LOCAL_CHANGES=1` to that script.
+The browser selector engine is vendored from the desktop's pinned Playwright
+version and verified when packaging. After installing workspace dependencies,
+`node apps/macos/update-playwright.mjs` regenerates it with its notices and checksum.
 
 ```sh
 swift test --package-path apps/macos
@@ -277,12 +291,17 @@ and verifies the server's run/checkpoint history remains unchanged.
 
 For browser verification, run `python3 apps/macos/Tests/Fixtures/browser_server.py`
 and use its printed URL with `--parity-smoke --browser-smoke --browser-fixture URL`,
-the private connection file, and an isolated sandbox project. This creates a
+the private connection file, and an isolated sandbox project. This creates
 verification threads, loads real HTTP pages in WebKit, and checks server status
 echoes, SPA form state, history, popups and PNG capture. It also checks discovered
 server buttons, panel sizing, conversation/hide state retention and private-cookie
-isolation, then closes its test tabs. It sends no inference. Stop the fixture
-server with its captured PID after verification.
+isolation, trusted agent input, selectors, redirects, hidden screenshots and
+conversation isolation, then closes its test tabs. For broker verification, also
+run `node apps/macos/Tests/Fixtures/browser_broker.mjs /private/path/broker.json`
+and pass `--browser-broker-fixture /private/path/broker.json` to the same smoke.
+That fixture uses the real broker with a local RPC adapter to check routing,
+ordered actions, cancellation, pause/resume and reconnects. These checks send no
+inference. Stop both fixture servers with their captured PIDs after verification.
 
 ## Measure
 

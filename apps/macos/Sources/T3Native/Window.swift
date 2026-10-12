@@ -257,6 +257,12 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     browserItem.canCollapse = true
     browserItem.isCollapsed = true
     self.browserItem = browserItem
+    browser.onAgentReveal = { [weak self] in
+      guard let self, browserItem.isCollapsed, !showingUsage else { return }
+      let responder = window.firstResponder
+      toggleBrowser()
+      window.makeFirstResponder(responder)
+    }
     browser.onContextAdded = { [weak self] in
       self?.centerItem?.isCollapsed = false
       self?.window?.makeFirstResponder(self?.composer)
@@ -464,6 +470,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
       (view, "Toggle Browser", #selector(toggleBrowser), "b", [.command, .shift]),
       (view, "Browser Address", #selector(browserAddress), "l", [.command]),
       (view, "New Browser Tab", #selector(newBrowserTab), "t", [.command]),
+      (view, "Pause Agent Browser", #selector(toggleAgentBrowser), "", []),
     ] {
       let item = parent.addItem(withTitle: title, action: action, keyEquivalent: key)
       item.keyEquivalentModifierMask = modifiers
@@ -477,6 +484,10 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
   }
 
   func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+    if menuItem.action == #selector(toggleAgentBrowser) {
+      menuItem.title = browser.agentPaused ? "Resume Agent Browser" : "Pause Agent Browser"
+      return store.ready
+    }
     if menuItem.action == #selector(togglePlanModeEnabled) {
       menuItem.state = store.catalog.planModeEnabled ? .on : .off
       return true
@@ -614,6 +625,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     if browserItem?.isCollapsed == true { toggleBrowser() }
     browser.newTab()
   }
+  @objc private func toggleAgentBrowser() { browser.toggleAgentControl() }
   private func openMarkdownLink(_ url: URL, at location: WorkspaceLocation?) {
     if url.isFileURL {
       guard let location, store.workspaceLocation == location else { return }

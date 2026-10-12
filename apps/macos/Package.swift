@@ -13,6 +13,7 @@ let package = Package(
       name: "T3Markdown", dependencies: [.product(name: "Markdown", package: "swift-markdown")]),
     .executableTarget(
       name: "T3Native", dependencies: ["T3Core", "T3Markdown", "GhosttyKit"],
+      resources: [.copy("Resources")],
       linkerSettings: [.linkedLibrary("c++"), .linkedFramework("Carbon")]),
     .testTarget(name: "T3CoreTests", dependencies: ["T3Core"]),
     .testTarget(name: "T3MarkdownTests", dependencies: ["T3Markdown"]),
