@@ -127,7 +127,7 @@ final class SidebarView: NSStackView, NSTableViewDataSource, NSTableViewDelegate
     message.textColor = .secondaryLabelColor
     usageButton.setAccessibilityLabel("Usage")
     newButton.setAccessibilityLabel("New thread")
-    newButton.toolTip = "New thread in the selected project, using the same model (⌘N)"
+    newButton.toolTip = "New thread using the current thread’s project and model (⌘N)"
     backButton.image = NSImage(systemSymbolName: "arrow.left", accessibilityDescription: nil)
     backButton.imagePosition = .imageLeading
     backButton.setAccessibilityLabel("Back to conversation")
@@ -149,7 +149,7 @@ final class SidebarView: NSStackView, NSTableViewDataSource, NSTableViewDelegate
 
   required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-  func refresh() {
+  func refresh(revealSelection: Bool = false) {
     let now = Date()
     let projectNames = store.shell.projects.merging(store.archives.projects) { current, _ in current
     }
@@ -237,7 +237,7 @@ final class SidebarView: NSStackView, NSTableViewDataSource, NSTableViewDelegate
       if table.selectedRow != index {
         table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
       }
-      if searchCandidate == nil && lastSelectedID != store.selectedID {
+      if searchCandidate == nil && (revealSelection || lastSelectedID != store.selectedID) {
         table.scrollRowToVisible(index)
       }
     } else {
@@ -353,7 +353,7 @@ final class SidebarView: NSStackView, NSTableViewDataSource, NSTableViewDelegate
   }
   func controlTextDidChange(_ obj: Notification) {
     searchCandidate = nil
-    refresh()
+    refresh(revealSelection: search.stringValue.isEmpty)
   }
   func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector)
     -> Bool
@@ -382,14 +382,14 @@ final class SidebarView: NSStackView, NSTableViewDataSource, NSTableViewDelegate
       search.stringValue = ""
       searchCandidate = nil
       store.select(id)
-      refresh()
+      refresh(revealSelection: true)
       onThreadChosen?()
       return true
     case #selector(NSResponder.cancelOperation(_:)):
       guard !search.stringValue.isEmpty else { return false }
       search.stringValue = ""
       searchCandidate = nil
-      refresh()
+      refresh(revealSelection: true)
       return true
     default: return false
     }
@@ -407,7 +407,7 @@ final class SidebarView: NSStackView, NSTableViewDataSource, NSTableViewDelegate
       let item = ActionMenuItem(name) { [weak self] in
         self?.projectID = id
         self?.searchCandidate = nil
-        self?.refresh()
+        self?.refresh(revealSelection: true)
       }
       item.state = projectID == id ? .on : .off
       menu.addItem(item)
