@@ -45,6 +45,19 @@ app.on("browser-window-created", (_event, window) => {
 });
 const observedSessions = new Set();
 app.on("web-contents-created", (_event, contents) => {
+  if (contents.getType() === "webview" && process.env.T3_CHROMIUM_FIXTURE_MOTION) {
+    const motion = process.env.T3_CHROMIUM_FIXTURE_MOTION;
+    if (!["no-preference", "reduce"].includes(motion))
+      throw new Error("Invalid fixture motion preference.");
+    contents.on("dom-ready", () => {
+      if (!contents.debugger.isAttached()) contents.debugger.attach("1.3");
+      void contents.debugger
+        .sendCommand("Emulation.setEmulatedMedia", {
+          features: [{ name: "prefers-reduced-motion", value: motion }],
+        })
+        .catch((error) => console.error("Fixture media emulation:", error));
+    });
+  }
   if (!observedSessions.has(contents.session)) {
     observedSessions.add(contents.session);
     contents.session.serviceWorkers.on("console-message", (_event, details) => {

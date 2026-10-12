@@ -106,10 +106,10 @@ async function publish(page) {
   page.window.webContents.send("t3-native-browser-state", value);
   send({ event: "page", value });
 }
-function interrupt(page) {
+function interrupt(page, reason = "Browser control was interrupted.") {
   page.revision++;
   page.expectedInputs = [];
-  for (const control of page.controls ?? []) control.cancel();
+  for (const control of page.controls ?? []) control.cancel(reason);
   releaseInputs(page);
   page.agentDriven = false;
   if (page.guest && !page.guest.isDestroyed())
@@ -260,12 +260,13 @@ async function createPageOwned(input, id, initialURL) {
           page.expectedInputs.splice(expected, 1);
           return;
         }
-        interrupt(page);
+        interrupt(page, "Browser control was interrupted by manual " + signal.kind + " input.");
       });
       guest.on("did-start-navigation", (details) => {
         if (details.isMainFrame) {
           page.documentRevision++;
-          for (const control of page.controls) if (!control.allowNavigation) control.cancel();
+          for (const control of page.controls)
+            if (!control.allowNavigation) control.cancel("The browser document changed.");
           releaseInputs(page);
           void isolated(page, "globalThis.__t3AgentCursor?.hide()").catch(() => {});
         }
@@ -430,11 +431,11 @@ async function automate(page, operation, input, timeout = 60000) {
   void interrupted.catch(() => {});
   const control = {
     allowNavigation: operation === "navigate",
-    cancel: () =>
+    cancel: (reason) =>
       rejectControl(
         fail(
           "PreviewAutomationControlInterruptedError",
-          "Browser control or document was interrupted.",
+          reason ?? "Browser control was interrupted.",
         ),
       ),
   };

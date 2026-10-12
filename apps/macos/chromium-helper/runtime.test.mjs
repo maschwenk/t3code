@@ -28,7 +28,7 @@ async function until(read, accept, timeout = 10000) {
   throw Error("Fixture milestone timed out");
 }
 class Helper {
-  constructor(app, home, evidence) {
+  constructor(app, home, evidence, motion) {
     this.token = NodeCrypto.randomBytes(32).toString("hex");
     this.events = [];
     this.pending = new Map();
@@ -41,6 +41,7 @@ class Helper {
       T3_CHROMIUM_STATE: NodePath.join(home, "Library/Application Support/T3Native/Chromium"),
       T3_CHROMIUM_TOKEN: this.token,
       T3_CHROMIUM_FIXTURE_EVIDENCE: evidence,
+      T3_CHROMIUM_FIXTURE_MOTION: motion ?? "",
     };
     delete environment.ELECTRON_RUN_AS_NODE;
     delete environment.NODE_OPTIONS;
@@ -129,6 +130,53 @@ class Helper {
     await NodeFSP.writeFile(log, this.errors);
   }
 }
+async function observedApp(root) {
+  const app = NodePath.join(root, "T3 Browser.app");
+  await NodeFSP.cp(supplied, app, {
+    recursive: true,
+    dereference: false,
+    verbatimSymlinks: true,
+  });
+  const assets = NodePath.join(app, "Contents/Resources/app");
+  // A copy retains the exact signed product main/preloads/frameworks. Its test
+  // entry observes genuine Electron windows and hides UI; no extension API stub.
+  NodeAssert.deepEqual(
+    await NodeFSP.readFile(NodePath.join(assets, "main.mjs")),
+    await NodeFSP.readFile(NodePath.join(supplied, "Contents/Resources/app/main.mjs")),
+  );
+  await NodeFSP.cp(
+    NodePath.join(NodePath.dirname(NodeURL.fileURLToPath(import.meta.url)), "runtime-observer.mjs"),
+    NodePath.join(assets, "runtime-observer.mjs"),
+  );
+  const metadata = JSON.parse(
+    await NodeFSP.readFile(NodePath.join(assets, "package.json"), "utf8"),
+  );
+  metadata.main = "runtime-observer.mjs";
+  await NodeFSP.writeFile(NodePath.join(assets, "package.json"), JSON.stringify(metadata));
+  const entitlements = NodePath.join(root, "fixture-entitlements.plist");
+  await NodeFSP.writeFile(
+    entitlements,
+    NodeChildProcess.execFileSync("/usr/bin/codesign", ["-d", "--entitlements", ":-", supplied], {
+      stdio: "pipe",
+    }),
+  );
+  NodeChildProcess.execFileSync(
+    "/usr/bin/codesign",
+    [
+      "--force",
+      "--sign",
+      process.env.T3_CHROMIUM_TEST_SIGN_IDENTITY ?? "-",
+      "--options",
+      "runtime",
+      "--entitlements",
+      entitlements,
+      app,
+    ],
+    { stdio: "pipe" },
+  );
+  NodeChildProcess.execFileSync("/usr/bin/codesign", ["--verify", "--deep", "--strict", app]);
+  return app;
+}
 NodeTest.test(
   "signed isolated Chromium: actual pages, cancellation, navigation identity, cursor, downloads and persistence",
   { skip: !supplied, timeout: 180000 },
@@ -168,7 +216,8 @@ NodeTest.test(
     server.listen(0, "127.0.0.1");
     await NodeEvents.once(server, "listening");
     const origin = "http://127.0.0.1:" + server.address().port;
-    let helper = new Helper(supplied, home, root);
+    const app = await observedApp(root);
+    let helper = new Helper(app, home, root, "no-preference");
     try {
       await helper.ready();
       await t.test("concurrent opens share one real native window", async () => {
@@ -178,10 +227,26 @@ NodeTest.test(
         NodeAssert.equal(new Set(results.map((result) => result.windowId)).size, 1);
         NodeAssert.equal(results[0].visible, false);
         await helper.action("navigate", { url: origin });
+        await until(
+          () =>
+            helper.action("evaluate", {
+              expression: 'matchMedia("(prefers-reduced-motion: no-preference)").matches',
+            }),
+          Boolean,
+        );
+        t.diagnostic("finite animation fixture: actual Chromium media preference is no-preference");
       });
       await t.test(
         "real scrolled clipped zoomed target receives trusted input and cursor survives PNG capture",
         async () => {
+          t.diagnostic(
+            JSON.stringify(
+              await helper.action("evaluate", {
+                expression:
+                  '({reducedMotion:matchMedia("(prefers-reduced-motion:reduce)").matches,deviceScale:devicePixelRatio,ready:document.readyState})',
+              }),
+            ),
+          );
           await helper.rpc("zoom", { ...context, factor: 1.5 });
           await helper.action("click", { selector: "#target" });
           const actual = await helper.action("evaluate", {
@@ -212,18 +277,22 @@ NodeTest.test(
       await t.test(
         "Stop during an actual finite cursor move prevents input and hides stale overlay",
         async () => {
+          const clickedBefore = await helper.action("evaluate", { expression: "clicked" });
           const pending = helper.action("click", { selector: "#target" }).then(
             () => null,
             (error) => error,
           );
           await until(
             () => helper.action("status"),
-            (status) => status.agentCursor?.inFlight === true,
+            (status) => status.agentCursor?.inFlight === true && status.agentCursor.animations > 0,
           );
           await helper.rpc("stop", context);
           const error = await pending;
           NodeAssert.equal(error?.tag, "PreviewAutomationControlInterruptedError");
-          NodeAssert.equal(await helper.action("evaluate", { expression: "clicked" }), 1);
+          NodeAssert.equal(
+            await helper.action("evaluate", { expression: "clicked" }),
+            clickedBefore,
+          );
           NodeAssert.equal((await helper.action("status")).agentCursor.visible, false);
         },
       );
@@ -257,7 +326,7 @@ NodeTest.test(
           });
           await helper.stop();
           await helper.cleanup(NodePath.join(root, "first.stderr.log"));
-          helper = new Helper(supplied, home, root);
+          helper = new Helper(app, home, root, "no-preference");
           await helper.ready();
           await helper.rpc("open", { ...context, url: origin });
           await helper.action("navigate", { url: origin });
@@ -353,55 +422,9 @@ NodeTest.test(
       await NodeFSP.mkdtemp("/tmp/t3-native-evidence/chromium-extension-"),
     );
     t.diagnostic("evidence: " + root);
-    const app = NodePath.join(root, "T3 Browser.app"),
+    const app = await observedApp(root),
       home = NodePath.join(root, "home");
     await NodeFSP.mkdir(home);
-    await NodeFSP.cp(supplied, app, {
-      recursive: true,
-      dereference: false,
-      verbatimSymlinks: true,
-    });
-    const assets = NodePath.join(app, "Contents/Resources/app");
-    // A copy retains the exact signed product main/preloads/frameworks. Its test
-    // entry observes genuine Electron windows and hides UI; no extension API stub.
-    NodeAssert.deepEqual(
-      await NodeFSP.readFile(NodePath.join(assets, "main.mjs")),
-      await NodeFSP.readFile(NodePath.join(supplied, "Contents/Resources/app/main.mjs")),
-    );
-    await NodeFSP.cp(
-      NodePath.join(
-        NodePath.dirname(NodeURL.fileURLToPath(import.meta.url)),
-        "runtime-observer.mjs",
-      ),
-      NodePath.join(assets, "runtime-observer.mjs"),
-    );
-    const metadata = JSON.parse(
-      await NodeFSP.readFile(NodePath.join(assets, "package.json"), "utf8"),
-    );
-    metadata.main = "runtime-observer.mjs";
-    await NodeFSP.writeFile(NodePath.join(assets, "package.json"), JSON.stringify(metadata));
-    const entitlements = NodePath.join(root, "fixture-entitlements.plist");
-    await NodeFSP.writeFile(
-      entitlements,
-      NodeChildProcess.execFileSync("/usr/bin/codesign", ["-d", "--entitlements", ":-", supplied], {
-        stdio: "pipe",
-      }),
-    );
-    NodeChildProcess.execFileSync(
-      "/usr/bin/codesign",
-      [
-        "--force",
-        "--sign",
-        process.env.T3_CHROMIUM_TEST_SIGN_IDENTITY ?? "-",
-        "--options",
-        "runtime",
-        "--entitlements",
-        entitlements,
-        app,
-      ],
-      { stdio: "pipe" },
-    );
-    NodeChildProcess.execFileSync("/usr/bin/codesign", ["--verify", "--deep", "--strict", app]);
     let helper = new Helper(app, home, NodePath.join(root, "first"));
     try {
       await helper.ready();

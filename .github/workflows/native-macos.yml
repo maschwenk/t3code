@@ -50,3 +50,15 @@ jobs:
         env:
           T3_NATIVE_SMOKE_RESOURCES: ${{ github.workspace }}/apps/macos/.build/T3 Native.app/Contents/Resources
         run: swift test --package-path apps/macos --filter BackendRuntimeSmokeTests
+      - name: Preserve failed browser fixture evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-browser-fixture-evidence
+          if-no-files-found: ignore
+          path: |
+            /tmp/t3-native-evidence/chromium-runtime-*/*.stderr.log
+            /tmp/t3-native-evidence/chromium-runtime-*/cursor.png
+            /tmp/t3-native-evidence/chromium-extension-*/result.json
+            /tmp/t3-native-evidence/chromium-extension-*/first/extension-ui.json
+            /tmp/t3-native-evidence/chromium-extension-*/restart/extension-ui.json
