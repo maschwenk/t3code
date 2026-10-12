@@ -31,12 +31,12 @@ app.on("browser-window-created", (_event, window) => {
         opacity: window.getOpacity(),
       };
       await NodeFSP.writeFile(
-        NodePath.join(evidence, "popup.json"),
+        NodePath.join(evidence, "extension-ui.json"),
         JSON.stringify(report, null, 2),
       );
       try {
         const image = await contents.capturePage();
-        await NodeFSP.writeFile(NodePath.join(evidence, "popup.png"), image.toPNG());
+        await NodeFSP.writeFile(NodePath.join(evidence, "extension-ui.png"), image.toPNG());
       } catch (error) {
         await NodeFSP.writeFile(NodePath.join(evidence, "capture-limitation.txt"), String(error));
       }

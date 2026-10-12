@@ -785,6 +785,24 @@ async function command(method, input) {
     interrupt(page);
     if (page.profileId === "incognito")
       throw new Error("1Password is unavailable in private profiles.");
+    const revision = page.revision;
+    const password = (await extensions.list(page.guest.id)).find(
+      (extension) => extension.id === ONE_PASSWORD_ID,
+    );
+    check(page, revision);
+    if (!password?.enabled)
+      throw new Error("Install the 1Password extension in Browser Settings first.");
+    if (password.loadError) throw new Error(password.loadError);
+    const startupDeadline = Date.now() + 15000;
+    // 1Password chooses onboarding or its account popup after worker startup.
+    // Opening the manifest default earlier can leave a popup waiting forever.
+    while (!extensions.hasActionPopupOverride(page.guest.id, ONE_PASSWORD_ID)) {
+      check(page, revision);
+      if (Date.now() >= startupDeadline)
+        throw new Error("1Password is still initializing. Try opening it again.");
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    check(page, revision);
     const anchor = input.anchor ?? {
       x: page.window.getContentBounds().width - 300,
       y: 8,

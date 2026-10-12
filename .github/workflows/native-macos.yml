@@ -4,11 +4,17 @@ on:
   pull_request:
     paths:
       - apps/macos/**
+      - apps/desktop/src/preview/extensions/**
+      - apps/desktop/src/preview/BrowserSession.ts
+      - apps/desktop/src/preview-extension-preload.ts
       - .github/workflows/native-macos.yml
   push:
     branches: [main]
     paths:
       - apps/macos/**
+      - apps/desktop/src/preview/extensions/**
+      - apps/desktop/src/preview/BrowserSession.ts
+      - apps/desktop/src/preview-extension-preload.ts
       - .github/workflows/native-macos.yml
 
 permissions:
@@ -31,6 +37,7 @@ jobs:
             args:
               - --filter=t3...
               - --filter=@t3tools/desktop...
+              - --filter=@t3tools/scripts...
       - run: cp .env.example .env
       - run: node --test apps/macos/chromium-helper/*.test.mjs
       - run: swift test --package-path apps/macos

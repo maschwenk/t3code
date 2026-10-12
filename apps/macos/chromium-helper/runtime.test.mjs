@@ -332,7 +332,7 @@ NodeTest.test(
   },
 );
 NodeTest.test(
-  "official 1Password package and genuine popup document reload, with anonymous native-host limitations reported",
+  "official 1Password opens genuine anonymous onboarding on the first action and after restart",
   { skip: !supplied || !extensionTest, timeout: 180000 },
   async (t) => {
     // Never use the real user's extension/profile/host manifests. System 1Password
@@ -415,7 +415,7 @@ NodeTest.test(
       await helper.rpc("popup", context);
       const report = await until(
         () =>
-          NodeFSP.readFile(NodePath.join(root, "first/popup.json"), "utf8")
+          NodeFSP.readFile(NodePath.join(root, "first/extension-ui.json"), "utf8")
             .then(JSON.parse)
             .catch(() => null),
         Boolean,
@@ -423,10 +423,11 @@ NodeTest.test(
       );
       NodeAssert.match(report.url, /^chrome-extension:\/\/aeblfdkhhhdcdjpifhhbdiojplfjncoa\//);
       NodeAssert.equal(report.title, "1Password");
-      if (!report.uiReady)
-        NodeAssert.match(helper.errors, /Specified native messaging host not found/);
+      NodeAssert.equal(report.uiReady, true);
+      NodeAssert.match(report.url, /app\/app.html/);
+      NodeAssert.match(report.text, /Welcome to 1Password/);
       t.diagnostic(
-        "popup readiness: " +
+        "anonymous onboarding readiness: " +
           Boolean(report.uiReady) +
           "; isolated native host unavailable: " +
           helper.errors.includes("Specified native messaging host not found"),
@@ -444,15 +445,16 @@ NodeTest.test(
       await helper.rpc("popup", context);
       const reopened = await until(
         () =>
-          NodeFSP.readFile(NodePath.join(root, "restart/popup.json"), "utf8")
+          NodeFSP.readFile(NodePath.join(root, "restart/extension-ui.json"), "utf8")
             .then(JSON.parse)
             .catch(() => null),
         Boolean,
         20000,
       );
       NodeAssert.equal(reopened.title, "1Password");
-      if (!reopened.uiReady)
-        NodeAssert.match(helper.errors, /Specified native messaging host not found/);
+      NodeAssert.equal(reopened.uiReady, true);
+      NodeAssert.match(reopened.url, /app\/app.html/);
+      NodeAssert.match(reopened.text, /Welcome to 1Password/);
       await helper.stop();
       await NodeFSP.writeFile(
         NodePath.join(root, "result.json"),
@@ -460,8 +462,8 @@ NodeTest.test(
           {
             officialExtension: password.id,
             version: password.version,
-            popupDocument: true,
-            popupReady: Boolean(report.uiReady && reopened.uiReady),
+            onboardingDocument: true,
+            onboardingReady: Boolean(report.uiReady && reopened.uiReady),
             restart: true,
             actualVaultAutofill:
               "unverified: requires user-controlled sign-in/unlock or Add Browser trust",

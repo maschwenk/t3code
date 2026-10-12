@@ -204,7 +204,9 @@ or imported from a selected installed profile. Desktop unlock uses 1Password's
 [additional-browser setup](https://support.1password.com/additional-browsers/),
 which requires an Apple-signed browser in Applications and explicit user trust.
 The default ad-hoc development build does not satisfy that signing requirement.
-Actual vault unlock and autofill require user verification; the WebKit panel cannot
+The anonymous welcome screen is checked on the first action and after helper restart.
+The browser waits for 1Password to choose onboarding or its account popup before opening it.
+Actual account popup, vault unlock and autofill require user verification; the WebKit panel cannot
 run Chromium extensions. The two engines have separate cookie stores.
 
 The device toolbar offers the same viewport presets as Electron, rotation, and
