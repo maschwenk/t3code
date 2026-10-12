@@ -191,6 +191,6 @@ struct DraftBranchFetchState {
           .init(paletteColors: [.white]))) ?? image
     tinted.draw(
       in: rect.insetBy(dx: 7, dy: 7), from: .zero, operation: .sourceOver,
-      fraction: isEnabled ? 1 : 0.45)
+      fraction: isEnabled ? 1 : 0.45, respectFlipped: true, hints: nil)
   }
 }

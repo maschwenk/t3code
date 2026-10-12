@@ -26,6 +26,7 @@ public struct NewConversationDraft: Codable, Sendable, Equatable {
     try? ThreadSummary(
       .object([
         "id": .string(id), "projectId": project["id"], "title": .string("New conversation"),
+        "createdAt": .string(createdAt),
         "updatedAt": .string(createdAt), "modelSelection": model,
         "runtimeMode": .string(runtimeMode), "interactionMode": .string(interactionMode),
         "branch": branch.map(JSON.string) ?? .null,

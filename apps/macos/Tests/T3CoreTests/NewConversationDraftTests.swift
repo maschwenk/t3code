@@ -97,6 +97,20 @@ import Testing
     #expect(wire["initialMessage"]["delivery"] == .null)
   }
 
+  @Test func restoredUnsentConversationAppearsBeforeOlderActiveThreads() throws {
+    let draft = try JSONDecoder().decode(
+      NewConversationDraft.self, from: JSONEncoder().encode(conversation()))
+    let summary = try #require(draft.summary)
+    let older = try ThreadSummary(
+      json(
+        """
+        {"id":"older-thread","projectId":"project-native-draft","title":"Earlier conversation","createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"}
+        """))
+    let groups = ThreadGroup.resolve([older, summary], at: Date())
+    let active = try #require(groups.first { $0.section == .active })
+    #expect(active.threads.map(\.id) == [draft.id, older.id])
+  }
+
   @Test func worktreeLaunchUsesTheSelectedBranchAsBaseRefRatherThanTheNewBranchName() throws {
     var draft = try conversation(workspace: "worktree")
     draft.branch = "origin/release/native"

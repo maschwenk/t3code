@@ -111,11 +111,7 @@ import Testing
   withExtendedLifetime(host) {}
 }
 
-@MainActor @Test
-func nativeConversationDisconnectedModelRowsKeepEveryControlReachableAtCompactWidth() throws {
-  let directory = URL(
-    fileURLWithPath: "/tmp/t3-native-evidence/conversation-layout-" + UUID().uuidString)
-  defer { try? FileManager.default.removeItem(at: directory) }
+@MainActor private func conversationLayoutStore(directory: URL) throws -> ClientStore {
   let store = ClientStore(draftDirectory: directory)
   let thread: JSON = .object([
     "id": .string("layout-thread"), "projectId": .string("layout-project"),
@@ -141,6 +137,15 @@ func nativeConversationDisconnectedModelRowsKeepEveryControlReachableAtCompactWi
         {"type":"snapshot","config":{"providers":[{"instanceId":"codex","driver":"codex","enabled":true,"installed":true,"status":"ready","showInteractionModeToggle":true,"supportedRuntimeModes":["approval-required","full-access"],"models":[{"slug":"layout-model","name":"A provider model with a long display name","capabilities":{"optionDescriptors":[{"id":"effort","type":"select","label":"Reasoning","currentValue":"high","options":[{"id":"high","label":"High","isDefault":true}]}]}}]}],"settings":{}}}
         """#.utf8)))
   store.catalog.setPlanModeEnabled(true)
+  return store
+}
+
+@MainActor @Test
+func nativeConversationDisconnectedModelRowsKeepEveryControlReachableAtCompactWidth() throws {
+  let directory = URL(
+    fileURLWithPath: "/tmp/t3-native-evidence/conversation-layout-" + UUID().uuidString)
+  defer { try? FileManager.default.removeItem(at: directory) }
+  let store = try conversationLayoutStore(directory: directory)
   let controls = ComposerControls(store: store)
   controls.refresh()
   let host = conversationViewport(controls, width: 280, height: 32)
@@ -188,8 +193,14 @@ func nativeConversationDisconnectedModelRowsKeepEveryControlReachableAtCompactWi
     )
   }
   withExtendedLifetime(host) {}
+}
 
-  // Exercise the nested stack used by the composer, including fixed end controls.
+@MainActor @Test
+func nativeConversationWindowResizeRestoresComposerLabelsWithoutChildInvalidation() throws {
+  let directory = URL(
+    fileURLWithPath: "/tmp/t3-native-evidence/conversation-window-layout-" + UUID().uuidString)
+  defer { try? FileManager.default.removeItem(at: directory) }
+  let store = try conversationLayoutStore(directory: directory)
   let nestedControls = ComposerControls(store: store)
   nestedControls.refresh()
   let endButtons = ["paperclip", "stop.fill", "arrow.up.circle.fill", "chevron.down"].enumerated()
@@ -226,18 +237,37 @@ func nativeConversationDisconnectedModelRowsKeepEveryControlReachableAtCompactWi
     scroll.widthAnchor.constraint(equalTo: composer.widthAnchor),
     bottom.widthAnchor.constraint(equalTo: composer.widthAnchor),
   ])
-  let bottomHost = conversationViewport(surface, width: 880, height: 142)
+  _ = NSApplication.shared
+  let window = NSWindow(
+    contentRect: NSRect(x: 0, y: 0, width: 1187, height: 840),
+    styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+  window.isReleasedWhenClosed = false
+  defer { window.close() }
+  let content = try #require(window.contentView)
+  content.addSubview(surface)
+  surface.translatesAutoresizingMaskIntoConstraints = false
+  let preferredWidth = surface.widthAnchor.constraint(equalTo: content.widthAnchor, constant: -304)
+  preferredWidth.priority = .defaultHigh
+  NSLayoutConstraint.activate([
+    surface.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 280),
+    surface.trailingAnchor.constraint(lessThanOrEqualTo: content.trailingAnchor, constant: -24),
+    surface.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -16),
+    surface.heightAnchor.constraint(equalToConstant: 142),
+    surface.widthAnchor.constraint(lessThanOrEqualToConstant: 880),
+    preferredWidth,
+  ])
   let nestedViews = conversationDescendants(nestedControls).compactMap { $0 as? ComposerPill }
-  for width: CGFloat in [880, 372, 432, 880, 372, 880] {
-    bottomHost.setFrameSize(NSSize(width: width, height: 142))
-    bottomHost.layoutSubtreeIfNeeded()
+  for width: CGFloat in [1187, 900, 1187, 900, 1187] {
+    window.setContentSize(NSSize(width: width, height: width == 900 ? 720 : 839))
+    // Flush only AppKit's pending layout; do not invalidate the controls or their descendants.
+    window.layoutIfNeeded()
     let visible = conversationDescendants(nestedControls).compactMap { $0 as? ComposerPill }.filter
     { !$0.isHidden }
     #expect(
       Set(visible.compactMap { $0.accessibilityLabel() }).isSuperset(of: [
         "Model", "Reasoning", "Permissions",
       ]))
-    #expect(bottom.bounds.width == width - 32)
+    #expect(bottom.bounds.width == min(880, width - 304) - 32)
     #expect(scroll.bounds.width == bottom.bounds.width)
     var previousRect: NSRect?
     for button in visible + endButtons {
@@ -247,7 +277,7 @@ func nativeConversationDisconnectedModelRowsKeepEveryControlReachableAtCompactWi
       #expect(rect.width >= (endButtons.contains(button) ? 24 : 36))
       #expect(rect.minX >= -0.5 && rect.maxX <= bottom.bounds.maxX + 0.5)
     }
-    if width == 880 {
+    if width == 1187 {
       let model = try #require(visible.first { $0.accessibilityLabel() == "Model" })
       let reasoning = try #require(visible.first { $0.accessibilityLabel() == "Reasoning" })
       let permissions = try #require(visible.first { $0.accessibilityLabel() == "Permissions" })
@@ -260,13 +290,14 @@ func nativeConversationDisconnectedModelRowsKeepEveryControlReachableAtCompactWi
       #expect(reasoning.frame.width >= reasoning.intrinsicContentSize.width - 0.5)
       #expect(permissions.frame.width >= permissions.intrinsicContentSize.width - 0.5)
     } else {
+      #expect(visible.first { $0.accessibilityLabel() == "Model" }?.title == "Model  ⌄")
+      #expect(visible.first { $0.accessibilityLabel() == "Permissions" }?.title == "Access  ⌄")
       #expect(visible.contains { $0.accessibilityLabel() == "More conversation options" })
     }
     let currentViews = conversationDescendants(nestedControls).compactMap { $0 as? ComposerPill }
     #expect(
       Set(nestedViews.map(ObjectIdentifier.init)) == Set(currentViews.map(ObjectIdentifier.init)))
   }
-  withExtendedLifetime(bottomHost) {}
 }
 
 @Test func nativeConversationBranchFetchRetriesReadinessAndRejectsStaleSessions() {

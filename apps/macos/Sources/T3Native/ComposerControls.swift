@@ -235,6 +235,26 @@ import T3Core
     needsLayout = true
   }
 
+  override func viewDidMoveToSuperview() {
+    super.viewDidMoveToSuperview()
+    for name in [NSView.frameDidChangeNotification, NSView.boundsDidChangeNotification] {
+      NotificationCenter.default.removeObserver(self, name: name, object: nil)
+    }
+    guard let row = superview as? NSStackView else { return }
+    row.postsFrameChangedNotifications = true
+    row.postsBoundsChangedNotifications = true
+    for name in [NSView.frameDidChangeNotification, NSView.boundsDidChangeNotification] {
+      NotificationCenter.default.addObserver(
+        self, selector: #selector(rowGeometryChanged), name: name, object: row)
+    }
+    needsLayout = true
+  }
+
+  @objc private func rowGeometryChanged(_ notification: Notification) {
+    // The spacer can absorb a resize without changing our frame.
+    needsLayout = true
+  }
+
   override func layout() {
     adaptLayout()
     super.layout()
