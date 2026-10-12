@@ -414,6 +414,10 @@ final class SidebarView: NSStackView, NSTableViewDataSource, NSTableViewDelegate
   func selectProject(_ id: String) {
     projectID = id
     pendingProjectID = id
+    clearSearch()
+  }
+
+  func clearSearch() {
     search.stringValue = ""
     searchCandidate = nil
     refresh(revealSelection: true)

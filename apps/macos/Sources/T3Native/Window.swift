@@ -1258,6 +1258,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
   @objc private func older() { store.loadOlder() }
   @objc private func newThread() {
     showConversation()
+    sidebar.clearSearch()
     if sidebar.selectedProjectID == nil, store.selectedThread == nil,
       store.catalog.scratchWorkspaceRoot == nil
     {

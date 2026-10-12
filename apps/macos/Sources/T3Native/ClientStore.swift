@@ -1753,7 +1753,10 @@ import T3Core
         _ = try await projectCall(
           "orchestration.dispatchCommand", payload: command, session: session)
         pendingNewThread = nil
-        if selectionGeneration == selection { select(try command.requiredString("threadId")) }
+        if selectionGeneration == selection {
+          showingArchives = false
+          select(try command.requiredString("threadId"))
+        }
         error = warning
       } catch {
         guard session == projectSessionID else { return }

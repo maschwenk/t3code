@@ -25,10 +25,12 @@ import T3Core
       throw T3Error("Opening a folder duplicated its project.")
     }
     store.selectedID = nil
+    store.showArchives(true)
     store.newThread(project: project)
     store.newThread(project: project)
     try await ParitySmoke.waitForStore(store) { !store.creatingThread && store.canEditThread }
-    guard let first = store.selectedThread, first.projectID == project["id"].string,
+    guard let first = store.selectedThread, !store.showingArchives,
+      first.projectID == project["id"].string,
       first.worktreePath == nil,
       first.runtimeMode == store.catalog.defaultRuntimeMode(projectID: first.projectID),
       store.shell.threads.values.filter({ $0.projectID == first.projectID }).count == 1
