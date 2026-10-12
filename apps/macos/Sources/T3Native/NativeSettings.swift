@@ -465,7 +465,7 @@ private struct NativeSettingsPages: View {
         toggleRow(
           "Settle after merging", detail: "Settle eligible threads when their pull request merges",
           key: "sidebarAutoSettleOnMerge", patch: NativeServerSettingsPatch.settleOnMerge)
-        row("Settle inthreads in sidebar", detail: "Days since the last activity") {
+        row("Settle inactive threads", detail: "Days since the last activity") {
           HStack(spacing: 8) {
             Toggle(
               "Enable automatic settling",

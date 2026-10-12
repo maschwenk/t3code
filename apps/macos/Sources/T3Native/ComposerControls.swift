@@ -242,7 +242,17 @@ import T3Core
 
   private func adaptLayout() {
     guard !presentations.isEmpty else { return }
-    let available = bounds.width
+    var available = bounds.width
+    if let row = superview as? NSStackView, row.orientation == .horizontal,
+      row.arrangedSubviews.contains(self)
+    {
+      // Use the row's budget: our intrinsic width shrinks when labels hide, while its spacer grows.
+      let siblings = row.arrangedSubviews.filter { $0 !== self && !$0.isHidden }
+      available =
+        row.bounds.width - row.edgeInsets.left - row.edgeInsets.right
+        - siblings.reduce(0) { $0 + max(0, $1.fittingSize.width) }
+        - CGFloat(siblings.count) * row.spacing
+    }
     let mode = available <= 0 || available >= fullWidth ? 0 : available >= compactWidth ? 1 : 2
     guard mode != layoutMode else { return }
     layoutMode = mode

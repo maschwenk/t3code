@@ -451,6 +451,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     composerScroll.borderType = .noBorder
     composerScroll.drawsBackground = false
     composerScroll.hasVerticalScroller = true
+    composerScroll.autohidesScrollers = true
     composerScroll.documentView = composer
     composer.isRichText = false
     composer.drawsBackground = false

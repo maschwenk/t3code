@@ -203,10 +203,33 @@ func nativeConversationDisconnectedModelRowsKeepEveryControlReachableAtCompactWi
     }
   let bottom = NSStackView(views: [nestedControls, NSView()] + endButtons)
   bottom.spacing = 8
-  let bottomHost = conversationViewport(bottom, width: 340, height: 36)
+  let editor = NSTextView()
+  editor.isVerticallyResizable = true
+  editor.isHorizontallyResizable = false
+  editor.autoresizingMask = [.width]
+  editor.textContainer?.widthTracksTextView = true
+  let scroll = NSScrollView()
+  scroll.documentView = editor
+  scroll.heightAnchor.constraint(equalToConstant: 86).isActive = true
+  let composer = NSStackView(views: [scroll, bottom])
+  composer.orientation = .vertical
+  composer.alignment = .leading
+  composer.spacing = 8
+  let surface = NSView()
+  surface.addSubview(composer)
+  composer.translatesAutoresizingMaskIntoConstraints = false
+  NSLayoutConstraint.activate([
+    composer.leadingAnchor.constraint(equalTo: surface.leadingAnchor, constant: 16),
+    composer.trailingAnchor.constraint(equalTo: surface.trailingAnchor, constant: -16),
+    composer.topAnchor.constraint(equalTo: surface.topAnchor, constant: 6),
+    composer.bottomAnchor.constraint(equalTo: surface.bottomAnchor, constant: -6),
+    scroll.widthAnchor.constraint(equalTo: composer.widthAnchor),
+    bottom.widthAnchor.constraint(equalTo: composer.widthAnchor),
+  ])
+  let bottomHost = conversationViewport(surface, width: 880, height: 142)
   let nestedViews = conversationDescendants(nestedControls).compactMap { $0 as? ComposerPill }
-  for width: CGFloat in [340, 400, 1000, 340] {
-    bottomHost.setFrameSize(NSSize(width: width, height: 36))
+  for width: CGFloat in [880, 372, 432, 880, 372, 880] {
+    bottomHost.setFrameSize(NSSize(width: width, height: 142))
     bottomHost.layoutSubtreeIfNeeded()
     let visible = conversationDescendants(nestedControls).compactMap { $0 as? ComposerPill }.filter
     { !$0.isHidden }
@@ -214,10 +237,30 @@ func nativeConversationDisconnectedModelRowsKeepEveryControlReachableAtCompactWi
       Set(visible.compactMap { $0.accessibilityLabel() }).isSuperset(of: [
         "Model", "Reasoning", "Permissions",
       ]))
+    #expect(bottom.bounds.width == width - 32)
+    #expect(scroll.bounds.width == bottom.bounds.width)
+    var previousRect: NSRect?
     for button in visible + endButtons {
       let rect = button.convert(button.bounds, to: bottom)
+      if let previousRect { #expect(!previousRect.intersects(rect)) }
+      previousRect = rect
       #expect(rect.width >= (endButtons.contains(button) ? 24 : 36))
       #expect(rect.minX >= -0.5 && rect.maxX <= bottom.bounds.maxX + 0.5)
+    }
+    if width == 880 {
+      let model = try #require(visible.first { $0.accessibilityLabel() == "Model" })
+      let reasoning = try #require(visible.first { $0.accessibilityLabel() == "Reasoning" })
+      let permissions = try #require(visible.first { $0.accessibilityLabel() == "Permissions" })
+      #expect(model.title == "A provider model with a long display name  ⌄")
+      #expect(reasoning.title == "High  ⌄")
+      #expect(permissions.title == "Full access  ⌄")
+      #expect(model.frame.width > 100 && reasoning.frame.width > 36 && permissions.frame.width > 80)
+      #expect(visible.contains { $0.accessibilityLabel() == "Interaction mode" })
+      #expect(!visible.contains { $0.accessibilityLabel() == "More conversation options" })
+      #expect(reasoning.frame.width >= reasoning.intrinsicContentSize.width - 0.5)
+      #expect(permissions.frame.width >= permissions.intrinsicContentSize.width - 0.5)
+    } else {
+      #expect(visible.contains { $0.accessibilityLabel() == "More conversation options" })
     }
     let currentViews = conversationDescendants(nestedControls).compactMap { $0 as? ComposerPill }
     #expect(
