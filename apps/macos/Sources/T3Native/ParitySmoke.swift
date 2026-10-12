@@ -108,6 +108,10 @@ enum ParitySmoke {
       "orchestration.dispatchCommand",
       payload: Commands.newThread(template: template, id: id, title: "Native parity verification"))
     print("Parity thread: \(id)")
+    if CommandLine.arguments.contains("--browser-smoke") {
+      try await browser(settings: settings, connection: connection, threadID: id)
+      return
+    }
     if CommandLine.arguments.contains("--plan-smoke") {
       try await plans(settings: settings, connection: connection, threadID: id)
       return

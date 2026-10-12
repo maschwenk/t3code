@@ -90,6 +90,9 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
   private var reviewItem: NSSplitViewItem?
   private let sidebar: SidebarView
   private let usage: UsagePageController
+  private let browser: BrowserPanel
+  private var browserItem: NSSplitViewItem?
+  private var centerItem: NSSplitViewItem?
   private var conversationView: NSView?
   private var showingUsage = false
   private var usageThreadID: String?
@@ -147,6 +150,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     review = ReviewPanel(store: store)
     sidebar = SidebarView(store: store)
     usage = UsagePageController(store: store)
+    browser = BrowserPanel(store: store)
     modelControls = ComposerControls(store: store)
     requestsPanel = RequestsPanel(store: store)
     attachmentTray = AttachmentTray(store: store, previews: attachmentPreviews)
@@ -220,6 +224,8 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     sidebar.onThreadChosen = { [weak self] in self?.showConversation() }
     let contentItem = NSSplitViewItem(viewController: pages)
     contentItem.minimumThickness = 480
+    contentItem.canCollapse = true
+    centerItem = contentItem
     splitController.addSplitViewItem(sidebarItem)
     splitController.addSplitViewItem(contentItem)
     let workspaceItem = NSSplitViewItem(viewController: workspace)
@@ -246,6 +252,17 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     }
     review.onOpenFile = { [weak self] url, location in self?.openMarkdownLink(url, at: location) }
     splitController.addSplitViewItem(reviewItem)
+    let browserItem = NSSplitViewItem(viewController: browser)
+    browserItem.minimumThickness = 420
+    browserItem.canCollapse = true
+    browserItem.isCollapsed = true
+    self.browserItem = browserItem
+    browser.onClose = { [weak self] in self?.hideBrowser() }
+    browser.onExpand = { [weak self] in
+      guard let item = self?.centerItem else { return }
+      item.isCollapsed.toggle()
+    }
+    splitController.addSplitViewItem(browserItem)
     window.contentViewController = splitController
     splitController.splitView.setPosition(285, ofDividerAt: 0)
 
@@ -307,6 +324,11 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     composer.submit = { [weak store] in store?.submitComposer() }
     (window as? ConversationWindow)?.questionShortcut = { [weak self, weak requestsPanel] in
       guard self?.showingUsage != true else { return false }
+      if let self, let responder = self.window?.firstResponder as? NSView,
+        responder.isDescendant(of: self.browser.view)
+      {
+        return false
+      }
       return requestsPanel?.handleNumberKey($0) ?? false
     }
     composer.editLatestQueued = { [weak store] in
@@ -370,6 +392,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     let header = NSStackView(views: [
       subtitle, NSTextField(labelWithString: "/"), heading, NSView(),
       button("Files", #selector(toggleWorkspace)),
+      button("Browser", #selector(toggleBrowser)),
       button("Changes", #selector(toggleReview)),
       button("Terminal", #selector(toggleTerminal)),
     ])
@@ -434,6 +457,9 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
       (view, "Find in File or Diff", #selector(findWorkspaceFile), "f", [.command]),
       (view, "Toggle Sidebar", #selector(toggleSidebar), "b", [.command]),
       (view, "Usage", #selector(showUsage), "u", [.command, .shift]),
+      (view, "Toggle Browser", #selector(toggleBrowser), "b", [.command, .shift]),
+      (view, "Browser Address", #selector(browserAddress), "l", [.command]),
+      (view, "New Browser Tab", #selector(newBrowserTab), "t", [.command]),
     ] {
       let item = parent.addItem(withTitle: title, action: action, keyEquivalent: key)
       item.keyEquivalentModifierMask = modifiers
@@ -483,6 +509,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
 
   @objc private func toggleWorkspace() {
     showConversation()
+    hideBrowser()
     guard let workspaceItem else { return }
     workspaceItem.isCollapsed.toggle()
     if workspaceItem.isCollapsed { workspace.closeEditor() }
@@ -500,6 +527,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
   }
   @objc private func toggleReview() {
     showConversation()
+    hideBrowser()
     guard let reviewItem else { return }
     reviewItem.isCollapsed.toggle()
     if !reviewItem.isCollapsed {
@@ -526,6 +554,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
   @objc private func showUsage() {
     guard !showingUsage else { return }
     showingUsage = true
+    hideBrowser()
     usageThreadID = store.selectedID
     workspace.closeEditor()
     workspaceItem?.isCollapsed = true
@@ -547,13 +576,50 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     terminal.refresh(active: terminalItem?.isCollapsed == false)
     window?.makeFirstResponder(composer)
   }
+  @objc private func toggleBrowser() {
+    guard let browserItem else { return }
+    if !browserItem.isCollapsed {
+      hideBrowser()
+      return
+    }
+    showConversation()
+    workspace.closeEditor()
+    workspaceItem?.isCollapsed = true
+    reviewItem?.isCollapsed = true
+    workspace.refreshContext(active: false)
+    review.refreshContext(active: false)
+    browserItem.isCollapsed = false
+    if let window, window.frame.width < 1_240 {
+      var frame = window.frame
+      frame.size.width = 1_240
+      window.setFrame(frame, display: true)
+    }
+    browser.refresh(active: true)
+    browser.focusAddress()
+  }
+  private func hideBrowser() {
+    centerItem?.isCollapsed = false
+    browserItem?.isCollapsed = true
+    browser.refresh(active: false)
+  }
+  @objc private func browserAddress() {
+    if browserItem?.isCollapsed == true { toggleBrowser() }
+    browser.focusAddress()
+  }
+  @objc private func newBrowserTab() {
+    if browserItem?.isCollapsed == true { toggleBrowser() }
+    browser.newTab()
+  }
   private func openMarkdownLink(_ url: URL, at location: WorkspaceLocation?) {
     if url.isFileURL {
       guard let location, store.workspaceLocation == location else { return }
       if workspaceItem?.isCollapsed == true { toggleWorkspace() }
       workspace.refreshContext()
       workspace.open(url)
-    } else if ["http", "https", "mailto"].contains(url.scheme?.lowercased() ?? "") {
+    } else if ["http", "https"].contains(url.scheme?.lowercased() ?? "") {
+      if browserItem?.isCollapsed == true { toggleBrowser() }
+      browser.open(url.absoluteString, newTab: true)
+    } else if url.scheme?.lowercased() == "mailto" {
       NSWorkspace.shared.open(url)
     }
   }
@@ -591,6 +657,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
   func refresh() {
     if showingUsage, store.selectedID != usageThreadID { showConversation() }
     usage.model.synchronize(active: showingUsage)
+    browser.refresh(active: !showingUsage && browserItem?.isCollapsed == false)
     let anchor = scrollAnchor()
     sidebar.refresh()
     workspace.refreshContext(active: workspaceItem?.isCollapsed == false)

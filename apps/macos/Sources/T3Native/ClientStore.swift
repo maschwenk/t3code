@@ -60,6 +60,8 @@ import T3Core
   var onChange: (() -> Void)?
   private var connection: RPCConnection?
   var terminalConnection: RPCConnection? { ready ? connection : nil }
+  var browserConnection: RPCConnection? { ready ? connection : nil }
+  var browserEndpoint: URL? { ready ? settings?.endpoint : nil }
   private var settings: ConnectionSettings?
   private var cachedWorkspaceMedia: WorkspaceMediaRequest?
   private var lifetime: Task<Void, Never>?

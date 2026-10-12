@@ -142,8 +142,19 @@ missing prices and incomplete source coverage identified. The metric and period
 are saved locally. Refresh updates the selected view; Escape returns to chat.
 Usage currently covers the connected environment and its configured accounts.
 
-The integrated browser, provider setup, and T3 Connect
-account/relay discovery remain in the existing app. Markdown supports native headings,
+Open Browser from the conversation header or ⌘⇧B. The native WebKit panel has
+per-conversation tabs, back/forward, an address/search field (⌘L), new tabs (⌘T),
+zoom, reload, private tabs, uploads, and screenshot attachments. HTTP links in chat
+open in the panel; its menu can open the current page in the default browser.
+Tabs synchronize through the existing preview RPCs. Loaded pages keep their form
+state when switching tabs or conversations. Browser cookies are separate from
+Electron; normal profile cookies persist, while private tabs use a memory-only
+store. Empty tabs list servers discovered by the connected environment.
+Loopback links resolve to a directly connected LAN/Tailscale host; public relays
+need a browser gateway before local previews can work. Device emulation, element
+selection, downloads, agent browser automation and profile management remain
+incomplete. Provider setup and T3 Connect account/relay discovery remain in the
+existing app. Markdown supports native headings,
 lists, task lists, quotes, code blocks, tables, and selectable links. Copy-message
 actions preserve the original Markdown; code blocks have a Copy code context action.
 Syntax highlighting, inline images, file/citation chips, math, and diagrams remain incomplete.
@@ -255,6 +266,15 @@ with saved checkpoints. It checks turn and full-thread RPCs, exact per-file patc
 copies, current-file access, the timeline entry point, unavailable checkpoints,
 local rollback snapshot handling, reconnect and navigation. It sends no inference
 and verifies the server's run/checkpoint history remains unchanged.
+
+For browser verification, run `python3 apps/macos/Tests/Fixtures/browser_server.py`
+and use its printed URL with `--parity-smoke --browser-smoke --browser-fixture URL`,
+the private connection file, and an isolated sandbox project. This creates a
+verification threads, loads real HTTP pages in WebKit, and checks server status
+echoes, SPA form state, history, popups and PNG capture. It also checks discovered
+server buttons, panel sizing, conversation/hide state retention and private-cookie
+isolation, then closes its test tabs. It sends no inference. Stop the fixture
+server with its captured PID after verification.
 
 ## Measure
 
