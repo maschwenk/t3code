@@ -13,16 +13,24 @@ import T3Core
     NSApp.activate(ignoringOtherApps: true)
     let launchSession = store.usageSessionID
     Task {
+      let validate: @MainActor () throws -> Void = {
+        try Task.checkCancellation()
+        guard self.store.usageSessionID == launchSession else { throw CancellationError() }
+      }
       do {
         if let path = Arguments.value("--connection-file") {
           let settings = try ConnectionSettings.load(URL(fileURLWithPath: path))
           if CommandLine.arguments.contains("--remember-connection") {
-            try Credentials.save(settings)
+            try await Credentials.save(settings, validating: validate)
           }
+          try validate()
           store.connect(settings, selecting: Arguments.value("--thread-id"))
-        } else if let settings = try await ConnectionRepository().connectionForLaunch() {
-          guard store.usageSessionID == launchSession else { return }
-          store.connect(settings, selecting: Arguments.value("--thread-id"))
+        } else {
+          let repository = try await ConnectionRepository(validating: validate)
+          if let settings = try await repository.connectionForLaunch(validating: validate) {
+            try validate()
+            store.connect(settings, selecting: Arguments.value("--thread-id"))
+          }
         }
       } catch {
         guard store.usageSessionID == launchSession, !(error is CancellationError) else { return }

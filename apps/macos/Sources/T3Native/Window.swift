@@ -228,26 +228,44 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     notifications.activate()
     notifications.onOpenThread = { [weak self] endpoint, id in
       guard let self else { return }
-      if store.browserEndpoint != endpoint {
+      let attempt = UUID()
+      connectionAttempt = attempt
+      let session = store.usageSessionID
+      Task { @MainActor [weak self] in
+        guard let self else { return }
+        let validate: @MainActor () throws -> Void = {
+          try Task.checkCancellation()
+          guard self.connectionAttempt == attempt, self.store.usageSessionID == session else {
+            throw CancellationError()
+          }
+        }
         do {
-          let repository = try ConnectionRepository()
-          guard
-            let environment = repository.values.environments.first(where: {
-              $0.endpoint == endpoint
-            })
-          else { return }
-          try repository.select(environment)
-          store.connect(try repository.settings(for: environment), selecting: id)
+          if store.browserEndpoint != endpoint {
+            let repository = try await ConnectionRepository(validating: validate)
+            try validate()
+            guard
+              let environment = repository.values.environments.first(where: {
+                $0.endpoint == endpoint
+              })
+            else { return }
+            let settings = try await repository.settings(for: environment)
+            try validate()
+            try repository.select(environment)
+            store.connect(settings, selecting: id)
+          } else {
+            try validate()
+            store.select(id)
+          }
+          showWindow(nil)
+          NSApp.activate(ignoringOtherApps: true)
         } catch {
+          guard connectionAttempt == attempt, store.usageSessionID == session,
+            !(error is CancellationError)
+          else { return }
           store.error = error.localizedDescription
           refresh()
-          return
         }
-      } else {
-        store.select(id)
       }
-      showWindow(nil)
-      NSApp.activate(ignoringOtherApps: true)
     }
     appearanceObservation = preferences.observeChanges { [weak self] _ in
       guard let self, appearanceValues != preferences.appearance else { return }
@@ -1632,40 +1650,40 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     guard !reconnecting else { return }
     connectionAttempt = UUID()
     let attempt = connectionAttempt
-    do {
-      let repository = try ConnectionRepository()
-      guard
-        let saved = repository.values.environments.first(where: {
-          $0.id == repository.values.selectedID
-        }),
-        saved.id == store.environmentKey || !store.hasConnection,
-        saved.local || saved.cloudEnvironmentID != nil
-      else {
-        if store.hasConnection { store.retry() } else { connect() }
-        return
-      }
-      reconnecting = true
-      let session = store.usageSessionID
-      Task { [weak self] in
-        guard let self else { return }
-        defer { reconnecting = false }
-        do {
-          let settings = try await repository.connectionForLaunch()
-          guard connectionAttempt == attempt, store.usageSessionID == session,
-            let settings
-          else { return }
-          store.connect(settings)
-        } catch {
-          guard connectionAttempt == attempt, store.usageSessionID == session,
-            !(error is CancellationError)
-          else { return }
-          store.error = error.localizedDescription
-          refresh()
+    let session = store.usageSessionID
+    reconnecting = true
+    Task { @MainActor [weak self] in
+      guard let self else { return }
+      defer { reconnecting = false }
+      let validate: @MainActor () throws -> Void = {
+        try Task.checkCancellation()
+        guard self.connectionAttempt == attempt, self.store.usageSessionID == session else {
+          throw CancellationError()
         }
       }
-    } catch {
-      store.error = error.localizedDescription
-      refresh()
+      do {
+        let repository = try await ConnectionRepository(validating: validate)
+        try validate()
+        guard
+          let saved = repository.values.environments.first(where: {
+            $0.id == repository.values.selectedID
+          }),
+          saved.id == store.environmentKey || !store.hasConnection,
+          saved.local || saved.cloudEnvironmentID != nil
+        else {
+          if store.hasConnection { store.retry() } else { connect() }
+          return
+        }
+        let settings = try await repository.connectionForLaunch(validating: validate)
+        try validate()
+        if let settings { store.connect(settings) }
+      } catch {
+        guard connectionAttempt == attempt, store.usageSessionID == session,
+          !(error is CancellationError)
+        else { return }
+        store.error = error.localizedDescription
+        refresh()
+      }
     }
   }
 
@@ -1712,10 +1730,19 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
           guard store.saveDraftsBeforeExit() else {
             throw T3Error(store.storageError ?? "Save the current drafts before switching servers.")
           }
-          try Credentials.save(settings)
+          let validate: @MainActor () throws -> Void = {
+            try Task.checkCancellation()
+            guard self.connectionAttempt == attempt, self.store.usageSessionID == session else {
+              throw CancellationError()
+            }
+          }
+          try await Credentials.save(settings, validating: validate)
+          try validate()
           store.connect(settings)
         } catch {
-          guard connectionAttempt == attempt, store.usageSessionID == session else { return }
+          guard connectionAttempt == attempt, store.usageSessionID == session,
+            !(error is CancellationError)
+          else { return }
           store.error = error.localizedDescription
           refresh()
         }

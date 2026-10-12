@@ -19,6 +19,10 @@ import T3Core
   @Published private(set) var relayStatus: JSON = .null
   @Published private(set) var pairingURL: URL?
   @Published private(set) var accountAvailable = false
+  private let preferences: UserDefaults
+  private let credentials: Credentials.Access
+  private var loading = false
+  private var accountLoaded = false
   private var repository: ConnectionRepository?
   private var accountConfiguration: ConnectConfiguration?
   private var account: ConnectAccountToken?
@@ -29,28 +33,67 @@ import T3Core
   private var generation = UUID()
   private var accountGeneration = UUID()
 
-  init(store: ClientStore, host: BackendHost = .shared) {
+  init(
+    store: ClientStore, host: BackendHost = .shared, preferences: UserDefaults = .standard,
+    credentials: Credentials.Access = .keychain
+  ) {
     self.store = store
     self.host = host
+    self.credentials = credentials
+    self.preferences = preferences
     do {
-      repository = try ConnectionRepository()
-      environments = repository?.values.environments ?? []
-    } catch { self.error = error.localizedDescription }
-    do {
-      let configuration = try ConnectConfiguration.bundled(info: Bundle.main.infoDictionary ?? [:])
-      accountConfiguration = configuration
+      accountConfiguration = try ConnectConfiguration.bundled(
+        info: Bundle.main.infoDictionary ?? [:])
       accountAvailable = true
-      do {
-        account = try Credentials.loadAccount(configuration: configuration)
-        signedIn = account != nil
-      } catch { self.error = error.localizedDescription }
     } catch { accountAvailable = false }
+    run { _ in }
+  }
+  private func load(_ current: UUID) async throws {
+    if repository == nil {
+      let loaded = try await ConnectionRepository(
+        preferences: preferences, credentials: credentials
+      ) {
+        try self.requireGeneration(current)
+      }
+      try requireGeneration(current)
+      repository = loaded
+      environments = loaded.values.environments
+    }
+    if !accountLoaded {
+      let accountID = accountGeneration
+      if let configuration = accountConfiguration {
+        do {
+          let loaded = try await Credentials.loadAccount(
+            configuration: configuration, access: credentials)
+          try requireGeneration(current)
+          guard accountGeneration == accountID else { throw CancellationError() }
+          account = loaded
+          signedIn = loaded != nil
+        } catch is CancellationError { throw CancellationError() } catch {
+          try requireGeneration(current)
+          accountLoaded = true
+          throw error
+        }
+      }
+      try requireGeneration(current)
+      accountLoaded = true
+    }
+  }
+  private func requireGeneration(_ current: UUID) throws {
+    try Task.checkCancellation()
+    guard generation == current else { throw CancellationError() }
   }
   private func run(_ body: @escaping @MainActor (UUID) async throws -> Void) {
-    guard !busy else { return }
+    if busy {
+      guard loading else { return }
+      // An action replaces initialization; retry loading inside its tracked task so
+      // cancelling or superseding a Keychain prompt cannot lose the first action.
+      cancel()
+    }
     let current = UUID()
     generation = current
     busy = true
+    loading = repository == nil || !accountLoaded
     error = nil
     notice = nil
     pairingURL = nil
@@ -59,10 +102,21 @@ import T3Core
       defer {
         if self.generation == current {
           self.busy = false
+          self.loading = false
           self.operation = nil
         }
       }
-      do { try await body(current) } catch is CancellationError {} catch {
+      do {
+        try await self.load(current)
+        try self.requireGeneration(current)
+        self.loading = false
+        try await body(current)
+      } catch is CancellationError {
+        if self.generation == current, self.repository == nil, !Task.isCancelled {
+          self.error =
+            "Saved connections changed while loading. Reopen Connections or retry your action to reload."
+        }
+      } catch {
         if self.generation == current { self.error = error.localizedDescription }
       }
     }
@@ -73,11 +127,11 @@ import T3Core
     operation = nil
     callback.cancel()
     busy = false
+    loading = false
     signInPending = false
   }
   private func check(_ current: UUID, environment: String, connection: RPCConnection?) throws {
-    try Task.checkCancellation()
-    guard generation == current else { throw CancellationError() }
+    try requireGeneration(current)
     try ConnectionOperation(environment: environment, connection: connection)
       .requireCurrent(environment: store.environmentKey, connection: store.browserConnection)
   }
@@ -116,16 +170,22 @@ import T3Core
     return result
   }
   private func use(
-    _ settings: ConnectionSettings, label: String, local: Bool = false, cloudID: String? = nil
-  ) throws {
+    _ settings: ConnectionSettings, label: String, local: Bool = false, cloudID: String? = nil,
+    generation current: UUID, origin: String, connection: RPCConnection?
+  ) async throws {
+    try check(current, environment: origin, connection: connection)
     guard store.saveDraftsBeforeExit() else {
       throw T3Error(store.storageError ?? "Save your drafts before switching environments.")
     }
     guard let repository else {
       throw T3Error("Saved connections are unavailable. Resolve the catalog error first.")
     }
-    let environment = try repository.remember(
-      settings, label: label, local: local, cloudEnvironmentID: cloudID)
+    let environment = try await repository.remember(
+      settings, label: label, local: local, cloudEnvironmentID: cloudID
+    ) {
+      try self.check(current, environment: origin, connection: connection)
+    }
+    try check(current, environment: origin, connection: connection)
     store.connect(settings)
     guard store.environmentKey == settings.endpoint.absoluteString else {
       throw T3Error(
@@ -163,12 +223,13 @@ import T3Core
         settings = try await client.pair(discovered)
       } else {
         guard let repository else { throw T3Error("The connection catalog is unavailable.") }
-        settings = try repository.settings(for: environment)
+        settings = try await repository.settings(for: environment)
       }
       try check(current, environment: origin, connection: connection)
-      try use(
+      try await use(
         settings, label: environment.label, local: environment.local,
-        cloudID: environment.cloudEnvironmentID)
+        cloudID: environment.cloudEnvironmentID, generation: current, origin: origin,
+        connection: connection)
     }
   }
   func pair(address: String, credential: String, label: String, savedToken: Bool) {
@@ -187,7 +248,8 @@ import T3Core
         throw T3Error("The server did not authenticate this session.")
       }
       try check(current, environment: origin, connection: connection)
-      try use(settings, label: label)
+      try await use(
+        settings, label: label, generation: current, origin: origin, connection: connection)
     }
   }
   func startLocal(home: String, port: String) {
@@ -201,7 +263,9 @@ import T3Core
       if config != host.configuration { try host.configure(config) }
       let settings = try await host.start()
       try check(current, environment: origin, connection: connection)
-      try use(settings, label: "This Mac", local: true)
+      try await use(
+        settings, label: "This Mac", local: true, generation: current,
+        origin: origin, connection: connection)
     }
   }
   func stopLocal() {
@@ -217,7 +281,7 @@ import T3Core
     }
   }
   func forget(_ environment: SavedEnvironment) {
-    run { [self] _ in
+    run { [self] current in
       guard let repository else { throw T3Error("Saved connections are unavailable.") }
       if store.environmentKey == environment.id {
         guard store.saveDraftsBeforeExit() else {
@@ -226,7 +290,12 @@ import T3Core
         store.disconnect()
         clearAccess()
       }
-      try repository.remove(environment)
+      let origin = store.environmentKey
+      let connection = store.browserConnection
+      try await repository.remove(environment) {
+        try self.check(current, environment: origin, connection: connection)
+      }
+      try check(current, environment: origin, connection: connection)
       environments = repository.values.environments
       notice =
         "Removed from this Mac. Server sessions and T3 Connect registration are managed separately."
@@ -314,13 +383,16 @@ import T3Core
   }
   private func cloudClient() async throws -> ConnectClient {
     let current = accountGeneration
+    let operationID = generation
     guard let configuration = accountConfiguration, let account else {
       throw T3Error("Sign in to T3 Connect first.")
     }
     let refreshed = try await account.refreshed(configuration: configuration)
-    try Task.checkCancellation()
+    try requireGeneration(operationID)
     guard current == accountGeneration else { throw CancellationError() }
-    try Credentials.saveAccount(refreshed, configuration: configuration)
+    try await Credentials.saveAccount(refreshed, configuration: configuration, access: credentials)
+    try requireGeneration(operationID)
+    guard current == accountGeneration else { throw CancellationError() }
     self.account = refreshed
     return ConnectClient(configuration: configuration, account: refreshed)
   }
@@ -329,35 +401,47 @@ import T3Core
       guard let configuration = accountConfiguration else {
         throw T3Error("T3 Connect public configuration is missing from this app bundle.")
       }
+      let accountID = accountGeneration
       signInPending = true
-      defer { signInPending = false }
+      defer { if generation == current { signInPending = false } }
       let authorization = ConnectAuthorization(configuration: configuration)
       let callbackURL = try await callback.authorize(authorization) { NSWorkspace.shared.open($0) }
+      try requireGeneration(current)
+      guard accountGeneration == accountID else { throw CancellationError() }
       let token = try await authorization.exchange(callbackURL)
-      try Task.checkCancellation()
-      try Credentials.saveAccount(token, configuration: configuration)
+      try requireGeneration(current)
+      guard accountGeneration == accountID else { throw CancellationError() }
+      try await Credentials.saveAccount(token, configuration: configuration, access: credentials)
+      try requireGeneration(current)
+      guard accountGeneration == accountID else { throw CancellationError() }
       accountGeneration = UUID()
       account = token
       signedIn = true
-      let accountID = accountGeneration
+      let signedInID = accountGeneration
       let catalog = try await cloudClient().environments()
       try Task.checkCancellation()
-      guard generation == current, accountGeneration == accountID else { throw CancellationError() }
+      guard generation == current, accountGeneration == signedInID else {
+        throw CancellationError()
+      }
       discovered = catalog
     }
   }
   func signOut() {
     cancel()
     accountGeneration = UUID()
-    do {
+    let accountID = accountGeneration
+    accountLoaded = true
+    account = nil
+    signedIn = false
+    discovered = []
+    run { [self] current in
       if let configuration = accountConfiguration {
-        try Credentials.removeAccount(configuration: configuration)
+        try await Credentials.removeAccount(configuration: configuration, access: credentials)
       }
-      account = nil
-      signedIn = false
-      discovered = []
+      try requireGeneration(current)
+      guard accountGeneration == accountID else { throw CancellationError() }
       notice = "Signed out on this Mac. Existing server sessions and host links remain active."
-    } catch { self.error = error.localizedDescription }
+    }
   }
   func discover() {
     run { [self] current in
@@ -374,7 +458,9 @@ import T3Core
     run { [self] current in
       let settings = try await cloudClient().pair(environment)
       try check(current, environment: origin, connection: connection)
-      try use(settings, label: environment.label, cloudID: environment.id)
+      try await use(
+        settings, label: environment.label, cloudID: environment.id,
+        generation: current, origin: origin, connection: connection)
     }
   }
   func linkHost() {

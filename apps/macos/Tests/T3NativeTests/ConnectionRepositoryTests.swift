@@ -13,7 +13,7 @@ import Testing
     let address = "https://missing-" + UUID().uuidString.lowercased() + ".invalid:4773/"
     preferences.set(address, forKey: "endpoint")
     preferences.set([address: "existing-thread"], forKey: "selectedThreadByEndpoint")
-    let repository = try ConnectionRepository(preferences: preferences)
+    let repository = try await ConnectionRepository(preferences: preferences)
     let expected = try ConnectionEndpoint.normalize(address)
     #expect(repository.values.selectedID == expected.absoluteString)
     #expect(repository.values.environments.count == 1)
@@ -34,7 +34,7 @@ import Testing
     #expect(!host.isRunning)
     #expect(host.state == "Stopped")
     #expect(repository.values.selectedID == expected.absoluteString)
-    let reopened = try ConnectionRepository(preferences: preferences)
+    let reopened = try await ConnectionRepository(preferences: preferences)
     #expect(reopened.values == repository.values)
   }
 }

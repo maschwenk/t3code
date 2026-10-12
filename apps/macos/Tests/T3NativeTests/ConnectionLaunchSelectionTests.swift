@@ -16,7 +16,7 @@ import Testing
     preferences.set(try JSONEncoder().encode(catalog), forKey: "native.savedConnections.v1")
   }
 
-  @Test func externallyChangedSelectionCancelsWithoutRollingPreferencesBack() throws {
+  @Test func externallyChangedSelectionCancelsWithoutRollingPreferencesBack() async throws {
     let prefs = try preferences()
     defer {
       prefs.removeObject(forKey: "native.savedConnections.v1")
@@ -28,8 +28,8 @@ import Testing
     catalog.upsert(first, selecting: true)
     catalog.upsert(second)
     try write(catalog, to: prefs)
-    let pending = try ConnectionRepository(preferences: prefs)
-    let external = try ConnectionRepository(preferences: prefs)
+    let pending = try await ConnectionRepository(preferences: prefs)
+    let external = try await ConnectionRepository(preferences: prefs)
     try external.select(second)
     #expect(throws: CancellationError.self) { try pending.requireLaunchSelection(first) }
     #expect(
@@ -38,7 +38,7 @@ import Testing
     #expect(prefs.string(forKey: "endpoint") == second.endpoint.absoluteString)
   }
 
-  @Test func unrelatedEnvironmentEditsArePreservedBeforeLaunchPersistence() throws {
+  @Test func unrelatedEnvironmentEditsArePreservedBeforeLaunchPersistence() async throws {
     let prefs = try preferences()
     defer { prefs.removeObject(forKey: "native.savedConnections.v1") }
     let first = try environment("first")
@@ -46,7 +46,7 @@ import Testing
     var catalog = SavedConnections()
     catalog.upsert(first, selecting: true)
     try write(catalog, to: prefs)
-    let pending = try ConnectionRepository(preferences: prefs)
+    let pending = try await ConnectionRepository(preferences: prefs)
     catalog.upsert(added)
     try write(catalog, to: prefs)
     try pending.requireLaunchSelection(first)
@@ -58,10 +58,10 @@ import Testing
     prefs.removeObject(forKey: "endpoint")
   }
 
-  @Test func firstLaunchCannotReplaceASelectionSavedDuringStartup() throws {
+  @Test func firstLaunchCannotReplaceASelectionSavedDuringStartup() async throws {
     let prefs = try preferences()
     defer { prefs.removeObject(forKey: "native.savedConnections.v1") }
-    let pending = try ConnectionRepository(preferences: prefs)
+    let pending = try await ConnectionRepository(preferences: prefs)
     var latest = SavedConnections()
     latest.upsert(try environment("remote"), selecting: true)
     try write(latest, to: prefs)
@@ -70,7 +70,7 @@ import Testing
       try SavedConnections.decode(prefs.data(forKey: "native.savedConnections.v1")!) == latest)
   }
 
-  @Test func legacyEndpointChangeAlsoCancelsPendingLaunch() throws {
+  @Test func legacyEndpointChangeAlsoCancelsPendingLaunch() async throws {
     let prefs = try preferences()
     defer {
       prefs.removeObject(forKey: "native.savedConnections.v1")
@@ -80,7 +80,7 @@ import Testing
     var catalog = SavedConnections()
     catalog.upsert(first, selecting: true)
     try write(catalog, to: prefs)
-    let pending = try ConnectionRepository(preferences: prefs)
+    let pending = try await ConnectionRepository(preferences: prefs)
     let address = try environment("second").endpoint.absoluteString
     prefs.set(address, forKey: "endpoint")
     #expect(throws: CancellationError.self) { try pending.requireLaunchSelection(first) }
@@ -107,8 +107,8 @@ import Testing
     catalog.upsert(local, selecting: true)
     catalog.upsert(remote)
     try write(catalog, to: prefs)
-    let pending = try ConnectionRepository(preferences: prefs)
-    let external = try ConnectionRepository(preferences: prefs)
+    let pending = try await ConnectionRepository(preferences: prefs)
+    let external = try await ConnectionRepository(preferences: prefs)
     let host = BackendHost(
       runtime: BackendRuntime.bundled(resources: resources), preferences: prefs)
     try host.configure(configuration)
