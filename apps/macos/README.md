@@ -11,6 +11,13 @@ state. Snoozes wake on the same attention and time rules as Electron. It also su
 history with older pages, streamed text and activity, per-thread drafts, new threads
 using the selected thread's project/model, message submission, and stopping a run.
 New threads use the project's workspace root; they do not create a worktree.
+
+Search matches thread titles, projects and branches. Use ↑/↓ to browse matches,
+Return to open one, or Escape to clear the search. The folder button limits the
+list to a project. Hover a thread for Settle and Snooze; archived and parked
+threads use compact rows. Connections and Browser Settings are in the sidebar's
+Settings menu.
+
 The composer discovers provider instances, models, and model options from the
 server. The searchable model picker supports account tabs, device-local favorites
 scoped to the server, legacy models, and keyboard selection. Search matches model

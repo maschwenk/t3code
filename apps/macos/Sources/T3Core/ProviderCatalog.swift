@@ -54,6 +54,7 @@ public struct ProviderEntry: Sendable, Equatable, Identifiable {
   public let id: String
   public let name: String
   public let driver: String
+  public let accentColor: String?
   public let models: [ProviderModel]
   public let available: Bool
   public let unavailableReason: String?
@@ -65,6 +66,7 @@ public struct ProviderEntry: Sendable, Equatable, Identifiable {
     id = try value.requiredString("instanceId")
     name = value["displayName"].string ?? id
     driver = value["driver"].string ?? id
+    accentColor = value["accentColor"].string
     models = try value["models"].array.map(ProviderModel.init)
     available =
       value["enabled"].bool && value["installed"].bool

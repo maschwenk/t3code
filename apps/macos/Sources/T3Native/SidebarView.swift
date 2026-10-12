@@ -1,6 +1,18 @@
 import AppKit
 import T3Core
 
+@MainActor final class SidebarSearchCell: NSSearchFieldCell {
+  override func searchTextRect(forBounds rect: NSRect) -> NSRect {
+    var text = super.searchTextRect(forBounds: rect)
+    let leading = searchButtonRect(forBounds: rect).maxX + 4
+    let cancel = cancelButtonRect(forBounds: rect)
+    let trailing = cancel.isEmpty ? rect.maxX - 4 : cancel.minX - 4
+    text.origin.x = leading
+    text.size.width = max(0, trailing - leading)
+    return text
+  }
+}
+
 @MainActor private final class ThreadTable: NSTableView {
   var contextMenu: ((Int) -> NSMenu?)?
   override func menu(for event: NSEvent) -> NSMenu? {
@@ -14,15 +26,39 @@ final class SidebarView: NSStackView, NSTableViewDataSource, NSTableViewDelegate
 {
   private enum Row: Equatable {
     case header(ThreadSection, Int, Bool)
-    case thread(ThreadSummary)
+    case thread(SidebarThreadPresentation)
   }
   private let store: ClientStore
   var onShowUsage: (() -> Void)?
   var onThreadChosen: (() -> Void)?
+  var onNewThread: (() -> Void)?
+  var onToggleSidebar: (() -> Void)?
+  var onConnect: (() -> Void)?
+  var onReconnect: (() -> Void)?
+  var onBrowserSettings: (() -> Void)?
+  var onBack: (() -> Void)?
   private let table = ThreadTable()
   private let search = NSSearchField()
-  private let projects = NSPopUpButton()
-  private let archiveButton = NSButton(title: "Archived threads", target: nil, action: nil)
+  private lazy var projects = sidebarIcon("Filter by project", "folder") { [weak self] in
+    self?.chooseProject()
+  }
+  private lazy var archiveButton = sidebarIcon("Archived threads", "archivebox") { [weak self] in
+    self?.toggleArchives()
+  }
+  private lazy var newButton = sidebarIcon("New thread (⌘N)", "square.and.pencil") { [weak self] in
+    self?.onNewThread?()
+  }
+  private lazy var settingsButton = sidebarIcon("Settings", "gearshape") { [weak self] in
+    self?.showSettings()
+  }
+  private lazy var reconnectButton = sidebarIcon("Reconnect", "arrow.clockwise") { [weak self] in
+    self?.onReconnect?()
+  }
+  private lazy var usageButton = sidebarIcon("Usage (⌘⇧U)", "chart.bar") { [weak self] in
+    self?.onShowUsage?()
+  }
+  private lazy var backButton = ActionButton("Back") { [weak self] in self?.onBack?() }
+  private let scope = NSTextField(labelWithString: "")
   private let message = NSTextField(wrappingLabelWithString: "")
   private var rows: [Row] = []
   private var collapsed = Set(
@@ -31,26 +67,50 @@ final class SidebarView: NSStackView, NSTableViewDataSource, NSTableViewDelegate
   private var previousProjects: [String: String] = [:]
   private var restoringSelection = false
   private var refreshTimer: Task<Void, Never>?
+  private var searchCandidate: String?
+  private var lastSelectedID: String?
 
   init(store: ClientStore) {
     self.store = store
     super.init(frame: .zero)
     orientation = .vertical
     alignment = .leading
-    spacing = 10
-    search.placeholderString = "Search threads"
+    spacing = 6
+    let searchCell = SidebarSearchCell(textCell: "")
+    searchCell.isEditable = true
+    searchCell.isSelectable = true
+    searchCell.isScrollable = true
+    search.cell = searchCell
+    search.placeholderString = "Search"
     search.stringValue = Arguments.value("--filter") ?? ""
     search.delegate = self
     search.setAccessibilityLabel("Search threads")
-    projects.target = self
-    projects.action = #selector(projectChanged)
-    projects.setAccessibilityLabel("Filter by project")
+    search.isBordered = false
+    search.drawsBackground = false
+    search.font = .systemFont(ofSize: 13)
+    let toggle = sidebarIcon("Toggle sidebar (⌘B)", "sidebar.left") { [weak self] in
+      self?.onToggleSidebar?()
+    }
+    let brand = NSTextField(labelWithString: "T3 Code")
+    brand.font = .systemFont(ofSize: 13, weight: .medium)
+    let trafficSpace = NSView()
+    trafficSpace.widthAnchor.constraint(equalToConstant: 66).isActive = true
+    let brandRow = NSStackView(views: [trafficSpace, toggle, brand, NSView()])
+    brandRow.spacing = 4
+    brandRow.heightAnchor.constraint(equalToConstant: 30).isActive = true
+    let header = NSStackView(views: [search, projects, newButton])
+    header.spacing = 1
+    header.heightAnchor.constraint(equalToConstant: 32).isActive = true
+    scope.font = .systemFont(ofSize: 11)
+    scope.textColor = .secondaryLabelColor
+    scope.lineBreakMode = .byTruncatingTail
+    scope.isHidden = true
     table.headerView = nil
     table.addTableColumn(NSTableColumn(identifier: .init("thread")))
     table.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
-    table.style = .sourceList
+    table.style = .plain
     table.backgroundColor = .clear
-    table.intercellSpacing = NSSize(width: 0, height: 2)
+    table.intercellSpacing = .zero
     table.dataSource = self
     table.delegate = self
     table.target = self
@@ -65,16 +125,22 @@ final class SidebarView: NSStackView, NSTableViewDataSource, NSTableViewDelegate
     scroll.drawsBackground = false
     message.font = .systemFont(ofSize: 12)
     message.textColor = .secondaryLabelColor
-    archiveButton.target = self
-    archiveButton.action = #selector(toggleArchives)
-    archiveButton.bezelStyle = .inline
-    let usage = ActionButton("Usage") { [weak self] in self?.onShowUsage?() }
-    usage.image = NSImage(systemSymbolName: "chart.bar", accessibilityDescription: nil)
-    usage.bezelStyle = .inline
-    usage.setAccessibilityLabel("Usage")
-    usage.toolTip = "Usage (⌘⇧U)"
-    let footer = NSStackView(views: [archiveButton, NSView(), usage])
-    for view in [search, projects, scroll, message, footer] {
+    usageButton.setAccessibilityLabel("Usage")
+    newButton.setAccessibilityLabel("New thread")
+    newButton.toolTip = "New thread in the selected project, using the same model (⌘N)"
+    backButton.image = NSImage(systemSymbolName: "arrow.left", accessibilityDescription: nil)
+    backButton.imagePosition = .imageLeading
+    backButton.setAccessibilityLabel("Back to conversation")
+    backButton.isBordered = false
+    backButton.bezelStyle = .inline
+    backButton.font = .systemFont(ofSize: 12)
+    backButton.isHidden = true
+    let footer = NSStackView(views: [
+      settingsButton, archiveButton, usageButton, backButton, NSView(), reconnectButton,
+    ])
+    footer.spacing = 3
+    footer.heightAnchor.constraint(equalToConstant: 30).isActive = true
+    for view in [brandRow, header, scope, scroll, message, footer] {
       addArrangedSubview(view)
       view.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
     }
@@ -87,24 +153,14 @@ final class SidebarView: NSStackView, NSTableViewDataSource, NSTableViewDelegate
     let now = Date()
     let projectNames = store.shell.projects.merging(store.archives.projects) { current, _ in current
     }
-    if projectNames != previousProjects || projects.numberOfItems == 0 {
-      previousProjects = projectNames
-      projects.removeAllItems()
-      projects.addItem(withTitle: "All projects")
-      for (id, name) in projectNames.sorted(by: {
-        $0.value.localizedStandardCompare($1.value) == .orderedAscending
-      }) {
-        projects.addItem(withTitle: name)
-        projects.lastItem?.representedObject = id
-      }
-      if let projectID,
-        let item = projects.itemArray.first(where: { $0.representedObject as? String == projectID })
-      {
-        projects.select(item)
-      } else {
-        projectID = nil
-      }
-    }
+    previousProjects = projectNames
+    if let projectID, projectNames[projectID] == nil { self.projectID = nil }
+    projects.contentTintColor = projectID == nil ? .secondaryLabelColor : .controlAccentColor
+    projects.toolTip =
+      "Filter by project: " + (projectID.flatMap { projectNames[$0] } ?? "All projects")
+    scope.stringValue = projectID.flatMap { projectNames[$0] } ?? ""
+    scope.isHidden = scope.stringValue.isEmpty
+    newButton.isEnabled = store.ready && store.selectedThread != nil
     let query = search.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
     let source = store.showingArchives ? store.archives.threads : store.shell.threads
     let filtered = source.values.filter { thread in
@@ -114,29 +170,89 @@ final class SidebarView: NSStackView, NSTableViewDataSource, NSTableViewDelegate
             .contains(where: { $0.localizedCaseInsensitiveContains(query) }))
     }
     let groups = ThreadGroup.resolve(Array(filtered), at: now)
+    let directory = SidebarProviderDirectory(store.catalog)
+    let projectData = store.shell.projectDetails.merging(store.archives.projectDetails) {
+      current, _ in current
+    }
+    let projectIdentities = Dictionary(
+      projectNames.map { id, name in
+        (id, SidebarProjectIdentity(name: name, icon: projectData[id]?["projectIcon"] ?? .null))
+      }, uniquingKeysWith: { _, new in new })
     let next = groups.flatMap { group -> [Row] in
       let expanded =
-        !collapsed.contains(group.section.rawValue) || !query.isEmpty || store.showingArchives
-      return [.header(group.section, group.threads.count, expanded)]
-        + (expanded ? group.threads.map(Row.thread) : [])
+        group.section == .active || group.section == .pinned
+        || !collapsed.contains(group.section.rawValue) || !query.isEmpty || store.showingArchives
+      let header: [Row] =
+        group.section == .active || group.section == .pinned || !query.isEmpty
+        ? [] : [.header(group.section, group.threads.count, expanded)]
+      return header
+        + (expanded
+          ? group.threads.map { thread in
+            .thread(
+              SidebarThreadPresentation(
+                thread: thread,
+                project: projectNames[thread.projectID] ?? "No project",
+                identity: projectIdentities[thread.projectID]
+                  ?? SidebarProjectIdentity(name: "No project"),
+                directory: directory, draft: !(store.drafts[thread.id] ?? "").isEmpty,
+                enabled: store.ready && !store.lifecycleBusy(thread.id),
+                now: now))
+          } : [])
     }
     restoringSelection = true
     if rows != next {
+      let sameOrder =
+        rows.count == next.count
+        && zip(rows, next).allSatisfy { old, new in
+          switch (old, new) {
+          case (.header(let left, _, _), .header(let right, _, _)): return left == right
+          case (.thread(let left), .thread(let right)): return left.thread.id == right.thread.id
+          default: return false
+          }
+        }
+      let changed = sameOrder ? IndexSet(rows.indices.filter { rows[$0] != next[$0] }) : IndexSet()
+      let heights =
+        sameOrder
+        ? IndexSet(
+          changed.filter { index in
+            if case .thread(let old) = rows[index], case .thread(let new) = next[index] {
+              return old.compact != new.compact
+            }
+            return false
+          }) : IndexSet()
       rows = next
-      table.reloadData()
+      if sameOrder {
+        table.reloadData(forRowIndexes: changed, columnIndexes: IndexSet(integer: 0))
+        if !heights.isEmpty { table.noteHeightOfRows(withIndexesChanged: heights) }
+      } else {
+        table.reloadData()
+      }
     }
     if let index = rows.firstIndex(where: { row in
-      if case .thread(let thread) = row { return thread.id == store.selectedID }
+      if case .thread(let value) = row {
+        return value.thread.id == (searchCandidate ?? store.selectedID)
+      }
       return false
     }) {
       if table.selectedRow != index {
         table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
       }
+      if searchCandidate == nil && lastSelectedID != store.selectedID {
+        table.scrollRowToVisible(index)
+      }
     } else {
       table.deselectAll(nil)
     }
     restoringSelection = false
-    archiveButton.title = store.showingArchives ? "Back to active threads" : "Archived threads"
+    lastSelectedID = store.selectedID
+    table.enumerateAvailableRowViews { [weak self] view, index in
+      guard let self else { return }
+      (view.view(atColumn: 0) as? SidebarThreadCell)?.setSelected(index == self.table.selectedRow)
+    }
+    archiveButton.toolTip = store.showingArchives ? "Back to active threads" : "Archived threads"
+    archiveButton.setAccessibilityLabel(archiveButton.toolTip)
+    archiveButton.contentTintColor =
+      store.showingArchives ? .controlAccentColor : .secondaryLabelColor
     archiveButton.isEnabled = store.ready
     message.stringValue =
       store.showingArchives
@@ -150,13 +266,13 @@ final class SidebarView: NSStackView, NSTableViewDataSource, NSTableViewDelegate
 
   private func scheduleWake(_ date: Date?) {
     refreshTimer?.cancel()
-    guard let date else {
+    guard window?.isVisible == true else {
       refreshTimer = nil
       return
     }
     refreshTimer = Task { [weak self] in
       do {
-        try await Task.sleep(for: .seconds(max(0.05, min(60, date.timeIntervalSinceNow))))
+        try await Task.sleep(for: .seconds(max(0.05, min(60, date?.timeIntervalSinceNow ?? 60))))
       } catch { return }
       self?.refresh()
     }
@@ -171,11 +287,15 @@ final class SidebarView: NSStackView, NSTableViewDataSource, NSTableViewDelegate
   func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
   func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
     if case .header = rows[row] { return 28 }
-    return 55
+    if case .thread(let value) = rows[row] { return value.compact ? 36 : 78 }
+    return 78
   }
   func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool {
     if case .thread = rows[row] { return true }
     return false
+  }
+  func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
+    SidebarTableRow()
   }
   func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row index: Int)
     -> NSView?
@@ -197,55 +317,32 @@ final class SidebarView: NSStackView, NSTableViewDataSource, NSTableViewDelegate
       button.setAccessibilityLabel(
         "\(section.rawValue), \(count) threads, \(expanded ? "expanded" : "collapsed")")
       return button
-    case .thread(let thread):
-      let cell = NSView()
-      let title = NSTextField(labelWithString: thread.title)
-      title.font = .systemFont(ofSize: 13, weight: thread.lifecycle.unread ? .semibold : .regular)
-      title.lineBreakMode = .byTruncatingTail
-      let dot = NSTextField(labelWithString: thread.lifecycle.unread ? "●" : "")
-      dot.textColor = .controlAccentColor
-      dot.font = .systemFont(ofSize: 8)
-      let top = NSStackView(views: [title, NSView(), dot])
-      let state = thread.lifecycle.statusLabel(at: Date())
-      let project = previousProjects[thread.projectID] ?? "Project"
-      var detail = [project]
-      if let state {
-        detail.append(state)
-      } else if let branch = thread.branch {
-        detail.append(branch)
-      }
-      if thread.lifecycle.snoozed(at: Date()), let until = thread.lifecycle.snoozedUntil {
-        detail.append("until " + until.formatted(date: .abbreviated, time: .shortened))
-      }
-      let subtitle = NSTextField(labelWithString: detail.joined(separator: " · "))
-      subtitle.font = .systemFont(ofSize: 11)
-      subtitle.textColor = thread.lifecycle.needsAttention ? .systemOrange : .secondaryLabelColor
-      subtitle.lineBreakMode = .byTruncatingTail
-      let stack = NSStackView(views: [top, subtitle])
-      stack.orientation = .vertical
-      stack.alignment = .leading
-      stack.spacing = 4
-      cell.addSubview(stack)
-      stack.translatesAutoresizingMaskIntoConstraints = false
-      NSLayoutConstraint.activate([
-        stack.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 8),
-        stack.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -8),
-        stack.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
-        top.widthAnchor.constraint(equalTo: stack.widthAnchor),
-        subtitle.widthAnchor.constraint(equalTo: stack.widthAnchor),
-      ])
-      cell.setAccessibilityElement(true)
-      cell.setAccessibilityLabel(([thread.title] + detail).joined(separator: ", "))
-      cell.toolTip = ([thread.title] + detail).joined(separator: "\n")
+    case .thread(let value):
+      let cell =
+        table.makeView(withIdentifier: .init("thread"), owner: self) as? SidebarThreadCell
+        ?? SidebarThreadCell(frame: .zero)
+      let thread = value.thread
+      cell.configure(
+        value, enabled: value.enabled,
+        quickAction: { [weak self] in
+          guard let self, self.store.ready, !self.store.lifecycleBusy(thread.id) else { return }
+          if thread.lifecycle.snoozed(at: Date()) {
+            self.store.snooze(thread.id, until: nil)
+          } else {
+            self.store.setSettled(thread.id, !thread.lifecycle.settled)
+          }
+        }, snoozeAction: { [weak self] in self?.customSnooze(thread) })
+      cell.setSelected(value.thread.id == (searchCandidate ?? store.selectedID))
       return cell
     }
   }
 
   func tableViewSelectionDidChange(_ notification: Notification) {
     guard !restoringSelection, rows.indices.contains(table.selectedRow),
-      case .thread(let thread) = rows[table.selectedRow]
+      case .thread(let value) = rows[table.selectedRow]
     else { return }
-    store.select(thread.id)
+    searchCandidate = nil
+    store.select(value.thread.id)
     onThreadChosen?()
   }
   @objc private func threadClicked() {
@@ -254,20 +351,95 @@ final class SidebarView: NSStackView, NSTableViewDataSource, NSTableViewDelegate
     }
     onThreadChosen?()
   }
-  func controlTextDidChange(_ obj: Notification) { refresh() }
-  @objc private func projectChanged() {
-    projectID = projects.selectedItem?.representedObject as? String
+  func controlTextDidChange(_ obj: Notification) {
+    searchCandidate = nil
     refresh()
+  }
+  func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector)
+    -> Bool
+  {
+    guard control === search else { return false }
+    let candidates = rows.enumerated().compactMap { index, row -> (Int, String)? in
+      if case .thread(let value) = row { return (index, value.thread.id) }
+      return nil
+    }
+    switch commandSelector {
+    case #selector(NSResponder.moveDown(_:)), #selector(NSResponder.moveUp(_:)):
+      guard !candidates.isEmpty else { return true }
+      let old = candidates.firstIndex { $0.1 == searchCandidate }
+      let forward = commandSelector == #selector(NSResponder.moveDown(_:))
+      let next =
+        old.map { ($0 + (forward ? 1 : candidates.count - 1)) % candidates.count }
+        ?? (forward ? 0 : candidates.count - 1)
+      searchCandidate = candidates[next].1
+      refresh()
+      table.scrollRowToVisible(candidates[next].0)
+      return true
+    case #selector(NSResponder.insertNewline(_:)):
+      guard !search.stringValue.isEmpty, let id = searchCandidate ?? candidates.first?.1 else {
+        return false
+      }
+      search.stringValue = ""
+      searchCandidate = nil
+      store.select(id)
+      refresh()
+      onThreadChosen?()
+      return true
+    case #selector(NSResponder.cancelOperation(_:)):
+      guard !search.stringValue.isEmpty else { return false }
+      search.stringValue = ""
+      searchCandidate = nil
+      refresh()
+      return true
+    default: return false
+    }
+  }
+
+  func showUtilityPage(_ visible: Bool) {
+    for button in [settingsButton, archiveButton, usageButton] { button.isHidden = visible }
+    backButton.isHidden = !visible
+  }
+
+  private func chooseProject() {
+    let menu = NSMenu()
+    menu.autoenablesItems = false
+    func add(_ name: String, id: String?) {
+      let item = ActionMenuItem(name) { [weak self] in
+        self?.projectID = id
+        self?.searchCandidate = nil
+        self?.refresh()
+      }
+      item.state = projectID == id ? .on : .off
+      menu.addItem(item)
+    }
+    add("All projects", id: nil)
+    menu.addItem(.separator())
+    for (id, name) in previousProjects.sorted(by: {
+      $0.value.localizedStandardCompare($1.value) == .orderedAscending
+    }) {
+      add(name, id: id)
+    }
+    menu.popUp(positioning: nil, at: NSPoint(x: 0, y: projects.bounds.maxY), in: projects)
+  }
+
+  private func showSettings() {
+    let menu = NSMenu()
+    menu.autoenablesItems = false
+    menu.addItem(ActionMenuItem("Connections…") { [weak self] in self?.onConnect?() })
+    menu.addItem(ActionMenuItem("Browser Settings…") { [weak self] in self?.onBrowserSettings?() })
+    menu.popUp(
+      positioning: nil, at: NSPoint(x: 0, y: settingsButton.bounds.maxY), in: settingsButton)
   }
   @objc private func toggleArchives() { store.showArchives(!store.showingArchives) }
   @objc private func renameSelected() {
-    guard rows.indices.contains(table.clickedRow), case .thread(let thread) = rows[table.clickedRow]
+    guard rows.indices.contains(table.clickedRow), case .thread(let value) = rows[table.clickedRow]
     else { return }
-    rename(thread)
+    rename(value.thread)
   }
 
   private func contextMenu(for row: Int) -> NSMenu? {
-    guard rows.indices.contains(row), case .thread(let thread) = rows[row] else { return nil }
+    guard rows.indices.contains(row), case .thread(let value) = rows[row] else { return nil }
+    let thread = value.thread
     let menu = NSMenu()
     menu.autoenablesItems = false
     let enabled = store.ready && !store.lifecycleBusy(thread.id)
@@ -354,7 +526,7 @@ final class SidebarView: NSStackView, NSTableViewDataSource, NSTableViewDelegate
   }
 
   private func customSnooze(_ thread: ThreadSummary) {
-    guard let window else { return }
+    guard let window, store.ready, !store.lifecycleBusy(thread.id) else { return }
     let alert = NSAlert()
     alert.messageText = "Snooze until"
     let picker = NSDatePicker()

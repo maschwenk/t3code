@@ -14,6 +14,8 @@ public struct ThreadSummary: Sendable, Equatable, Identifiable {
   public let lifecycle: ThreadLifecycle
   public let branch: String?
   public let worktreePath: String?
+  public let providerHistory: [String]
+  public let pullRequests: [JSON]
   public let deleted: Bool
 
   public init(_ value: JSON) throws {
@@ -30,6 +32,12 @@ public struct ThreadSummary: Sendable, Equatable, Identifiable {
     lifecycle = ThreadLifecycle(value)
     branch = value["branch"].string
     worktreePath = value["worktreePath"].string
+    providerHistory = value["providerInstanceHistory"].array.compactMap(\.string)
+    let links = value["pullRequests"].array
+    pullRequests =
+      links.isEmpty
+      ? [value["branchPullRequest"], value["linkedPullRequest"]].filter { $0["url"].string != nil }
+      : links
     deleted = value["deletedAt"].string != nil
   }
 }

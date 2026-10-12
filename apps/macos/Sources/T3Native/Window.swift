@@ -118,6 +118,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
   private var attachmentConnectionState = ""
   private let attachButton = NSButton(title: "Attach files…", target: nil, action: nil)
   private var sidebarItem: NSSplitViewItem?
+  private var didSetSidebarWidth = false
   private let terminal: TerminalPanel
   private var terminalItem: NSSplitViewItem?
   private var rows: [ConversationEntry] = []
@@ -161,6 +162,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
       backing: .buffered, defer: false)
     window.title = "T3 Native"
     window.titlebarAppearsTransparent = true
+    window.titleVisibility = .hidden
     window.minSize = NSSize(width: 900, height: 640)
     window.setFrameAutosaveName("T3NativeMain")
     window.center()
@@ -186,8 +188,10 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     let contentController = NSViewController()
     contentController.view = right
     let sidebarItem = NSSplitViewItem(sidebarWithViewController: sidebarController)
-    sidebarItem.minimumThickness = 220
+    sidebarItem.minimumThickness = 256
     sidebarItem.maximumThickness = 360
+    sidebarItem.preferredThicknessFraction = 256.0 / 1220
+    sidebarItem.automaticMaximumThickness = 256
     sidebarItem.canCollapse = true
     self.sidebarItem = sidebarItem
     sidebarItem.holdingPriority = .defaultHigh
@@ -222,6 +226,12 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     usage.model.onClose = { [weak self] in self?.showConversation() }
     sidebar.onShowUsage = { [weak self] in self?.showUsage() }
     sidebar.onThreadChosen = { [weak self] in self?.showConversation() }
+    sidebar.onNewThread = { [weak self] in self?.newThread() }
+    sidebar.onToggleSidebar = { [weak self] in self?.toggleSidebar() }
+    sidebar.onConnect = { [weak self] in self?.connect() }
+    sidebar.onReconnect = { [weak self] in self?.retry() }
+    sidebar.onBrowserSettings = { [weak self] in self?.browserSettings() }
+    sidebar.onBack = { [weak self] in self?.showConversation() }
     let contentItem = NSSplitViewItem(viewController: pages)
     contentItem.minimumThickness = 480
     contentItem.canCollapse = true
@@ -274,25 +284,10 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     }
     splitController.addSplitViewItem(browserItem)
     window.contentViewController = splitController
-    splitController.splitView.setPosition(285, ofDividerAt: 0)
+    splitController.splitView.setPosition(256, ofDividerAt: 0)
 
-    let brand = NSTextField(labelWithString: "T3 Code")
-    brand.font = .systemFont(ofSize: 16, weight: .semibold)
-    let newButton = button("New thread", #selector(newThread))
-    newButton.toolTip = "Create a thread in the selected thread’s project, using the same model"
-    let connectButton = button("Connect…", #selector(connect))
-    let retryButton = button("Reconnect", #selector(retry))
-    let controls = NSStackView(views: [connectButton, retryButton])
-    controls.spacing = 6
-    let leftStack = NSStackView(views: [brand, newButton, sidebar, controls])
-    leftStack.orientation = .vertical
-    leftStack.alignment = .leading
-    leftStack.spacing = 12
-    left.addSubview(leftStack)
-    pin(leftStack, to: left, inset: 14, top: 46)
-    for view in [sidebar, controls] {
-      view.widthAnchor.constraint(equalTo: leftStack.widthAnchor).isActive = true
-    }
+    left.addSubview(sidebar)
+    pin(sidebar, to: left, inset: 8, top: 8)
 
     heading.font = .systemFont(ofSize: 14, weight: .semibold)
     heading.lineBreakMode = .byTruncatingTail
@@ -440,7 +435,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     heading.setContentCompressionResistancePriority(.required, for: .vertical)
     composerSurface.setContentCompressionResistancePriority(.required, for: .vertical)
     window.setContentSize(NSSize(width: 1220, height: 840))
-    splitController.splitView.setPosition(285, ofDividerAt: 0)
+    splitController.splitView.setPosition(256, ofDividerAt: 0)
   }
 
   private func button(_ title: String, _ action: Selector) -> NSButton {
@@ -581,6 +576,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     terminal.refresh(active: false)
     conversationView?.isHidden = true
     usage.view.isHidden = false
+    sidebar.showUtilityPage(true)
     window?.makeFirstResponder(usage.view)
     usage.model.synchronize(active: true)
   }
@@ -588,6 +584,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     guard showingUsage else { return }
     showingUsage = false
     usage.view.isHidden = true
+    sidebar.showUtilityPage(false)
     conversationView?.isHidden = false
     usage.model.synchronize(active: false)
     terminal.refresh(active: terminalItem?.isCollapsed == false)
@@ -1106,6 +1103,18 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     return cell
   }
 
+  override func showWindow(_ sender: Any?) {
+    super.showWindow(sender)
+    guard !didSetSidebarWidth else { return }
+    didSetSidebarWidth = true
+    DispatchQueue.main.async { [weak self] in
+      guard let split = (self?.window?.contentViewController as? NSSplitViewController)?.splitView
+      else { return }
+      split.layoutSubtreeIfNeeded()
+      split.setPosition(256, ofDividerAt: 0)
+      self?.sidebarItem?.minimumThickness = 208
+    }
+  }
   func windowDidBecomeKey(_ notification: Notification) { store.markVisibleThreadRead() }
   func textDidChange(_ notification: Notification) {
     store.composerText = composer.string
