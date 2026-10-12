@@ -105,7 +105,7 @@ private struct BrowserSettings: View {
             get: {
               preferences.values.defaultViewport.width == nil
                 ? "fill" : preferences.values.defaultViewport.presetID ?? "custom"
-            }, set: setViewport)
+            }, set: { id in setViewport(id) })
         ) {
           Text("Fit panel").tag("fill")
           Text("Custom").tag("custom")

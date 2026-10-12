@@ -8,15 +8,17 @@ private func contextFixture() throws -> (DiffFile, String, String) {
   var new = old
   new[39] = "changed 40 👋\r"
   new.replaceSubrange(54...54, with: ["changed 55\r", "inserted\r"])
-  let raw =
-    "diff --git a/file b/file\n@@ -38,5 +38,5 @@\n"
-    + old[37...38].map { " " + $0 + "\n" }.joined()
-    + "-" + old[39] + "\n+" + new[39] + "\n"
-    + old[40...41].map { " " + $0 + "\n" }.joined()
-    + "@@ -53,5 +53,6 @@\n"
-    + old[52...53].map { " " + $0 + "\n" }.joined()
-    + "-" + old[54] + "\n+" + new[54] + "\n+" + new[55] + "\n"
-    + old[55...56].map { " " + $0 + "\n" }.joined()
+  let chunks: [String] = [
+    "diff --git a/file b/file\n@@ -38,5 +38,5 @@\n",
+    old[37...38].map { " " + $0 + "\n" }.joined(),
+    "-" + old[39] + "\n+" + new[39] + "\n",
+    old[40...41].map { " " + $0 + "\n" }.joined(),
+    "@@ -53,5 +53,6 @@\n",
+    old[52...53].map { " " + $0 + "\n" }.joined(),
+    "-" + old[54] + "\n+" + new[54] + "\n+" + new[55] + "\n",
+    old[55...56].map { " " + $0 + "\n" }.joined(),
+  ]
+  let raw = chunks.joined()
   return (
     try #require(UnifiedDiff.parse(raw).first), old.joined(separator: "\n") + "\n",
     new.joined(separator: "\n") + "\n"
