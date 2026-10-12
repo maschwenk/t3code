@@ -29,10 +29,12 @@ import WebKit
     super.layout()
     guard let web else { return }
     if let width = setting.width, let height = setting.height {
-      // WebKit truncates CSS dimensions after AppKit coordinate conversion; a subpixel margin prevents rounding down.
+      // WebKit truncates view points before dividing by page zoom. Round the outer size up so
+      // fractional zoom cannot shrink the requested responsive breakpoint by a CSS pixel.
       // Scale presentation, not page zoom: responsive breakpoints keep the requested CSS size.
       let size = NSSize(
-        width: (Double(width) + 0.01) * web.pageZoom, height: (Double(height) + 0.01) * web.pageZoom
+        width: ceil(Double(width) * web.pageZoom) + 0.01,
+        height: ceil(Double(height) * web.pageZoom) + 0.01
       )
       let scale = min(
         1, max(1, bounds.width - 24) / size.width, max(1, bounds.height - 24) / size.height)

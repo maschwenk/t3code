@@ -10,6 +10,7 @@ import WebKit
   let tabID: String
   let threadID: String
   let environment: URL
+  var suppressAgentPresentation = false
   var onChange: (() -> Void)?
   var onNewTab: ((URL) -> Void)?
   private(set) var failure: String?
@@ -333,7 +334,24 @@ import WebKit
 }
 
 @MainActor final class BrowserProfiles {
+  enum DataKinds { case all, cookies, cache }
   private var stores: [String: WKWebsiteDataStore] = [:]
+  func clear(profile: String?, kinds: DataKinds) async {
+    let types: Set<String>
+    switch kinds {
+    case .all: types = WKWebsiteDataStore.allWebsiteDataTypes()
+    case .cookies:
+      types = [
+        WKWebsiteDataTypeCookies, WKWebsiteDataTypeLocalStorage,
+        WKWebsiteDataTypeIndexedDBDatabases, WKWebsiteDataTypeServiceWorkerRegistrations,
+      ]
+    case .cache:
+      types = [
+        WKWebsiteDataTypeDiskCache, WKWebsiteDataTypeMemoryCache, WKWebsiteDataTypeFetchCache,
+      ]
+    }
+    await dataStore(profile: profile).removeData(ofTypes: types, modifiedSince: .distantPast)
+  }
   func dataStore(profile: String?) -> WKWebsiteDataStore {
     let profile = profile ?? "default"
     let key = "T3NativeBrowser\n" + profile

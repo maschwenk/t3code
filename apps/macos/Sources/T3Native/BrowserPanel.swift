@@ -15,6 +15,11 @@ import WebKit
   private var automationMetadata: Task<Void, Never>?
   private let store: ClientStore
   private let profiles = BrowserProfiles()
+  let preferences: BrowserPreferences
+  var opensLinksExternally: Bool { preferences.values.externalLinks }
+  private var settingsWindow: BrowserSettingsWindow?
+  private let profilePicker = NSPopUpButton(frame: .zero, pullsDown: true)
+  private var profileMenuSignature = ""
   private let tabs = NSStackView()
   private let host = BrowserViewportView()
   private let devices = BrowserDeviceToolbar()
@@ -56,9 +61,11 @@ import WebKit
   private var pendingOpen: (text: String?, newTab: Bool, profile: String?)?
   private var focusWhenReady = false
 
-  init(store: ClientStore) {
+  init(store: ClientStore, preferences: BrowserPreferences? = nil) {
     self.store = store
+    self.preferences = preferences ?? BrowserPreferences()
     super.init(nibName: nil, bundle: nil)
+    self.preferences.onChange = { [weak self] in self?.render() }
     automationHost.handle = { [weak self] request, deadline in
       guard let self else { throw BrowserAutomationError.interrupted }
       return try await self.automate(request, deadline: deadline)
@@ -102,7 +109,9 @@ import WebKit
       action: #selector(expandPanel))
     let close = NSButton()
     configure(close, symbol: "xmark", label: "Hide browser", action: #selector(hidePanel))
-    let top = NSStackView(views: [tabScroll, add, expand, close])
+    profilePicker.bezelStyle = .inline
+    profilePicker.setAccessibilityLabel("Browser profiles")
+    let top = NSStackView(views: [tabScroll, add, profilePicker, expand, close])
     top.spacing = 6
     configure(back, symbol: "arrow.left", label: "Back", action: #selector(goBack))
     configure(forward, symbol: "arrow.right", label: "Forward", action: #selector(goForward))
@@ -165,6 +174,7 @@ import WebKit
       host.heightAnchor.constraint(greaterThanOrEqualToConstant: 140),
       address.widthAnchor.constraint(greaterThanOrEqualToConstant: 100),
       more.widthAnchor.constraint(equalToConstant: 28),
+      profilePicker.widthAnchor.constraint(equalToConstant: 28),
     ])
     for child in [top, navigation, divider, devices, host, footer] {
       child.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
@@ -375,6 +385,11 @@ import WebKit
     let page = BrowserPage(
       tab: tab, environment: endpoint, connection: connection,
       dataStore: profiles.dataStore(profile: tab.profileID))
+    page.web.pageZoom = preferences.values.zoom
+    page.web.appearance =
+      preferences.values.appearance == "system"
+      ? nil
+      : NSAppearance(named: preferences.values.appearance == "dark" ? .darkAqua : .aqua)
     pages[key(tab.id, thread: tab.threadID)] = page
     page.picker.onChange = { [weak self] in self?.render() }
     page.picker.onError = { [weak self] message in
@@ -402,6 +417,7 @@ import WebKit
 
   private func render() {
     guard isViewLoaded else { return }
+    renderProfiles()
     automationHost.refreshFocus()
     let tabLabels = directory.tabs.map { tab in
       return tab.id + "\n" + tabTitle(tab)
@@ -448,6 +464,7 @@ import WebKit
     }
     address.isEnabled = connection != nil && threadID != nil && !loading && !busy
     add.isEnabled = address.isEnabled
+    profilePicker.isEnabled = address.isEnabled
     back.isEnabled = page?.web.canGoBack == true
     forward.isEnabled = page?.web.canGoForward == true
     reload.isEnabled = page?.web.url != nil || page?.snapshot.url != nil
@@ -575,7 +592,10 @@ import WebKit
     var input: [String: JSON] = ["threadId": .string(threadID)]
     if let tab { input["tabId"] = .string(tab) }
     if let url { input["url"] = .string(url.absoluteString) }
-    if let profile { input["profileId"] = .string(profile) }
+    if tab == nil {
+      input["profileId"] = .string(profile ?? preferences.values.defaultProfileID)
+      input["viewport"] = preferences.values.viewport
+    }
     mutate(tab == nil ? "preview.open" : "preview.navigate", input: input, connection: connection) {
       [weak self] result in
       guard let self, let id = result["tabId"].string else { return }
@@ -645,10 +665,75 @@ import WebKit
       ("Reload Without Cache", #selector(hardReload)), ("Zoom In", #selector(zoomIn)),
       ("Zoom Out", #selector(zoomOut)), ("Actual Size", #selector(resetZoom)),
       ("New Private Tab", #selector(newPrivateTab)),
+      ("Clear Profile Cookies…", #selector(clearProfileCookies)),
+      ("Clear Profile Cache…", #selector(clearProfileCache)),
+      ("Browser Settings…", #selector(showBrowserSettings)),
     ] {
       more.addItem(withTitle: title)
       more.lastItem?.target = self
       more.lastItem?.action = action
+    }
+  }
+  private func renderProfiles() {
+    let current = page?.snapshot.profileID ?? preferences.values.defaultProfileID
+    let signature =
+      String(describing: preferences.values.availableProfiles) + current
+      + preferences.values.defaultProfileID
+    guard signature != profileMenuSignature else { return }
+    profileMenuSignature = signature
+    profilePicker.removeAllItems()
+    profilePicker.addItem(withTitle: "")
+    profilePicker.item(at: 0)?.image = NSImage(
+      systemSymbolName: "person.crop.circle", accessibilityDescription: nil)
+    profilePicker.toolTip = "Profile: " + preferences.name(current)
+    let heading = NSMenuItem(title: "New tab with profile", action: nil, keyEquivalent: "")
+    heading.isEnabled = false
+    profilePicker.menu?.addItem(heading)
+    for profile in preferences.values.availableProfiles {
+      let item = NSMenuItem(
+        title: profile.name, action: #selector(openProfile(_:)), keyEquivalent: "")
+      item.target = self
+      item.representedObject = profile.id
+      item.state = profile.id == current ? .on : .off
+      profilePicker.menu?.addItem(item)
+    }
+    profilePicker.menu?.addItem(.separator())
+    let manage = NSMenuItem(
+      title: "Manage Profiles…", action: #selector(showBrowserSettings), keyEquivalent: "")
+    manage.target = self
+    profilePicker.menu?.addItem(manage)
+  }
+  @objc private func openProfile(_ sender: NSMenuItem) {
+    guard let id = sender.representedObject as? String else { return }
+    open(nil, newTab: true, profile: id)
+  }
+  @objc func showBrowserSettings() {
+    if settingsWindow == nil {
+      settingsWindow = BrowserSettingsWindow(preferences: preferences, profiles: profiles)
+    }
+    settingsWindow?.showWindow(nil)
+    settingsWindow?.window?.makeKeyAndOrderFront(nil)
+  }
+  @objc private func clearProfileCookies() { clearProfile(.cookies) }
+  @objc private func clearProfileCache() { clearProfile(.cache) }
+  private func clearProfile(_ kinds: BrowserProfiles.DataKinds) {
+    guard let page, let window = view.window else { return }
+    let profile = page.snapshot.profileID
+    let alert = NSAlert()
+    alert.messageText =
+      kinds == .cookies
+      ? "Clear cookies for \(preferences.name(profile))?"
+      : "Clear cache for \(preferences.name(profile))?"
+    alert.informativeText =
+      kinds == .cookies
+      ? "This signs you out of websites in this profile."
+      : "Websites in this profile will download fresh copies of cached content."
+    alert.addButton(withTitle: "Clear")
+    alert.addButton(withTitle: "Cancel")
+    Task { [profiles] in
+      if await alert.beginSheetModal(for: window) == .alertFirstButtonReturn {
+        await profiles.clear(profile: profile, kinds: kinds)
+      }
     }
   }
   @objc private func toggleAgent() { toggleAgentControl() }
@@ -842,7 +927,10 @@ extension BrowserPanel {
     }
     if operation == "open", tab == nil || input["reuseExistingTab"] == .bool(false) {
       var payload: [String: JSON] = [
-        "threadId": .string(thread), "viewport": try BrowserViewport(width: 1280, height: 800).json,
+        "threadId": .string(thread),
+        "profileId": .string(preferences.values.defaultProfileID),
+        "viewport": preferences.values.defaultViewport.width == nil
+          ? try BrowserViewport(width: 1280, height: 800).json : preferences.values.viewport,
       ]
       if let url = input["url"].string {
         payload["url"] = .string(
@@ -861,9 +949,16 @@ extension BrowserPanel {
     let started = Date().ISO8601Format()
     page.automation.record(operation, status: "running", id: id, started: started)
     do {
+      let explicitPresentation = input["open"] == .null ? input["show"] : input["open"]
+      if operation == "open" {
+        page.suppressAgentPresentation = explicitPresentation == .bool(false)
+      }
       let reveal =
         operation == "open"
-        && (input["open"] == .null ? input["show"] : input["open"]) != .bool(false)
+        ? (explicitPresentation == .null
+          ? preferences.values.showAgentPreview : explicitPresentation.bool)
+        : operation != "status" && preferences.values.showAgentPreview
+          && !page.suppressAgentPresentation
       if reveal, self.threadID == thread {
         selections[thread] = tab.id
         selectedID = tab.id

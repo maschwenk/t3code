@@ -470,6 +470,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
       (view, "Toggle Browser", #selector(toggleBrowser), "b", [.command, .shift]),
       (view, "Browser Address", #selector(browserAddress), "l", [.command]),
       (view, "New Browser Tab", #selector(newBrowserTab), "t", [.command]),
+      (view, "Browser Settings…", #selector(browserSettings), "", []),
       (view, "Pause Agent Browser", #selector(toggleAgentBrowser), "", []),
     ] {
       let item = parent.addItem(withTitle: title, action: action, keyEquivalent: key)
@@ -626,6 +627,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     browser.newTab()
   }
   @objc private func toggleAgentBrowser() { browser.toggleAgentControl() }
+  @objc private func browserSettings() { browser.showBrowserSettings() }
   private func openMarkdownLink(_ url: URL, at location: WorkspaceLocation?) {
     if url.isFileURL {
       guard let location, store.workspaceLocation == location else { return }
@@ -633,6 +635,10 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
       workspace.refreshContext()
       workspace.open(url)
     } else if ["http", "https"].contains(url.scheme?.lowercased() ?? "") {
+      if browser.opensLinksExternally {
+        NSWorkspace.shared.open(url)
+        return
+      }
       if browserItem?.isCollapsed == true { toggleBrowser() }
       browser.open(url.absoluteString, newTab: true)
     } else if url.scheme?.lowercased() == "mailto" {

@@ -153,6 +153,15 @@ store. Empty tabs list servers discovered by the connected environment.
 Loopback links resolve to a directly connected LAN/Tailscale host; public relays
 need a browser gateway before local previews can work.
 
+Use the profile button to open a tab with separate cookies and logins. Manage
+Profiles, or View → Browser Settings, lets you add and rename profiles, choose a
+default, and clear a profile's website data. Removing a profile clears its data;
+existing tabs stay open. Settings also saves the default viewport, zoom and
+appearance for new pages, where conversation links open, and whether agent
+actions show a floating preview. Agents use the same default profile and viewport;
+an explicit show/hide request overrides the preview preference. Browser profile
+import from other applications is not yet supported.
+
 The device toolbar offers the same viewport presets as Electron, rotation, and
 custom CSS dimensions (press Return to apply). Previews fit the panel without
 changing responsive breakpoints or reloading the page. These are viewport sizes;
@@ -160,7 +169,7 @@ the browser still uses macOS WebKit, without mobile user-agent or touch emulatio
 Select an element with the pointer button to add its URL, selector and HTML to the
 message draft. Escape cancels; selected links do not navigate. Selection currently
 covers the main document and open shadow roots. Rich annotations, React source
-attribution, frame selection, downloads and profile management remain incomplete.
+attribution, frame selection and downloads remain incomplete.
 
 Agents can open, navigate, inspect, click, type, press keys, scroll and resize the
 native browser through T3's existing browser tools. Background actions preserve

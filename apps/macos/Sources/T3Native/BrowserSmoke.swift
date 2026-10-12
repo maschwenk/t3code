@@ -158,7 +158,8 @@ extension ParitySmoke {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
       "t3-browser-smoke-" + UUID().uuidString)
     let store = ClientStore(draftDirectory: directory)
-    let panel = BrowserPanel(store: store)
+    let preferences = BrowserPreferences(file: directory.appendingPathComponent("browser.json"))
+    let panel = BrowserPanel(store: store, preferences: preferences)
     let window = NSWindow(
       contentRect: NSRect(x: 100, y: 100, width: 850, height: 700),
       styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
@@ -281,6 +282,81 @@ extension ParitySmoke {
         "document.cookie='\(cookie)=; path=/; Max-Age=0'; 'ok'")
       print(
         "Browser smoke: full-height layout, conversation/hide state retention, private cookie isolation"
+      )
+      let profile = try preferences.create("Smoke profile")
+      let otherProfile = try preferences.create("Other smoke profile")
+      let profiles = BrowserProfiles()
+      do {
+        try preferences.update {
+          $0.defaultProfileID = profile.id
+          $0.viewport = BrowserDevicePreset.all[0].viewport.json
+          $0.zoom = 1.25
+          $0.appearance = "dark"
+          $0.showAgentPreview = false
+        }
+        panel.open(fixture.absoluteString, newTab: true)
+        try await wait {
+          web() !== privateWeb && web()?.title == "Browser fixture One" && web()?.isLoading == false
+        }
+        guard let custom = web() else { throw T3Error("New profile tab has no page.") }
+        panel.view.layoutSubtreeIfNeeded()
+        let dimensions = try await custom.evaluateJavaScript("[innerWidth,innerHeight]") as? [Int]
+        guard custom.pageZoom == 1.25, custom.appearance?.name == .darkAqua,
+          dimensions == [375, 667]
+        else {
+          throw T3Error(
+            "New tab ignored defaults: zoom \(custom.pageZoom), appearance \(String(describing: custom.appearance?.name)), viewport \(String(describing: dimensions))."
+          )
+        }
+        let profileCookie = HTTPCookie(properties: [
+          .domain: "localhost", .path: "/", .name: cookie, .value: "custom",
+          .expires: Date().addingTimeInterval(3600),
+        ])!
+        await custom.configuration.websiteDataStore.httpCookieStore.setCookie(profileCookie)
+        let cookies = await profiles.dataStore(profile: profile.id).httpCookieStore.allCookies()
+        guard cookies.contains(where: { $0.name == cookie }),
+          await profiles.dataStore(profile: otherProfile.id).httpCookieStore.allCookies().isEmpty
+        else { throw T3Error("Browser profiles did not isolate or restore their cookie stores.") }
+        await profiles.dataStore(profile: otherProfile.id).httpCookieStore.setCookie(profileCookie)
+        await profiles.clear(profile: profile.id, kinds: .cookies)
+        guard await custom.configuration.websiteDataStore.httpCookieStore.allCookies().isEmpty,
+          await profiles.dataStore(profile: otherProfile.id).httpCookieStore.allCookies().contains(
+            where: { $0.name == cookie })
+        else { throw T3Error("Clearing one profile affected another profile.") }
+        let opened = try await panel.automate(
+          .object([
+            "requestId": .string(UUID().uuidString), "threadId": .string(alternate),
+            "operation": .string("open"),
+            "input": .object([
+              "url": .string(fixture.absoluteString), "reuseExistingTab": .bool(false),
+            ]),
+          ]), deadline: BrowserAutomationDeadline(milliseconds: 15_000))
+        let agentTabs = try await connection.call(
+          "preview.list", payload: .object(["threadId": .string(alternate)]))
+        guard opened["visible"] == .bool(false),
+          agentTabs["sessions"].array.contains(where: {
+            $0["tabId"] == opened["tabId"] && $0["profileId"].string == profile.id
+              && $0["viewport"] == preferences.values.viewport
+          })
+        else { throw T3Error("Agent tab ignored profile, viewport or presentation preferences.") }
+        _ = try await connection.call(
+          "preview.close",
+          payload: .object(["threadId": .string(alternate), "tabId": opened["tabId"]]))
+        try preferences.rename(profile.id, to: "Renamed smoke profile")
+        try preferences.remove(profile.id)
+        guard preferences.values.defaultProfileID == "default" else {
+          throw T3Error("Removed default profile did not fall back to Default.")
+        }
+        try preferences.update { $0 = BrowserPreferenceValues() }
+        await profiles.clear(profile: profile.id, kinds: .all)
+        await profiles.clear(profile: otherProfile.id, kinds: .all)
+      } catch {
+        await profiles.clear(profile: profile.id, kinds: .all)
+        await profiles.clear(profile: otherProfile.id, kinds: .all)
+        throw error
+      }
+      print(
+        "Browser smoke: saved manual and agent defaults, profile cookie isolation and scoped clearing"
       )
       try await browserAutomation(
         panel: panel, store: store, connection: connection, threadID: threadID,
