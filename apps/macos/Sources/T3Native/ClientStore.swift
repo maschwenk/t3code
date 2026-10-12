@@ -65,6 +65,7 @@ import T3Core
   private(set) var browserEnvironmentID: String?
   var browserConnection: RPCConnection? { ready ? connection : nil }
   var browserEndpoint: URL? { ready ? settings?.endpoint : nil }
+  var hasConnection: Bool { settings != nil }
   private var settings: ConnectionSettings?
   private var cachedWorkspaceMedia: WorkspaceMediaRequest?
   private var lifetime: Task<Void, Never>?
@@ -143,7 +144,12 @@ import T3Core
       }
     }
     self.settings = settings
-    if let threadID { selectedID = threadID }
+    selectedID =
+      threadID ?? selectedID
+      ?? (preferences.dictionary(forKey: "selectedThreadByEndpoint")?[
+        settings.endpoint.absoluteString] as? String)
+    status = "Connecting…"
+    error = nil
     let generation = self.generation
     lifetime = Task {
       var attempt = 0
@@ -1046,6 +1052,11 @@ import T3Core
     let selection = selectionGeneration
     let generation = generation
     selectedID = id
+    if let settings {
+      var selections = preferences.dictionary(forKey: "selectedThreadByEndpoint") ?? [:]
+      selections[settings.endpoint.absoluteString] = id
+      preferences.set(selections, forKey: "selectedThreadByEndpoint")
+    }
     if thread?.id != id { thread = ThreadState(id: id) }
     thread?.markUnsynchronized()
     loadingHistory = false

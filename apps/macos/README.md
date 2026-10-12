@@ -259,6 +259,10 @@ A private JSON connection file can be used for local tests without saving a toke
 ```
 
 Keep this file outside Git and restrict its permissions (`chmod 600`).
+For a normal app launch, add `--remember-connection` alongside `--connection-file`
+to save the imported token in Keychain. Subsequent launches reconnect automatically
+and restore the last selected thread for that server. Test launches leave saved
+credentials unchanged unless this flag is explicitly supplied.
 
 ```sh
 apps/macos/.build/release/T3Native --smoke --connection-file /private/path/connection.json

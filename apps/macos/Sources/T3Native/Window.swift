@@ -101,6 +101,9 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
   private let timeline = NSTableView()
   private let timelineScroll = NSScrollView()
   private let composer = Composer()
+  private let header = NSStackView()
+  private let conversationStack = NSStackView()
+  private let welcome = ConnectionWelcomeView()
   private let heading = NSTextField(labelWithString: "T3 Native")
   private let subtitle = NSTextField(labelWithString: "A native Mac client for T3")
   private let status = NSTextField(labelWithString: "")
@@ -403,13 +406,11 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     attachmentTray.widthAnchor.constraint(equalTo: composerStack.widthAnchor).isActive = true
     planBanner.widthAnchor.constraint(equalTo: composerStack.widthAnchor).isActive = true
     bottom.widthAnchor.constraint(equalTo: composerStack.widthAnchor).isActive = true
-    let header = NSStackView(views: [
+    for view in [
       subtitle, NSTextField(labelWithString: "/"), heading, NSView(),
-      button("Files", #selector(toggleWorkspace)),
-      button("Browser", #selector(toggleBrowser)),
-      button("Changes", #selector(toggleReview)),
-      button("Terminal", #selector(toggleTerminal)),
-    ])
+      button("Files", symbol: "folder", #selector(toggleWorkspace)),
+      button("Browser", symbol: "globe", #selector(toggleBrowser)),
+    ] { header.addArrangedSubview(view) }
     header.spacing = 10
     right.addSubview(header)
     header.translatesAutoresizingMaskIntoConstraints = false
@@ -419,9 +420,10 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
       header.topAnchor.constraint(equalTo: right.topAnchor, constant: 46),
     ])
     let footer = NSStackView(views: [status, NSView(), hint])
-    let stack = NSStackView(views: [
+    let stack = conversationStack
+    for view in [
       olderButton, timelineScroll, errorLabel, requestsPanel, queuePanel, composerSurface, footer,
-    ])
+    ] { stack.addArrangedSubview(view) }
     stack.orientation = .vertical
     stack.alignment = .leading
     stack.spacing = 9
@@ -441,15 +443,37 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
       view.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
     }
     timelineScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 120).isActive = true
+    welcome.onPrimary = { [weak self] in
+      guard let self else { return }
+      if store.ready { newThread() } else { retry() }
+    }
+    welcome.onSecondary = { [weak self] in
+      guard let self else { return }
+      if store.ready { openProject() } else { connect() }
+    }
+    right.addSubview(welcome)
+    welcome.translatesAutoresizingMaskIntoConstraints = false
+    NSLayoutConstraint.activate([
+      welcome.centerXAnchor.constraint(equalTo: right.centerXAnchor),
+      welcome.centerYAnchor.constraint(equalTo: right.centerYAnchor, constant: -24),
+      welcome.widthAnchor.constraint(lessThanOrEqualToConstant: 420),
+      welcome.widthAnchor.constraint(lessThanOrEqualTo: right.widthAnchor, constant: -64),
+    ])
     heading.setContentCompressionResistancePriority(.required, for: .vertical)
     composerSurface.setContentCompressionResistancePriority(.required, for: .vertical)
     window.setContentSize(NSSize(width: 1220, height: 840))
     splitController.splitView.setPosition(256, ofDividerAt: 0)
   }
 
-  private func button(_ title: String, _ action: Selector) -> NSButton {
+  private func button(_ title: String, symbol: String, _ action: Selector) -> NSButton {
     let button = NSButton(title: title, target: self, action: action)
-    button.bezelStyle = .rounded
+    button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+    button.imagePosition = .imageLeading
+    button.font = .systemFont(ofSize: 12)
+    button.bezelStyle = .inline
+    button.isBordered = false
+    button.contentTintColor = .secondaryLabelColor
+    button.toolTip = title
     return button
   }
 
@@ -708,6 +732,11 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     review.refreshContext(active: reviewItem?.isCollapsed == false)
     terminal.refresh(active: !showingUsage && terminalItem?.isCollapsed == false)
     let selected = store.selectedThread
+    let hasConversation = store.selectedID != nil
+    header.isHidden = !hasConversation
+    conversationStack.isHidden = !hasConversation
+    welcome.isHidden = hasConversation
+    welcome.refresh(store)
     heading.stringValue = selected?.title ?? "T3 Native"
     subtitle.stringValue =
       selected.map {
@@ -1335,7 +1364,9 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
       }, closed: { [weak self] in self?.projectPicker = nil })
     projectPicker?.present(on: window)
   }
-  @objc private func retry() { store.retry() }
+  @objc private func retry() {
+    if store.hasConnection { store.retry() } else { connect() }
+  }
 
   @objc func connect() {
     let alert = NSAlert()

@@ -1,18 +1,6 @@
 import AppKit
 import T3Core
 
-@MainActor final class SidebarSearchCell: NSSearchFieldCell {
-  override func searchTextRect(forBounds rect: NSRect) -> NSRect {
-    var text = super.searchTextRect(forBounds: rect)
-    let leading = searchButtonRect(forBounds: rect).maxX + 4
-    let cancel = cancelButtonRect(forBounds: rect)
-    let trailing = cancel.isEmpty ? rect.maxX - 4 : cancel.minX - 4
-    text.origin.x = leading
-    text.size.width = max(0, trailing - leading)
-    return text
-  }
-}
-
 @MainActor private final class ThreadTable: NSTableView {
   var contextMenu: ((Int) -> NSMenu?)?
   override func menu(for event: NSEvent) -> NSMenu? {
@@ -22,7 +10,7 @@ import T3Core
 
 @MainActor
 final class SidebarView: NSStackView, NSTableViewDataSource, NSTableViewDelegate,
-  NSSearchFieldDelegate
+  NSTextFieldDelegate
 {
   private enum Row: Equatable {
     case header(ThreadSection, Int, Bool)
@@ -39,7 +27,10 @@ final class SidebarView: NSStackView, NSTableViewDataSource, NSTableViewDelegate
   var onBrowserSettings: (() -> Void)?
   var onBack: (() -> Void)?
   private let table = ThreadTable()
-  private let search = NSSearchField()
+  private let search = NSTextField(string: "")
+  private lazy var clearSearchButton = sidebarIcon("Clear search", "xmark.circle.fill", size: 18) {
+    [weak self] in self?.clearSearch()
+  }
   private lazy var projects = sidebarIcon("Filter by project", "folder") { [weak self] in
     self?.chooseProject()
   }
@@ -83,11 +74,9 @@ final class SidebarView: NSStackView, NSTableViewDataSource, NSTableViewDelegate
     orientation = .vertical
     alignment = .leading
     spacing = 6
-    let searchCell = SidebarSearchCell(textCell: "")
-    searchCell.isEditable = true
-    searchCell.isSelectable = true
-    searchCell.isScrollable = true
-    search.cell = searchCell
+    search.isEditable = true
+    search.isSelectable = true
+    search.focusRingType = .none
     search.placeholderString = "Search"
     search.stringValue = Arguments.value("--filter") ?? ""
     search.delegate = self
@@ -95,6 +84,15 @@ final class SidebarView: NSStackView, NSTableViewDataSource, NSTableViewDelegate
     search.isBordered = false
     search.drawsBackground = false
     search.font = .systemFont(ofSize: 13)
+    search.heightAnchor.constraint(equalToConstant: 22).isActive = true
+    let searchIcon = NSImageView(
+      image: NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: nil)!)
+    searchIcon.identifier = NSUserInterfaceItemIdentifier("thread-search-icon")
+    searchIcon.contentTintColor = .secondaryLabelColor
+    searchIcon.widthAnchor.constraint(equalToConstant: 14).isActive = true
+    searchIcon.heightAnchor.constraint(equalToConstant: 14).isActive = true
+    let searchGroup = NSStackView(views: [searchIcon, search, clearSearchButton])
+    searchGroup.spacing = 8
     let toggle = sidebarIcon("Toggle sidebar (⌘B)", "sidebar.left") { [weak self] in
       self?.onToggleSidebar?()
     }
@@ -105,7 +103,7 @@ final class SidebarView: NSStackView, NSTableViewDataSource, NSTableViewDelegate
     let brandRow = NSStackView(views: [trafficSpace, toggle, brand, NSView()])
     brandRow.spacing = 4
     brandRow.heightAnchor.constraint(equalToConstant: 30).isActive = true
-    let header = NSStackView(views: [search, projects, openProjectButton, newButton])
+    let header = NSStackView(views: [searchGroup, projects, openProjectButton, newButton])
     header.spacing = 1
     header.heightAnchor.constraint(equalToConstant: 32).isActive = true
     scope.font = .systemFont(ofSize: 11)
@@ -173,6 +171,7 @@ final class SidebarView: NSStackView, NSTableViewDataSource, NSTableViewDelegate
     newButton.isEnabled = store.canCreateThread
     openProjectButton.isEnabled = store.ready && store.catalogReady
     let query = search.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+    clearSearchButton.isHidden = search.stringValue.isEmpty
     let source = store.showingArchives ? store.archives.threads : store.shell.threads
     let filtered = source.values.filter { thread in
       (projectID == nil || thread.projectID == projectID)
@@ -265,12 +264,14 @@ final class SidebarView: NSStackView, NSTableViewDataSource, NSTableViewDelegate
     archiveButton.contentTintColor =
       store.showingArchives ? .controlAccentColor : .secondaryLabelColor
     archiveButton.isEnabled = store.ready
+    reconnectButton.toolTip = store.hasConnection ? "Reconnect" : "Connect to server…"
+    reconnectButton.setAccessibilityLabel(reconnectButton.toolTip)
     message.stringValue =
       store.showingArchives
       ? store.archiveError
         ?? (store.archives.synchronized
           ? (filtered.isEmpty ? "No archived threads" : "") : "Loading archives…")
-      : (filtered.isEmpty ? (store.ready ? "No matching threads" : "Connecting…") : "")
+      : (filtered.isEmpty ? (store.ready ? "No matching threads" : store.status) : "")
     message.isHidden = message.stringValue.isEmpty
     scheduleWake(source.values.compactMap { $0.lifecycle.snoozedUntil }.filter { $0 > now }.min())
   }

@@ -89,17 +89,3 @@ private func sidebarFixture(settled: Bool = false) throws -> SidebarThreadPresen
     #expect(labels(cell).filter { $0.stringValue == value.thread.title }.count == 1)
   }
 }
-
-@MainActor @Test func sidebarSearchTextLeavesRoomForBothControls() {
-  let cell = SidebarSearchCell(textCell: "A long search query")
-  cell.isBordered = false
-  cell.drawsBackground = false
-  for width in [CGFloat(130), 220, 285] {
-    let bounds = NSRect(x: 0, y: 0, width: width, height: 32)
-    let text = cell.searchTextRect(forBounds: bounds)
-    #expect(text.minX >= cell.searchButtonRect(forBounds: bounds).maxX + 4)
-    let cancel = cell.cancelButtonRect(forBounds: bounds)
-    #expect(cancel.isEmpty || text.maxX <= cancel.minX - 4)
-    #expect(text.width > 50)
-  }
-}

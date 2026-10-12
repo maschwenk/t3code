@@ -25,7 +25,7 @@ enum Credentials {
     UserDefaults.standard.set(settings.endpoint.absoluteString, forKey: "endpoint")
   }
 
-  static func load() -> ConnectionSettings? {
+  static func load() throws -> ConnectionSettings? {
     guard let endpoint = UserDefaults.standard.string(forKey: "endpoint"),
       let url = URL(string: endpoint)
     else { return nil }
@@ -35,9 +35,11 @@ enum Credentials {
       kSecReturnData as String: true, kSecMatchLimit as String: kSecMatchLimitOne,
     ]
     var result: CFTypeRef?
-    guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
-      let data = result as? Data, let token = String(data: data, encoding: .utf8)
-    else { return nil }
-    return try? ConnectionSettings(endpoint: url, token: token)
+    let status = SecItemCopyMatching(query as CFDictionary, &result)
+    if status == errSecItemNotFound { return nil }
+    guard status == errSecSuccess, let data = result as? Data,
+      let token = String(data: data, encoding: .utf8)
+    else { throw T3Error("Could not read the saved connection from Keychain (\(status)).") }
+    return try ConnectionSettings(endpoint: url, token: token)
   }
 }

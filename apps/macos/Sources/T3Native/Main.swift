@@ -13,9 +13,13 @@ import T3Core
     NSApp.activate(ignoringOtherApps: true)
     do {
       if let path = Arguments.value("--connection-file") {
-        store.connect(try ConnectionSettings.load(URL(fileURLWithPath: path)))
-      } else if let settings = Credentials.load() {
-        store.connect(settings)
+        let settings = try ConnectionSettings.load(URL(fileURLWithPath: path))
+        if CommandLine.arguments.contains("--remember-connection") {
+          try Credentials.save(settings)
+        }
+        store.connect(settings, selecting: Arguments.value("--thread-id"))
+      } else if let settings = try Credentials.load() {
+        store.connect(settings, selecting: Arguments.value("--thread-id"))
       }
     } catch {
       store.error = error.localizedDescription
