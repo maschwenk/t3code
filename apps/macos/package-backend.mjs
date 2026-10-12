@@ -53,7 +53,7 @@ const modules = NodePath.join(server, "node_modules");
 await NodeFSP.mkdir(modules, { recursive: true });
 const resolvePackage = async (name, from) => {
   const require = NodeModule.createRequire(from);
-  for (const search of require.NodePath.resolve.paths(name) ?? []) {
+  for (const search of require.resolve.paths(name) ?? []) {
     const file = NodePath.join(search, name, "package.json");
     if (NodeFS.existsSync(file)) return NodeFSP.realpath(file);
   }
