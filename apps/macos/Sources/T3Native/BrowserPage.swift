@@ -11,6 +11,10 @@ import WebKit
   let threadID: String
   let environment: URL
   var suppressAgentPresentation = false
+  var agentDriven = false
+  var activeAutomation = 0
+  var onHumanInput: (() -> Void)?
+  var onDownload: ((WKDownload, Bool, NSWindow?) -> Void)?
   var onChange: (() -> Void)?
   var onNewTab: ((URL) -> Void)?
   private(set) var failure: String?
@@ -26,6 +30,7 @@ import WebKit
   private var retryURL: URL?
   private var requestedURL: URL?
   private var started = false
+  private var expectingDownload = false
   private(set) var navigationPending = false
   private(set) var navigationCommitted = false
   var displayedURL: URL? { failure == nil ? web.url ?? snapshot.url : retryURL ?? snapshot.url }
@@ -96,6 +101,7 @@ import WebKit
   }
 
   func dispose() {
+    automation.interrupt()
     picker.dispose()
     automation.invalidate()
     web.stopLoading()
@@ -104,6 +110,12 @@ import WebKit
     observations = []
     reportTask?.cancel()
     reportTask = nil
+  }
+
+  func takeControl() {
+    agentDriven = false
+    automation.interrupt()
+    onHumanInput?()
   }
 
   func reload(hard: Bool = false) {
@@ -195,7 +207,15 @@ import WebKit
     onChange?()
   }
   private func failed(_ error: any Error) {
-    guard (error as NSError).code != NSURLErrorCancelled else { return }
+    let error = error as NSError
+    guard error.code != NSURLErrorCancelled else { return }
+    // Converting navigation to WKDownload interrupts the old frame with legacy
+    // WebKit policy code 102, even when the file has downloaded successfully.
+    if expectingDownload, error.domain == "WebKitErrorDomain", error.code == 102 {
+      expectingDownload = false
+      navigationPending = false
+      return
+    }
     navigationPending = false
     requestedURL = nil
     failure = error.localizedDescription
@@ -248,6 +268,13 @@ import WebKit
     -> WKNavigationActionPolicy
   {
     guard let url = action.request.url else { return .cancel }
+    if action.targetFrame?.isMainFrame == true { expectingDownload = false }
+    if action.shouldPerformDownload,
+      ["http", "https", "blob", "data"].contains(url.scheme?.lowercased() ?? "")
+    {
+      expectingDownload = true
+      return .download
+    }
     if url.absoluteString == "about:blank" { return .allow }
     guard ["http", "https"].contains(url.scheme?.lowercased() ?? "") else { return .cancel }
     if action.targetFrame == nil {
@@ -270,6 +297,40 @@ import WebKit
       }
     }
     return .allow
+  }
+
+  func webView(_ webView: WKWebView, decidePolicyFor response: WKNavigationResponse) async
+    -> WKNavigationResponsePolicy
+  {
+    let disposition =
+      (response.response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Disposition")
+      ?? ""
+    if !response.canShowMIMEType || disposition.lowercased().hasPrefix("attachment") {
+      expectingDownload = true
+      return .download
+    }
+    return .allow
+  }
+  func webView(
+    _ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload
+  ) {
+    becameDownload(download)
+  }
+  func webView(
+    _ webView: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload
+  ) {
+    becameDownload(download)
+  }
+  private func becameDownload(_ download: WKDownload) {
+    navigationPending = false
+    requestedURL = nil
+    failure = nil
+    if let onDownload {
+      onDownload(download, agentDriven, web.window)
+    } else {
+      download.cancel(nil)
+    }
+    onChange?()
   }
 
   func webView(

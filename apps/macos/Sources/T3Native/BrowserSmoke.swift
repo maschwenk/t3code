@@ -135,6 +135,7 @@ extension ParitySmoke {
         throw T3Error("Browser navigation did not recover after an error.")
       }
       print("Browser smoke: blocked address reports failure and recovers on valid navigation")
+      try await browserDownloads(page: page)
       try await close()
       let remaining = try await connection.call(
         "preview.list", payload: .object(["threadId": .string(threadID)]))
@@ -159,7 +160,9 @@ extension ParitySmoke {
       "t3-browser-smoke-" + UUID().uuidString)
     let store = ClientStore(draftDirectory: directory)
     let preferences = BrowserPreferences(file: directory.appendingPathComponent("browser.json"))
-    let panel = BrowserPanel(store: store, preferences: preferences)
+    let panel = BrowserPanel(
+      store: store, preferences: preferences,
+      downloads: BrowserDownloads(agentDirectory: directory.appendingPathComponent("downloads")))
     let window = NSWindow(
       contentRect: NSRect(x: 100, y: 100, width: 850, height: 700),
       styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
@@ -252,10 +255,50 @@ extension ParitySmoke {
         payload: Commands.newThread(
           template: template, id: alternate, title: "Native browser switching verification"))
       try await waitForStore(store) { store.shell.threads[alternate] != nil }
+      let regularID = try stored["sessions"].array.first?.requiredString("tabId") ?? ""
+      func regularAction(_ operation: String, _ input: [String: JSON]) async throws -> JSON {
+        try await panel.automate(
+          .object([
+            "requestId": .string(UUID().uuidString), "threadId": .string(threadID),
+            "tabId": .string(regularID), "operation": .string(operation), "input": .object(input),
+          ]), deadline: BrowserAutomationDeadline(milliseconds: 10_000))
+      }
+      let pendingClick = Task {
+        try await regularAction("click", ["selector": .string("#after-switch")])
+      }
+      defer { pendingClick.cancel() }
+      let pendingDeadline = Date().addingTimeInterval(5)
+      while true {
+        let snapshot = try await regularAction("snapshot", [:])
+        if snapshot["actionTimeline"].array.contains(where: {
+          $0["action"].string == "click" && $0["status"].string == "running"
+        }) {
+          break
+        }
+        guard Date() < pendingDeadline else {
+          throw T3Error("Pending click did not start before switching conversations.")
+        }
+      }
       store.select(alternate)
       try await waitForStore(store) { store.canEditThread && store.selectedID == alternate }
       panel.refresh(active: true)
       try await wait { web() == nil }
+      _ = try await regularAction(
+        "evaluate",
+        [
+          "expression": .string(
+            "const control=document.createElement('button'); control.id='after-switch'; control.textContent='Deferred control'; control.onclick=()=>window.clickedAfterSwitch=true; document.body.append(control); true"
+          )
+        ])
+      _ = try await pendingClick.value
+      guard
+        try await regularAction("evaluate", ["expression": .string("window.clickedAfterSwitch")])
+          == .bool(true)
+      else {
+        throw T3Error("Switching conversations detached the page during an agent action.")
+      }
+      print(
+        "Browser smoke: in-flight agent click survives switching away from a manually opened page")
       store.select(threadID)
       try await waitForStore(store) { store.canEditThread && store.selectedID == threadID }
       store.onChange = { panel.refresh(active: true) }

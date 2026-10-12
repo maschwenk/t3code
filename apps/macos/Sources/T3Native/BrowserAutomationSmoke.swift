@@ -174,6 +174,25 @@ extension ParitySmoke {
       throw T3Error("Floating preview was hidden or took focus from the selected conversation.")
     }
     print("Browser automation: floating preview reveals without taking keyboard focus")
+    var downloadPrompted = false
+    panel.downloads.chooseDestination = { _, _ in
+      downloadPrompted = true
+      return nil
+    }
+    _ = try await action("click", ["selector": .string("#download")])
+    let downloadDeadline = Date().addingTimeInterval(10)
+    while panel.downloads.items.isEmpty || panel.downloads.activeCount > 0 {
+      guard Date() < downloadDeadline else {
+        throw T3Error("Agent download did not finish in the browser panel.")
+      }
+      try await Task.sleep(for: .milliseconds(25))
+    }
+    guard !downloadPrompted, let item = panel.downloads.items.first, item.state == .finished,
+      let file = item.file, FileManager.default.fileExists(atPath: file.path)
+    else {
+      throw T3Error("Agent action opened Save or failed to save its browser download.")
+    }
+    print("Browser automation: page controller routes downloads to an automatic destination")
     _ = try await connection.call(
       "preview.close", payload: .object(["threadId": .string(threadID), "tabId": .string(tabID!)]))
     store.select(threadID)

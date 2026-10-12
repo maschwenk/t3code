@@ -41,6 +41,7 @@ import T3Core
         alert.addButton(withTitle: "Quit without saving")
         shouldQuit = alert.runModal() == .alertSecondButtonReturn
       }
+      if shouldQuit { shouldQuit = await controller?.finishBrowserDownloads() ?? true }
       finishingTermination = false
       if !shouldQuit { controller?.showWindow(nil) }
       sender.reply(toApplicationShouldTerminate: shouldQuit)

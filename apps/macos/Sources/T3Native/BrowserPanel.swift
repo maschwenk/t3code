@@ -15,6 +15,10 @@ import WebKit
   private var automationMetadata: Task<Void, Never>?
   private let store: ClientStore
   private let profiles = BrowserProfiles()
+  private let inputMonitor = BrowserInputMonitor()
+  let downloads: BrowserDownloads
+  private let downloadButton = NSButton()
+  private var downloadsWindow: BrowserDownloadsWindow?
   let preferences: BrowserPreferences
   var opensLinksExternally: Bool { preferences.values.externalLinks }
   private var settingsWindow: BrowserSettingsWindow?
@@ -61,11 +65,15 @@ import WebKit
   private var pendingOpen: (text: String?, newTab: Bool, profile: String?)?
   private var focusWhenReady = false
 
-  init(store: ClientStore, preferences: BrowserPreferences? = nil) {
+  init(
+    store: ClientStore, preferences: BrowserPreferences? = nil, downloads: BrowserDownloads? = nil
+  ) {
     self.store = store
     self.preferences = preferences ?? BrowserPreferences()
+    self.downloads = downloads ?? BrowserDownloads()
     super.init(nibName: nil, bundle: nil)
     self.preferences.onChange = { [weak self] in self?.render() }
+    self.downloads.onChange = { [weak self] in self?.render() }
     automationHost.handle = { [weak self] request, deadline in
       guard let self else { throw BrowserAutomationError.interrupted }
       return try await self.automate(request, deadline: deadline)
@@ -111,7 +119,10 @@ import WebKit
     configure(close, symbol: "xmark", label: "Hide browser", action: #selector(hidePanel))
     profilePicker.bezelStyle = .inline
     profilePicker.setAccessibilityLabel("Browser profiles")
-    let top = NSStackView(views: [tabScroll, add, profilePicker, expand, close])
+    configure(
+      downloadButton, symbol: "arrow.down.circle", label: "Browser downloads",
+      action: #selector(showDownloads))
+    let top = NSStackView(views: [tabScroll, add, profilePicker, downloadButton, expand, close])
     top.spacing = 6
     configure(back, symbol: "arrow.left", label: "Back", action: #selector(goBack))
     configure(forward, symbol: "arrow.right", label: "Forward", action: #selector(goForward))
@@ -240,11 +251,7 @@ import WebKit
     let detachedPage = shownPage
     host.show(nil)
     shownPage = nil
-    if let detachedPage,
-      let surface = automationSurfaces[key(detachedPage.tabID, thread: detachedPage.threadID)]
-    {
-      surface.attach(detachedPage, show: false, title: "Browser")
-    }
+    retainDetachedPage(detachedPage)
     empty.isHidden = false
     directory = BrowserDirectory(threadID: nextThread ?? "")
     selectedID = nextThread.flatMap { selections[$0] }
@@ -355,8 +362,10 @@ import WebKit
       let tab = directory.tabs.first(where: { $0.id == selectedID })
     else {
       shownPage?.picker.cancel()
+      let previous = shownPage
       host.show(nil)
       shownPage = nil
+      retainDetachedPage(previous)
       empty.isHidden = false
       return
     }
@@ -369,7 +378,9 @@ import WebKit
     }
     if shownPage !== page {
       shownPage?.picker.cancel()
+      let previous = shownPage
       host.show(nil)
+      retainDetachedPage(previous)
       shownPage = page
       automationSurfaces[key]?.viewport.show(nil)
       automationSurfaces[key]?.window.orderOut(nil)
@@ -378,6 +389,16 @@ import WebKit
     page.receive(tab)
     page.web.isHidden = tab.url == nil && page.web.url == nil
     empty.isHidden = !page.web.isHidden
+  }
+
+  private func retainDetachedPage(_ page: BrowserPage?) {
+    guard let page else { return }
+    let key = key(page.tabID, thread: page.threadID)
+    guard page.activeAutomation > 0 || automationSurfaces[key] != nil else { return }
+    let surface = automationSurfaces[key] ?? BrowserAutomationSurface()
+    automationSurfaces[key] = surface
+    surface.onStop = { [weak self] in self?.automationHost.setPaused(true) }
+    surface.attach(page, show: false, title: "Browser")
   }
 
   private func makePage(_ tab: BrowserTab, connection: RPCConnection, endpoint: URL) -> BrowserPage
@@ -391,6 +412,14 @@ import WebKit
       ? nil
       : NSAppearance(named: preferences.values.appearance == "dark" ? .darkAqua : .aqua)
     pages[key(tab.id, thread: tab.threadID)] = page
+    inputMonitor.register(page)
+    page.onHumanInput = { [weak self, weak page] in
+      guard let self, let page else { return }
+      automationHost.interrupt(threadID: page.threadID)
+    }
+    page.onDownload = { [weak downloads] download, agent, window in
+      downloads?.receive(download, agent: agent, window: window)
+    }
     page.picker.onChange = { [weak self] in self?.render() }
     page.picker.onError = { [weak self] message in
       self?.error = message
@@ -406,7 +435,7 @@ import WebKit
     page.onChange = { [weak self] in self?.render() }
     page.onNewTab = { [weak self, weak page] url in
       guard let self, let page else { return }
-      if self.threadID == page.threadID, self.active, self.shownPage === page {
+      if !page.agentDriven, self.threadID == page.threadID, self.active, self.shownPage === page {
         self.open(url.absoluteString, newTab: true, profile: tab.profileID)
       } else {
         self.openBackgroundPopup(url, from: page)
@@ -418,6 +447,15 @@ import WebKit
   private func render() {
     guard isViewLoaded else { return }
     renderProfiles()
+    let downloadError = downloads.items.first?.error
+    downloadButton.toolTip =
+      downloads.activeCount > 0
+      ? "\(downloads.activeCount) downloads in progress" : downloadError ?? "Browser downloads"
+    downloadButton.image = NSImage(
+      systemSymbolName: downloads.activeCount > 0
+        ? "arrow.down.circle.fill"
+        : downloadError == nil ? "arrow.down.circle" : "exclamationmark.circle",
+      accessibilityDescription: "Browser downloads")
     automationHost.refreshFocus()
     let tabLabels = directory.tabs.map { tab in
       return tab.id + "\n" + tabTitle(tab)
@@ -589,6 +627,7 @@ import WebKit
       return
     }
     let tab = newTab ? nil : selectedID
+    if tab != nil { page?.takeControl() }
     var input: [String: JSON] = ["threadId": .string(threadID)]
     if let tab { input["tabId"] = .string(tab) }
     if let url { input["url"] = .string(url.absoluteString) }
@@ -606,6 +645,7 @@ import WebKit
 
   private func close(_ id: String) {
     guard let connection, let threadID else { return }
+    pages[key(id, thread: threadID)]?.takeControl()
     mutate(
       "preview.close", input: ["threadId": .string(threadID), "tabId": .string(id)],
       connection: connection)
@@ -668,6 +708,7 @@ import WebKit
       ("Clear Profile Cookies…", #selector(clearProfileCookies)),
       ("Clear Profile Cache…", #selector(clearProfileCache)),
       ("Browser Settings…", #selector(showBrowserSettings)),
+      ("Downloads…", #selector(showDownloads)),
     ] {
       more.addItem(withTitle: title)
       more.lastItem?.target = self
@@ -714,6 +755,11 @@ import WebKit
     settingsWindow?.showWindow(nil)
     settingsWindow?.window?.makeKeyAndOrderFront(nil)
   }
+  @objc func showDownloads() {
+    if downloadsWindow == nil { downloadsWindow = BrowserDownloadsWindow(downloads: downloads) }
+    downloadsWindow?.showWindow(nil)
+    downloadsWindow?.window?.makeKeyAndOrderFront(nil)
+  }
   @objc private func clearProfileCookies() { clearProfile(.cookies) }
   @objc private func clearProfileCache() { clearProfile(.cache) }
   private func clearProfile(_ kinds: BrowserProfiles.DataKinds) {
@@ -739,10 +785,12 @@ import WebKit
   @objc private func toggleAgent() { toggleAgentControl() }
   @objc private func togglePicker() {
     guard let page, store.canAddBrowserContext else { return }
+    page.takeControl()
     if page.picker.active { page.picker.cancel() } else { page.picker.start() }
   }
   func resize(_ viewport: BrowserViewport) {
     guard let connection, let threadID, let selectedID else { return }
+    page?.takeControl()
     let key = key(selectedID, thread: threadID)
     mutate(
       "preview.resize",
@@ -767,25 +815,38 @@ import WebKit
       previous ?? (try? BrowserViewport(width: width, height: height))
         ?? BrowserDevicePreset.all[0].viewport)
   }
-  @objc private func goBack() { page?.web.goBack() }
-  @objc private func goForward() { page?.web.goForward() }
+  @objc private func goBack() {
+    page?.takeControl()
+    page?.web.goBack()
+  }
+  @objc private func goForward() {
+    page?.takeControl()
+    page?.web.goForward()
+  }
   @objc private func reloadPage() {
+    page?.takeControl()
     if page?.web.isLoading == true { page?.web.stopLoading() } else { page?.reload() }
   }
-  @objc private func hardReload() { page?.reload(hard: true) }
+  @objc private func hardReload() {
+    page?.takeControl()
+    page?.reload(hard: true)
+  }
   @objc private func zoomIn() {
+    page?.takeControl()
     if let web = page?.web {
       web.pageZoom = min(5, web.pageZoom + 0.1)
       host.needsLayout = true
     }
   }
   @objc private func zoomOut() {
+    page?.takeControl()
     if let web = page?.web {
       web.pageZoom = max(0.25, web.pageZoom - 0.1)
       host.needsLayout = true
     }
   }
   @objc private func resetZoom() {
+    page?.takeControl()
     page?.web.pageZoom = 1
     host.needsLayout = true
   }
@@ -849,6 +910,7 @@ extension BrowserPanel {
           return
         }
         let page = makePage(tab, connection: connection, endpoint: endpoint)
+        page.agentDriven = source.agentDriven
         let surface = BrowserAutomationSurface()
         surface.onStop = { [weak self] in self?.automationHost.setPaused(true) }
         automationSurfaces[key(tab.id, thread: tab.threadID)] = surface
@@ -945,6 +1007,10 @@ extension BrowserPanel {
     let key = key(tab.id, thread: thread)
     let page = pages[key] ?? makePage(tab, connection: connection, endpoint: endpoint)
     guard !page.picker.active else { throw BrowserAutomationError.interrupted }
+    let controlRevision = page.automation.controlRevision
+    page.activeAutomation += 1
+    defer { page.activeAutomation -= 1 }
+    if !["status", "snapshot", "waitFor"].contains(operation) { page.agentDriven = true }
     let id = request["requestId"].string ?? UUID().uuidString
     let started = Date().ISO8601Format()
     page.automation.record(operation, status: "running", id: id, started: started)
@@ -984,7 +1050,9 @@ extension BrowserPanel {
       let expectedPage = page
       func check() throws {
         try deadline.check()
-        guard self.connection === connection, self.pages[key] === expectedPage else {
+        guard self.connection === connection, self.pages[key] === expectedPage,
+          page.automation.controlRevision == controlRevision
+        else {
           throw BrowserAutomationError.interrupted
         }
       }
@@ -1079,8 +1147,11 @@ extension BrowserPanel {
       render()
       return result
     } catch {
+      let interrupted =
+        error is CancellationError
+        || (error as? BrowserAutomationError)?.tag == "PreviewAutomationControlInterruptedError"
       page.automation.record(
-        operation, status: error is CancellationError ? "interrupted" : "failed", id: id,
+        operation, status: interrupted ? "interrupted" : "failed", id: id,
         started: started, error: error.localizedDescription)
       throw error
     }

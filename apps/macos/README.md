@@ -169,13 +169,23 @@ the browser still uses macOS WebKit, without mobile user-agent or touch emulatio
 Select an element with the pointer button to add its URL, selector and HTML to the
 message draft. Escape cancels; selected links do not navigate. Selection currently
 covers the main document and open shadow roots. Rich annotations, React source
-attribution, frame selection and downloads remain incomplete.
+attribution and frame selection remain incomplete.
+
+Use the download button, or View → Browser Downloads, to see progress, cancel a
+download or show its file in Finder. Downloads you start use the native Save
+dialog. Agent-triggered downloads save automatically; the downloads window links
+to their folder. Downloads continue when a tab closes. Quitting asks before
+cancelling active downloads. Existing files are replaced only after a download
+finishes, and a failed save keeps the completed temporary file available in Finder.
 
 Agents can open, navigate, inspect, click, type, press keys, scroll and resize the
 native browser through T3's existing browser tools. Background actions preserve
 the selected conversation and its browser state; an agent can show a separate
 preview window. Stop agent in the browser, or View → Pause Agent Browser, pauses
 browser control and cancels queued actions. Resume Agent Browser enables it again.
+Typing, clicking or scrolling inside a page also interrupts pending agent actions
+for that conversation and returns download handling to the native Save dialog.
+Switching tabs or conversations keeps ongoing agent actions attached to their page.
 This does not stop the agent's other work or page scripts already running.
 Snapshots include a screenshot, accessible page tree, interactive elements and
 action history. Console/network diagnostics, recordings, cross-frame locators

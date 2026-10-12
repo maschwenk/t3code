@@ -471,6 +471,7 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
       (view, "Browser Address", #selector(browserAddress), "l", [.command]),
       (view, "New Browser Tab", #selector(newBrowserTab), "t", [.command]),
       (view, "Browser Settings…", #selector(browserSettings), "", []),
+      (view, "Browser Downloads…", #selector(browserDownloads), "", []),
       (view, "Pause Agent Browser", #selector(toggleAgentBrowser), "", []),
     ] {
       let item = parent.addItem(withTitle: title, action: action, keyEquivalent: key)
@@ -628,6 +629,10 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
   }
   @objc private func toggleAgentBrowser() { browser.toggleAgentControl() }
   @objc private func browserSettings() { browser.showBrowserSettings() }
+  @objc private func browserDownloads() { browser.showDownloads() }
+  func finishBrowserDownloads() async -> Bool {
+    await browser.downloads.finishBeforeQuit(window: window)
+  }
   private func openMarkdownLink(_ url: URL, at location: WorkspaceLocation?) {
     if url.isFileURL {
       guard let location, store.workspaceLocation == location else { return }

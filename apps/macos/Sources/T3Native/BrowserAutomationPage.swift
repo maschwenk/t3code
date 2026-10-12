@@ -7,6 +7,8 @@ import WebKit
   private let world = WKContentWorld.world(name: "T3BrowserAutomation")
   private var installed = false
   private var document = UUID()
+  private var calls: [UUID: JavaScriptCall] = [:]
+  private(set) var controlRevision = UUID()
   private(set) var actions: [JSON] = []
   private static let injected: String = {
     let file = Bundle.module.url(
@@ -19,6 +21,10 @@ import WebKit
     return try! String(contentsOf: file, encoding: .utf8)
   }()
   init(web: WKWebView) { self.web = web }
+  func interrupt() {
+    controlRevision = UUID()
+    for call in calls.values { call.finish(.failure(BrowserAutomationError.interrupted)) }
+  }
   func invalidate() {
     installed = false
     document = UUID()
@@ -75,26 +81,36 @@ import WebKit
   func run(_ operation: String, input: JSON, deadline: BrowserAutomationDeadline) async throws
     -> JSON
   {
+    let revision = controlRevision
+    func check() throws {
+      try deadline.check()
+      guard revision == controlRevision else { throw BrowserAutomationError.interrupted }
+    }
+    try check()
     if operation == "evaluate" {
       guard input["returnByValue"] != .bool(false) else {
         throw BrowserAutomationError(
           "PreviewAutomationUnsupportedClientError",
           "Native WebKit returns values; remote JavaScript object handles are unavailable.")
       }
-      return try await script(
+      let result = try await script(
         "let value = (0,eval)(expression); if (wait) value = await value; return JSON.stringify(value ?? null);",
         arguments: [
           "expression": try input.requiredString("expression"),
           "wait": input["awaitPromise"] != .bool(false),
         ], world: .page, deadline: deadline)
+      try check()
+      return result
     }
     if operation == "press" {
       try await press(input, deadline: deadline)
+      try check()
       return .null
     }
     while true {
-      try deadline.check()
+      try check()
       let result = try await query(operation, input: input, deadline: deadline)
+      try check()
       if let tag = result["error"]["_tag"].string {
         throw BrowserAutomationError(
           tag, result["error"]["message"].string ?? "Browser action failed.")
@@ -213,6 +229,9 @@ import WebKit
   ) async throws -> JSON {
     try deadline.check()
     let call = JavaScriptCall()
+    let id = UUID()
+    calls[id] = call
+    defer { calls.removeValue(forKey: id) }
     return try await withTaskCancellationHandler {
       try await withCheckedThrowingContinuation { continuation in
         call.continuation = continuation
