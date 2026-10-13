@@ -275,6 +275,8 @@ private enum NativeSettingsPage: String, CaseIterable, Identifiable {
 private struct NativeSettingsPages: View {
   @ObservedObject var model: NativeSettingsModel
   @ObservedObject var preferences: NativePreferences
+  @Environment(\.colorScheme) private var colorScheme
+  @Environment(\.colorSchemeContrast) private var contrast
   @State private var selected: NativeSettingsPage = .general
   @State private var permissionResult: String?
   @State private var worktreeDirectory = ""
@@ -287,20 +289,26 @@ private struct NativeSettingsPages: View {
   var body: some View {
     HStack(spacing: 0) {
       VStack(alignment: .leading, spacing: 5) {
-        Text("SETTINGS").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
-          .padding(.horizontal, 12).padding(.bottom, 14)
+        Text("Settings").font(.system(size: 15, weight: .semibold))
+          .padding(.horizontal, 12).padding(.top, 8).padding(.bottom, 20)
         ForEach(NativeSettingsPage.allCases) { page in
           Button {
             selected = page
           } label: {
-            Label(page.rawValue, systemImage: page.symbol)
-              .font(.system(size: 13, weight: selected == page ? .semibold : .regular))
-              .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 12).padding(
-                .vertical, 10
-              )
-              .background(
-                selected == page ? Color.accentColor.opacity(0.18) : .clear,
-                in: RoundedRectangle(cornerRadius: 8))
+            HStack(spacing: 10) {
+              Image(systemName: page.symbol)
+                .frame(width: 18).foregroundStyle(.secondary)
+                .accessibilityHidden(true)
+              Text(page.rawValue)
+              Spacer(minLength: 0)
+            }
+            .font(.system(size: 13, weight: selected == page ? .medium : .regular))
+            .foregroundStyle(selected == page ? .primary : .secondary)
+            .padding(.horizontal, 12).padding(.vertical, 10)
+            .contentShape(RoundedRectangle(cornerRadius: 7))
+            .background(
+              selected == page ? selectionColor : .clear,
+              in: RoundedRectangle(cornerRadius: 7))
           }.buttonStyle(.plain).accessibilityAddTraits(selected == page ? .isSelected : [])
         }
         Spacer()
@@ -309,14 +317,16 @@ private struct NativeSettingsPages: View {
           systemImage: model.endpoint == nil ? "wifi.slash" : "server.rack"
         )
         .font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(2).padding(12)
-      }.padding(14).frame(width: 190).background(Color(nsColor: .windowBackgroundColor))
+      }.padding(12).frame(width: 200).background(sidebarColor)
       Divider()
       VStack(alignment: .leading, spacing: 0) {
         VStack(alignment: .leading, spacing: 14) {
           HStack {
             VStack(alignment: .leading, spacing: 5) {
-              Text(selected.rawValue).font(.system(size: 25, weight: .semibold))
+              Text(selected.rawValue).font(.system(size: 22, weight: .semibold))
+                .accessibilityAddTraits(.isHeader)
               Text(subtitle).font(.system(size: 12)).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             }
             Spacer()
             if model.busy {
@@ -339,11 +349,14 @@ private struct NativeSettingsPages: View {
             Label("Connect to a T3 server to edit its settings.", systemImage: "wifi.slash")
               .font(.callout).foregroundStyle(.secondary)
           }
-        }.padding(.horizontal, 30).padding(.top, 30).padding(.bottom, 22)
+        }.padding(.horizontal, 28).padding(.top, 26).padding(.bottom, 24)
         switch selected {
-        case .providers: ProviderSettingsView(store: model.store)
-        case .scheduledTasks: ScheduledTasksView(store: model.store)
-        case .connections: ConnectionsSettingsView(store: model.store)
+        case .providers:
+          ProviderSettingsView(store: model.store).scrollContentBackground(.hidden)
+        case .scheduledTasks:
+          ScheduledTasksView(store: model.store).scrollContentBackground(.hidden)
+        case .connections:
+          ConnectionsSettingsView(store: model.store).scrollContentBackground(.hidden)
         case .general, .appearance, .storage:
           ScrollView {
             VStack(alignment: .leading, spacing: 22) {
@@ -353,12 +366,12 @@ private struct NativeSettingsPages: View {
               case .storage: storage
               default: EmptyView()
               }
-            }.padding(.horizontal, 30).padding(.bottom, 30)
+            }.padding(.horizontal, 28).padding(.bottom, 32)
               .frame(maxWidth: 850, alignment: .leading).frame(maxWidth: .infinity)
           }
         }
       }.frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(nsColor: .underPageBackgroundColor))
+        .background(pageColor)
     }
     .onAppear {
       syncLocalFields()
@@ -376,6 +389,17 @@ private struct NativeSettingsPages: View {
       worktreeDirty = false
       worktreeDirectory = model.settings["worktreesDirectory"].string ?? ""
     }
+  }
+
+  // Match SurfaceView while following the window's effective appearance, including System.
+  private var pageColor: Color { Color(white: colorScheme == .dark ? 0.045 : 0.99) }
+  private var sidebarColor: Color { Color(white: colorScheme == .dark ? 0.035 : 0.95) }
+  private var cardColor: Color { Color(white: colorScheme == .dark ? 0.075 : 1) }
+  private var selectionColor: Color {
+    Color.primary.opacity(contrast == .increased ? 0.18 : 0.08)
+  }
+  private var separatorColor: Color {
+    Color.primary.opacity(contrast == .increased ? 0.28 : 0.08)
   }
 
   private var subtitle: String {
@@ -771,13 +795,16 @@ private struct NativeSettingsPages: View {
     @ViewBuilder content: () -> Content
   ) -> some View {
     VStack(alignment: .leading, spacing: 9) {
-      Text(title).font(.system(size: 13, weight: .semibold)).padding(.leading, 3)
+      Text(title).font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary)
+        .padding(.leading, 16).accessibilityAddTraits(.isHeader)
       VStack(spacing: 0) { content() }
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12))
+        .background(cardColor, in: RoundedRectangle(cornerRadius: 10))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
         .overlay(
-          RoundedRectangle(cornerRadius: 12).stroke(Color.primary.opacity(0.07), lineWidth: 1))
+          RoundedRectangle(cornerRadius: 10).strokeBorder(separatorColor, lineWidth: 1))
       if let footer {
-        Text(footer).font(.system(size: 11)).foregroundStyle(.secondary).padding(.horizontal, 3)
+        Text(footer).font(.system(size: 11)).foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true).padding(.horizontal, 16)
       }
     }
   }
@@ -790,13 +817,14 @@ private struct NativeSettingsPages: View {
         VStack(alignment: .leading, spacing: 4) {
           Text(title).font(.system(size: 13, weight: .medium))
           if let detail {
-            Text(detail).font(.system(size: 11)).foregroundStyle(.secondary).textSelection(.enabled)
+            Text(detail).font(.system(size: 12)).foregroundStyle(.secondary)
+              .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
           }
         }
         Spacer(minLength: 8)
         control().controlSize(.regular)
       }.padding(.horizontal, 16).padding(.vertical, 14)
-      Divider().padding(.leading, 16).opacity(0.5)
+      separatorColor.frame(height: 1).padding(.horizontal, 16).accessibilityHidden(true)
     }
   }
 }

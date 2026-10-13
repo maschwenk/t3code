@@ -144,6 +144,21 @@ enum Arguments {
       edit.submenu?.addItem(withTitle: title, action: Selector(action), keyEquivalent: key)
     }
     mainMenu.addItem(edit)
+    let windows = NSMenu(title: "Window")
+    windows.addItem(
+      withTitle: "Close Window", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+    windows.addItem(
+      withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
+    windows.addItem(
+      withTitle: "Zoom", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
+    windows.addItem(.separator())
+    windows.addItem(
+      withTitle: "Bring All to Front", action: #selector(NSApplication.arrangeInFront(_:)),
+      keyEquivalent: "")
+    let windowItem = NSMenuItem(title: "Window", action: nil, keyEquivalent: "")
+    windowItem.submenu = windows
+    mainMenu.addItem(windowItem)
+    app.windowsMenu = windows
     app.mainMenu = mainMenu
     let delegate = AppDelegate()
     aboutItem.target = delegate

@@ -109,6 +109,8 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
   private var reviewItem: NSSplitViewItem?
   private let sidebar: SidebarView
   private var projectPicker: ProjectPicker?
+  private var projectSelection: NSPopover?
+  private var projectSelectionContext: (session: UUID, draftID: String)?
   private var settingsWindow: NativeSettingsWindow?
   private var reconnecting = false
   private var connectionAttempt = UUID()
@@ -160,6 +162,10 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
   private var attachmentConnectionState = ""
   private let attachButton = NSButton(title: "Attach files…", target: nil, action: nil)
   private var sidebarItem: NSSplitViewItem?
+  private var sidebarObservation: NSKeyValueObservation?
+  private lazy var restoreSidebar = sidebarIcon("Show sidebar (⌘B)", "sidebar.left") {
+    [weak self] in self?.toggleSidebar()
+  }
   private var didSetSidebarWidth = false
   private let terminal: TerminalPanel
   private var terminalItem: NSSplitViewItem?
@@ -328,6 +334,13 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     sidebarItem.automaticMaximumThickness = 256
     sidebarItem.canCollapse = true
     self.sidebarItem = sidebarItem
+    sidebarObservation = sidebarItem.observe(\.isCollapsed, options: [.initial, .new]) {
+      [weak self] _, _ in
+      MainActor.assumeIsolated {
+        guard let self else { return }
+        self.restoreSidebar.isHidden = self.sidebarItem?.isCollapsed != true
+      }
+    }
     sidebarItem.holdingPriority = .defaultHigh
     let conversationSplit = NSSplitViewController()
     conversationSplit.splitView.isVertical = false
@@ -577,7 +590,8 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     let heroTitle = NSTextField(labelWithString: "What should we build in")
     heroTitle.font = .systemFont(ofSize: 24, weight: .medium)
     newChatProject.font = .systemFont(ofSize: 24, weight: .semibold)
-    newChatProject.invoke = { [weak self] in self?.showProjectPicker(create: false) }
+    newChatProject.invoke = { [weak self] in self?.chooseExistingProject() }
+    newChatProject.setAccessibilityLabel("Choose project for new conversation")
     newChatProject.widthAnchor.constraint(lessThanOrEqualToConstant: 300).isActive = true
     let heroLine = NSStackView(views: [heroTitle, newChatProject])
     heroLine.spacing = 6
@@ -637,6 +651,12 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
       welcome.centerYAnchor.constraint(equalTo: right.centerYAnchor, constant: -24),
       welcome.widthAnchor.constraint(lessThanOrEqualToConstant: 420),
       welcome.widthAnchor.constraint(lessThanOrEqualTo: right.widthAnchor, constant: -64),
+    ])
+    right.addSubview(restoreSidebar)
+    restoreSidebar.translatesAutoresizingMaskIntoConstraints = false
+    NSLayoutConstraint.activate([
+      restoreSidebar.leadingAnchor.constraint(equalTo: right.leadingAnchor, constant: 82),
+      restoreSidebar.topAnchor.constraint(equalTo: right.topAnchor, constant: 8),
     ])
     heading.setContentCompressionResistancePriority(.required, for: .vertical)
     composerSurface.setContentCompressionResistancePriority(.required, for: .vertical)
@@ -940,6 +960,19 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     conversationCenter?.isActive = newConversation
     let project = store.selectedDraft?.project
     newChatProject.title = (project?["title"].string ?? "this project") + "  ⌄"
+    newChatProject.toolTip = project?["workspaceRoot"].string
+    newChatProject.isEnabled = store.canEditThread && store.catalogReady && !store.composerBusy
+    if let context = projectSelectionContext {
+      if context.session != store.projectSessionID || context.draftID != store.selectedID
+        || !newChatProject.isEnabled
+      {
+        projectSelection?.performClose(nil)
+        projectSelectionContext = nil
+      } else {
+        (projectSelection?.contentViewController as? ExistingProjectPicker)?.update(
+          projects: Array(store.shell.projectDetails.values), selectedID: project?["id"].string)
+      }
+    }
     withoutProject.isHidden = store.catalog.scratchWorkspaceRoot == nil
     workspaceControls.refresh()
     composer.placeholder =
@@ -1630,6 +1663,32 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
   }
   @objc private func openProject() { showProjectPicker(create: false) }
   @objc private func newProject() { showProjectPicker(create: true) }
+  private func chooseExistingProject() {
+    guard newChatProject.isEnabled, let draftID = store.selectedDraft?.id else { return }
+    projectSelection?.performClose(nil)
+    let session = store.projectSessionID
+    projectSelectionContext = (session, draftID)
+    let popover = NSPopover()
+    popover.behavior = .transient
+    popover.contentViewController = ExistingProjectPicker(
+      projects: Array(store.shell.projectDetails.values),
+      selectedID: store.selectedDraft?.project["id"].string,
+      choose: { [weak self] project in
+        guard let self, session == store.projectSessionID, store.selectedID == draftID,
+          store.canEditThread, !store.composerBusy,
+          let id = project["id"].string, let current = store.shell.projectDetails[id]
+        else { return }
+        store.setDraftProject(current)
+      }, openFolder: { [weak self] in self?.showProjectPicker(create: false) },
+      close: { [weak self] in
+        self?.projectSelection?.performClose(nil)
+        self?.projectSelectionContext = nil
+        self?.window?.makeFirstResponder(self?.composer)
+      })
+    popover.contentSize = NSSize(width: 400, height: 340)
+    projectSelection = popover
+    popover.show(relativeTo: newChatProject.bounds, of: newChatProject, preferredEdge: .maxY)
+  }
   private func showProjectPicker(create: Bool) {
     guard let window, projectPicker == nil, store.ready && store.catalogReady else { return }
     projectPicker = ProjectPicker(
