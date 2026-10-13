@@ -717,7 +717,8 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     for submenu in [chat, view] {
       let item = NSMenuItem(title: submenu.title, action: nil, keyEquivalent: "")
       item.submenu = submenu
-      menu.addItem(item)
+      let index = menu.items.firstIndex { $0.submenu === NSApp.windowsMenu } ?? menu.numberOfItems
+      menu.insertItem(item, at: index)
     }
   }
 

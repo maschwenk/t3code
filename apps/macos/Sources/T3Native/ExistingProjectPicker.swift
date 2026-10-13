@@ -31,7 +31,7 @@ final class ExistingProjectPicker: NSViewController, NSTableViewDataSource,
     view = SurfaceView(raised: true)
     search.placeholderString = "Search projects…"
     search.font = .systemFont(ofSize: 14)
-    search.isBezeled = false
+    search.isBezeled = true
     search.drawsBackground = false
     search.focusRingType = .none
     search.sendsSearchStringImmediately = true

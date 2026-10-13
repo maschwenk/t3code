@@ -88,7 +88,7 @@ final class ModelPicker: NSViewController, NSTableViewDataSource,
     rail.widthAnchor.constraint(equalTo: railScroll.widthAnchor).isActive = true
     search.placeholderString = "Search models…"
     search.font = .systemFont(ofSize: 14)
-    search.isBezeled = false
+    search.isBezeled = true
     search.drawsBackground = false
     search.focusRingType = .none
     search.heightAnchor.constraint(equalToConstant: 34).isActive = true
