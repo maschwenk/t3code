@@ -1,0 +1,64 @@
+name: Native macOS prototype
+
+on:
+  pull_request:
+    paths:
+      - apps/macos/**
+      - apps/desktop/src/preview/extensions/**
+      - apps/desktop/src/preview/BrowserSession.ts
+      - apps/desktop/src/preview-extension-preload.ts
+      - .github/workflows/native-macos.yml
+  push:
+    branches: [main]
+    paths:
+      - apps/macos/**
+      - apps/desktop/src/preview/extensions/**
+      - apps/desktop/src/preview/BrowserSession.ts
+      - apps/desktop/src/preview-extension-preload.ts
+      - .github/workflows/native-macos.yml
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    runs-on: macos-15
+    timeout-minutes: 20
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v6
+      - run: test "$(uname -m)" = arm64
+      - uses: voidzero-dev/setup-vp@v1.21.2
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: |
+            args:
+              - --filter=t3...
+              - --filter=@t3tools/desktop...
+              - --filter=@t3tools/scripts...
+      - run: cp .env.example .env
+      - run: node --test apps/macos/chromium-helper/*.test.mjs
+      - run: swift test --package-path apps/macos
+      - run: apps/macos/build.sh
+      - name: Verify packaged browser
+        env:
+          T3_CHROMIUM_TEST_APP: ${{ github.workspace }}/apps/macos/.build/T3 Native.app/Contents/Resources/chromium-helper/T3 Browser.app
+        run: node --test apps/macos/chromium-helper/runtime.test.mjs
+      - name: Verify packaged backend
+        env:
+          T3_NATIVE_SMOKE_RESOURCES: ${{ github.workspace }}/apps/macos/.build/T3 Native.app/Contents/Resources
+        run: swift test --package-path apps/macos --filter BackendRuntimeSmokeTests
+      - name: Preserve failed browser fixture evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-browser-fixture-evidence
+          if-no-files-found: ignore
+          path: |
+            /tmp/t3-native-evidence/chromium-runtime-*/*.stderr.log
+            /tmp/t3-native-evidence/chromium-runtime-*/cursor.png
+            /tmp/t3-native-evidence/chromium-extension-*/result.json
+            /tmp/t3-native-evidence/chromium-extension-*/first/extension-ui.json
+            /tmp/t3-native-evidence/chromium-extension-*/restart/extension-ui.json

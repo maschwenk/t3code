@@ -423,6 +423,14 @@ export class ExtensionHost {
   // ---------------------------------------------------------------------------
   // Toolbar
 
+  /** A service worker has explicitly chosen its popup, including no popup. */
+  hasActionPopupOverride(tabWebContentsId: number, extensionId: string): boolean {
+    const tab = AllWebContents.fromId(tabWebContentsId);
+    if (!tab || tab.isDestroyed()) return false;
+    const state = this.#sessions.get(tab.session);
+    return typeof state?.actions.get(extensionId)?.global.popup === "string";
+  }
+
   /** Installed extensions, with toolbar state as one preview tab sees it. */
   async list(tabWebContentsId?: number): Promise<ReadonlyArray<PreviewExtension>> {
     const installed = await this.#installedList();

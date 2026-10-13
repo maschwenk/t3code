@@ -1,0 +1,57 @@
+:root {
+  color-scheme: light dark;
+  font:
+    13px -apple-system,
+    BlinkMacSystemFont,
+    sans-serif;
+}
+body {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: Canvas;
+  color: CanvasText;
+}
+header {
+  display: flex;
+  gap: 6px;
+  padding: 8px;
+  border-bottom: 1px solid GrayText;
+  align-items: center;
+}
+button,
+input {
+  font: inherit;
+  padding: 6px;
+  border-radius: 6px;
+  border: 1px solid GrayText;
+  background: Canvas;
+  color: CanvasText;
+}
+button {
+  cursor: pointer;
+}
+form {
+  display: flex;
+  flex: 1;
+  gap: 6px;
+}
+input {
+  min-width: 40px;
+  flex: 1;
+}
+#notice {
+  padding: 6px 10px;
+  font-size: 11px;
+  color: GrayText;
+}
+main {
+  flex: 1;
+  min-height: 0;
+}
+webview {
+  height: 100%;
+  width: 100%;
+  display: flex;
+}
