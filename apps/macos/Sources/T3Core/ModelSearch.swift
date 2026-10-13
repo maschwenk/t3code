@@ -56,7 +56,12 @@ public struct ModelSearch: Sendable {
       }.map(\.element)
     }
     // Searching spans accounts even while a provider or Favorites tab is selected.
-    return choices.enumerated().compactMap { offset, choice -> (ModelChoice, Int, Int)? in
+    let normalizedQuery = tokens.joined(separator: " ")
+    func isExactModel(_ choice: ModelChoice) -> Bool {
+      choice.model.name.lowercased().split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        == normalizedQuery
+    }
+    return choices.enumerated().compactMap { offset, choice -> (ModelChoice, Int, Int, Bool)? in
       var total = 0
       for token in tokens {
         let matches = choice.fields.enumerated().compactMap { fieldIndex, field in
@@ -66,12 +71,15 @@ public struct ModelSearch: Sendable {
         total += best
       }
       if favorites.contains(choice.id) { total -= 24 }
-      return (choice, total, offset)
+      return (choice, total, offset, isExactModel(choice))
     }.sorted { a, b in
+      if a.3 != b.3 { return a.3 }
       if a.1 != b.1 { return a.1 < b.1 }
       let aFavorite = favorites.contains(a.0.id)
       let bFavorite = favorites.contains(b.0.id)
       if aFavorite != bFavorite { return aFavorite }
+      // Keep precise matches and favorites ahead; prefer current models only on a relevance tie.
+      if a.0.model.legacy != b.0.model.legacy { return !a.0.model.legacy }
       let order = (a.0.fields.last ?? "").localizedCompare(b.0.fields.last ?? "")
       return order == .orderedSame ? a.2 < b.2 : order == .orderedAscending
     }.map { $0.0 }

@@ -19,8 +19,8 @@ import T3Core
   private let meter = NSStackView()
   private let subtitle = NSTextField(labelWithString: "")
   private let gauge = ContextUsageGauge()
-  private lazy var compactButton = ActionButton("Compact") { [weak self] in self?.compact() }
-  private lazy var keepButton = ActionButton("Keep full history") { [weak self] in self?.dismiss() }
+  private lazy var compactButton = ComposerPill("", height: 28) { [weak self] in self?.compact() }
+  private lazy var keepButton = ComposerPill("", height: 28) { [weak self] in self?.dismiss() }
   private lazy var meterButton = ActionButton("Context") { [weak self] in self?.showDetails() }
 
   init(store: ClientStore) {
@@ -32,23 +32,38 @@ import T3Core
     translatesAutoresizingMaskIntoConstraints = false
     setHuggingPriority(.required, for: .vertical)
     resume.orientation = .horizontal
+    resume.distribution = .fill
     resume.alignment = .centerY
     resume.spacing = 10
-    resume.edgeInsets = NSEdgeInsets(top: 11, left: 12, bottom: 11, right: 12)
+    resume.edgeInsets = NSEdgeInsets(top: 6, left: 12, bottom: 6, right: 8)
     resume.wantsLayer = true
     resume.layer?.cornerRadius = 12
-    let copy = NSStackView()
-    copy.orientation = .vertical
-    copy.alignment = .leading
-    copy.spacing = 3
+    let icon = NSImageView(
+      image: NSImage(
+        systemSymbolName: "arrow.down.right.and.arrow.up.left", accessibilityDescription: nil)!)
+    icon.contentTintColor = .secondaryLabelColor
+    icon.widthAnchor.constraint(equalToConstant: 16).isActive = true
     let title = NSTextField(labelWithString: "Resume with less context")
-    title.font = .systemFont(ofSize: 13, weight: .semibold)
+    title.font = .systemFont(ofSize: 13, weight: .medium)
+    title.setContentCompressionResistancePriority(.required, for: .horizontal)
     subtitle.font = .systemFont(ofSize: 12)
     subtitle.textColor = .secondaryLabelColor
-    copy.addArrangedSubview(title)
-    copy.addArrangedSubview(subtitle)
-    copy.setHuggingPriority(.defaultLow, for: .horizontal)
-    resume.addArrangedSubview(copy)
+    subtitle.lineBreakMode = .byTruncatingTail
+    subtitle.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+    subtitle.setContentHuggingPriority(.defaultLow, for: .horizontal)
+    compactButton.title = "Compact"
+    compactButton.contentTintColor = .labelColor
+    compactButton.alignment = .center
+    compactButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+    keepButton.title = ""
+    keepButton.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: nil)
+    keepButton.imagePosition = .imageOnly
+    keepButton.setAccessibilityLabel("Keep full history")
+    keepButton.toolTip = "Dismiss this reminder and keep full history"
+    keepButton.widthAnchor.constraint(equalToConstant: 36).isActive = true
+    resume.addArrangedSubview(icon)
+    resume.addArrangedSubview(title)
+    resume.addArrangedSubview(subtitle)
     resume.addArrangedSubview(compactButton)
     resume.addArrangedSubview(keepButton)
     addArrangedSubview(resume)
@@ -68,9 +83,22 @@ import T3Core
     gauge.widthAnchor.constraint(equalToConstant: 18).isActive = true
     gauge.heightAnchor.constraint(equalToConstant: 18).isActive = true
     refresh()
+    updateAppearance()
   }
   required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
   deinit { subscription?.cancel() }
+
+  override func viewDidChangeEffectiveAppearance() {
+    super.viewDidChangeEffectiveAppearance()
+    updateAppearance()
+  }
+
+  private func updateAppearance() {
+    let dark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+    resume.layer?.backgroundColor = NSColor(calibratedWhite: dark ? 0.065 : 0.98, alpha: 1).cgColor
+    resume.layer?.borderColor = NSColor(calibratedWhite: dark ? 0.13 : 0.88, alpha: 1).cgColor
+    resume.layer?.borderWidth = 1
+  }
 
   func refresh() {
     refreshConnection()
@@ -127,7 +155,6 @@ import T3Core
       || UserDefaults.standard.bool(forKey: dismissalKey)
       || dismissals.contains(environment: store.environmentKey, thread: threadID, usage: usage)
     subtitle.stringValue = "\(ContextUsage.formatTokens(usage.usedTokens)) tokens from earlier"
-    resume.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
     gauge.usage = usage
     let percent = usage.formattedPercentage.map { " · \($0)" } ?? ""
     meterButton.title = "\(ContextUsage.formatTokens(usage.usedTokens)) tokens\(percent)"

@@ -77,3 +77,51 @@ private func searchCatalog() throws -> ProviderCatalog {
     .object(["type": .string("providerStatuses"), "payload": .object(["providers": .array([])])]))
   #expect(ModelSearch(catalog: removed).results(query: "new", instanceID: nil).isEmpty)
 }
+
+private func generationSearchCatalog() throws -> ProviderCatalog {
+  var catalog = ProviderCatalog()
+  try catalog.apply(
+    JSON.decode(
+      Data(
+        """
+        {"type":"snapshot","config":{"providers":[
+          {"instanceId":"personal","driver":"codex","displayName":"Personal","enabled":true,"installed":true,"models":[
+            {"slug":"old","name":"GPT-5.6-Sol","shortName":"Sol","isLegacy":true},
+            {"slug":"current","name":"GPT-6.1-Sol","shortName":"Sol"},
+            {"slug":"old-custom","name":"Atlas A","isLegacy":true},
+            {"slug":"current-custom","name":"Atlas B"}]},
+          {"instanceId":"work","driver":"codex","displayName":"Work","enabled":true,"installed":true,"models":[
+            {"slug":"current","name":"GPT-6.1-Sol","shortName":"Sol"}]}]}}
+        """.utf8)))
+  return catalog
+}
+
+@Test func equallyRelevantSearchPrefersCurrentModelsAcrossAccounts() throws {
+  let search = ModelSearch(catalog: try generationSearchCatalog())
+  let matches = search.results(query: "sol", instanceID: "personal", favoritesOnly: true)
+  #expect(
+    matches.prefix(3).map(\.id) == [
+      ModelIdentity(instanceID: "personal", modelID: "current"),
+      ModelIdentity(instanceID: "work", modelID: "current"),
+      ModelIdentity(instanceID: "personal", modelID: "old"),
+    ])
+  // The preference follows catalog metadata, including models without short names or versions.
+  #expect(
+    search.results(query: "atlas", instanceID: nil).map(\.model.id)
+      == ["current-custom", "old-custom"])
+}
+
+@Test func legacySearchKeepsPreciseMatchesFavoritesAndBrowsingOrder() throws {
+  let search = ModelSearch(catalog: try generationSearchCatalog())
+  let legacy = ModelIdentity(instanceID: "personal", modelID: "old")
+  #expect(search.results(query: "GPT-5.6-Sol", instanceID: nil).first?.id == legacy)
+  #expect(search.results(query: "5.6", instanceID: "work").map(\.id) == [legacy])
+  #expect(search.results(query: "atlas a", instanceID: nil).first?.model.id == "old-custom")
+  #expect(search.results(query: "sol", instanceID: nil, favorites: [legacy]).first?.id == legacy)
+  #expect(
+    search.results(query: "  ", instanceID: "personal").map(\.model.id)
+      == ["old", "current", "old-custom", "current-custom"])
+  #expect(
+    search.results(query: "", instanceID: "work").map(\.id)
+      == [ModelIdentity(instanceID: "work", modelID: "current")])
+}

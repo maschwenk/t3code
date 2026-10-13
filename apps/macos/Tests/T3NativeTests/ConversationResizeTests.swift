@@ -111,4 +111,28 @@ import Testing
       #expect(pages.view.subviews.count == 1)
     }
   }
+
+  @Test func messageTextStaysInsideItsRowAfterWindowResizing() throws {
+    let (controller, table) = try fixture()
+    let window = try #require(controller.window)
+    defer { window.close() }
+    func textViews(_ view: NSView) -> [MessageTextView] {
+      (view as? MessageTextView).map { [$0] } ?? view.subviews.flatMap(textViews)
+    }
+    for width: CGFloat in [1200, 920, 1200] {
+      controller.windowWillStartLiveResize(
+        Notification(name: NSWindow.willStartLiveResizeNotification))
+      window.setContentSize(NSSize(width: width, height: 800))
+      window.layoutIfNeeded()
+      controller.windowDidEndLiveResize(Notification(name: NSWindow.didEndLiveResizeNotification))
+      let cell = try #require(table.view(atColumn: 0, row: 120, makeIfNecessary: true))
+      cell.layoutSubtreeIfNeeded()
+      let body = try #require(textViews(cell).first)
+      let viewport = try #require(body.enclosingScrollView)
+      let rect = viewport.convert(viewport.bounds, to: cell)
+      #expect(rect.minX >= 0, "The first character must not be clipped by AppKit's row inset.")
+      #expect(rect.maxX <= cell.bounds.maxX)
+      #expect(body.visibleRect.minX == 0)
+    }
+  }
 }

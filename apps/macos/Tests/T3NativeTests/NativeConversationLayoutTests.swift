@@ -346,3 +346,51 @@ func nativeConversationWindowResizeRestoresComposerLabelsWithoutChildInvalidatio
   #expect({ fetch.finish(reconnected, current: reconnected) }())
   #expect(!fetch.loading && fetch.failure == nil)
 }
+
+@MainActor @Test func nativeConversationContextReminderFitsAndDismissesWithoutCompacting() throws {
+  let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+  defer { try? FileManager.default.removeItem(at: directory) }
+  let store = ClientStore(draftDirectory: directory)
+  store.selectedID = "context-layout"
+  var thread = ThreadState(id: "context-layout")
+  _ = try thread.apply(
+    try JSON.decode(
+      Data(
+        #"""
+        {"kind":"snapshot","snapshotSequence":1,"projection":{
+          "thread":{"id":"context-layout","activeProviderThreadId":"context-provider"},
+          "providerThreads":[{"id":"context-provider","appThreadId":"context-layout",
+            "driver":"claudeAgent","providerInstanceId":"context-layout-test",
+            "updatedAt":"2020-01-01T12:00:00Z","contextUsage":{"usedTokens":206000,"maxTokens":200000}}]
+        }}
+        """#.utf8)))
+  store.thread = thread
+  let banner = NativeContextBanner(store: store)
+  var compacted = false
+  banner.onCompact = { compacted = true }
+  let host = conversationViewport(banner, width: 880, height: 70)
+  let dismiss = try #require(
+    conversationDescendants(banner).compactMap { $0 as? NSButton }.first {
+      $0.accessibilityLabel() == "Keep full history"
+    })
+  let reminder = try #require(dismiss.superview)
+  #expect(!reminder.isHidden)
+  for width: CGFloat in [880, 420, 880] {
+    host.setFrameSize(NSSize(width: width, height: 70))
+    host.layoutSubtreeIfNeeded()
+    let controls = reminder.subviews.filter { $0 is NSTextField || $0 is NSButton }
+    for control in controls {
+      #expect(control.frame.minX >= 0 && control.frame.maxX <= reminder.bounds.maxX)
+    }
+    #expect(dismiss.frame.maxX >= reminder.bounds.maxX - 12)
+  }
+  dismiss.performClick(nil)
+  #expect(reminder.isHidden)
+  #expect(!compacted)
+  let meter = try #require(
+    conversationDescendants(banner).compactMap { $0 as? NSButton }.first {
+      $0.accessibilityLabel()?.hasPrefix("Context usage:") == true
+    })
+  #expect(meter.isEnabled && !banner.isHidden)
+  withExtendedLifetime(host) {}
+}

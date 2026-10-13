@@ -447,6 +447,8 @@ final class ChatWindow: NSWindowController, NSTableViewDataSource, NSTableViewDe
     olderButton.target = self
     olderButton.action = #selector(older)
     _ = configure(timeline, scroll: timelineScroll)
+    // Message widths already include their gutters; inset table rows would clip the text.
+    timeline.style = .plain
     timeline.setAccessibilityLabel("Conversation")
     timeline.selectionHighlightStyle = .none
     timeline.intercellSpacing = NSSize(width: 0, height: 4)
