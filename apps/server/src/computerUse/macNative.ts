@@ -4,15 +4,20 @@
  * the window server's window list, the menu bar, the system-wide hit test, and
  * what pointer takeover needs (idle time, pointer location, app activation).
  *
- * Mouse events posted to a process are not used: AppKit, WebKit and Chromium
- * all ignore them for background windows, so background clicks go through
- * accessibility actions, and pointer-only input briefly brings the app forward.
+ * Pointer events posted to a process reach a background window only when they
+ * carry what AppKit reads off an event the window server did not route: the
+ * window number (fields 51, 91 and 92), the posting process (field 41, which
+ * Chromium checks before accepting a click into an inactive app) and the
+ * window-relative location, whose only setter is SkyLight's. With those set
+ * the app handles the event where it says, and the user's pointer never moves.
  *
  * CF references cross ffi-rs as BigInt. Short strings and numbers are tagged
  * pointers with the high bit set, which a JS number cannot represent. The
  * worker exits after one request, so CF objects created here are not released
  * individually.
  */
+import * as NodeProcess from "node:process";
+
 type Ffi = typeof import("ffi-rs");
 type FfiParams = Parameters<Ffi["load"]>[0];
 type Rect = { x: number; y: number; width: number; height: number };
@@ -33,6 +38,21 @@ const LIBRARIES = {
   cg: "/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics",
   ax: "/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices",
   c: "/usr/lib/libSystem.B.dylib",
+  sl: "/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight",
+} as const;
+type Point = { readonly x: number; readonly y: number };
+export type PointerWindow = { readonly id: number; readonly bounds: Rect };
+/** CGEventField values AppKit reads when it cannot ask the window server about an event. */
+const FIELD = {
+  clickState: 1,
+  sourcePid: 41,
+  windowNumber: 51,
+  windowUnderPointer: 91,
+  windowThatCanHandle: 92,
+} as const;
+const MOUSE_TYPE = {
+  left: { move: 5, down: 1, up: 2, drag: 6 },
+  right: { move: 5, down: 3, up: 4, drag: 7 },
 } as const;
 const UTF8 = 0x0800_0100;
 
@@ -153,6 +173,42 @@ export async function loadMacNative() {
     call("cg", "CGEventPostToPid", T.Void, [T.I32, Ref], [pid, event]);
     release(event);
   };
+  const setField = (event: bigint, field: number, value: number) =>
+    call("cg", "CGEventSetIntegerValueField", T.Void, [Ref, T.U32, T.I64], [event, field, value]);
+  /** Makes a posted pointer event land in `window` at `point` as if routed there. */
+  const address = (event: bigint, window: PointerWindow, point: Point) => {
+    for (const field of [FIELD.windowNumber, FIELD.windowUnderPointer, FIELD.windowThatCanHandle])
+      setField(event, field, window.id);
+    setField(event, FIELD.sourcePid, NodeProcess.pid);
+    call(
+      "sl",
+      "SLEventSetWindowLocation",
+      T.Void,
+      [Ref, CGPoint],
+      [event, { x: point.x - window.bounds.x, y: point.y - window.bounds.y }],
+    );
+    call(
+      "cg",
+      "CGEventSetTimestamp",
+      T.Void,
+      [Ref, T.U64],
+      [event, call<bigint>("c", "mach_absolute_time", T.U64, [], [])],
+    );
+  };
+  const application = (pid: number) =>
+    call<bigint>("ax", "AXUIElementCreateApplication", Ref, [T.I32], [pid]);
+  const actionNames = (element: bigint) => {
+    const names = out();
+    return call<number>(
+      "ax",
+      "AXUIElementCopyActionNames",
+      T.I32,
+      [Ref, T.External],
+      [element, names[0]],
+    ) === 0
+      ? toArray(read(names)).map(toString)
+      : [];
+  };
 
   const menuItem = (element: bigint): MenuItem => {
     const character = toString(attribute(element, "AXMenuItemCmdChar"));
@@ -222,6 +278,112 @@ export async function loadMacNative() {
       }
       release(list);
       return windows;
+    },
+    /**
+     * Posts one pointer transition to `pid` only, addressed to `window` so the
+     * app handles it where `point` lies. The app need not be in front and the
+     * user's pointer stays where it is.
+     */
+    postMouse(
+      pid: number,
+      window: PointerWindow,
+      point: Point,
+      transition: {
+        kind: "move" | "down" | "up" | "drag";
+        button: "left" | "right";
+        clickState: number;
+      },
+    ) {
+      const event = call<bigint>(
+        "cg",
+        "CGEventCreateMouseEvent",
+        Ref,
+        [Ref, T.U32, CGPoint, T.U32],
+        [
+          0n,
+          MOUSE_TYPE[transition.button][transition.kind],
+          { x: point.x, y: point.y },
+          transition.button === "left" ? 0 : 1,
+        ],
+      );
+      if (transition.clickState) setField(event, FIELD.clickState, transition.clickState);
+      address(event, window, point);
+      post(pid, event);
+    },
+    /** Posts one scroll wheel event to `pid` only, in pixels, at `point` of `window`. */
+    postScroll(
+      pid: number,
+      window: PointerWindow,
+      point: Point,
+      wheel: { vertical: number; horizontal: number },
+    ) {
+      // kCGScrollEventUnitPixel, two wheels: vertical first.
+      const event = call<bigint>(
+        "cg",
+        "CGEventCreateScrollWheelEvent",
+        Ref,
+        [Ref, T.U32, T.U32, T.I32, T.I32],
+        [0n, 0, 2, wheel.vertical, wheel.horizontal],
+      );
+      call("cg", "CGEventSetLocation", T.Void, [Ref, CGPoint], [event, { x: point.x, y: point.y }]);
+      address(event, window, point);
+      post(pid, event);
+    },
+    /**
+     * Presses, through accessibility, the element of `pid` at a screen point or
+     * its nearest ancestor that offers AXPress. Chromium and WebKit dispatch
+     * that as a real click on the element, in the background. False when
+     * nothing there is pressable.
+     */
+    pressAt(pid: number, point: Point): boolean {
+      const element = out();
+      if (
+        call<number>(
+          "ax",
+          "AXUIElementCopyElementAtPosition",
+          T.I32,
+          [Ref, T.Float, T.Float, T.External],
+          [application(pid), point.x, point.y, element[0]],
+        ) !== 0
+      )
+        return false;
+      let current = read(element);
+      for (let level = 0; current && level < 4; level++) {
+        if (actionNames(current).includes("AXPress"))
+          return (
+            call<number>(
+              "ax",
+              "AXUIElementPerformAction",
+              T.I32,
+              [Ref, Ref],
+              [current, cfString("AXPress")],
+            ) === 0
+          );
+        current = attribute(current, "AXParent");
+      }
+      return false;
+    },
+    /**
+     * Whether `pid` already exposes its web content fully. Chromium and WebKit
+     * list actions such as AXPress on web elements only once an assistive app
+     * has asked for the enhanced interface.
+     */
+    webAccessibilityEnabled: (pid: number) =>
+      toBoolean(attribute(application(pid), "AXEnhancedUserInterface")) === true,
+    /**
+     * Asks `pid` to expose its web content fully: AXEnhancedUserInterface for
+     * Chromium and WebKit, AXManualAccessibility for Electron. Chromium reports
+     * an error for the first yet honors it, so the result is not meaningful.
+     */
+    enableWebAccessibility(pid: number) {
+      for (const name of ["AXEnhancedUserInterface", "AXManualAccessibility"])
+        call<number>(
+          "ax",
+          "AXUIElementSetAttributeValue",
+          T.I32,
+          [Ref, Ref, Ref],
+          [application(pid), cfString(name), cfTrue()],
+        );
     },
     /** Posts one key transition to `pid` only. The app need not be in front. */
     postKey(pid: number, keyCode: number, down: boolean, flags: number) {

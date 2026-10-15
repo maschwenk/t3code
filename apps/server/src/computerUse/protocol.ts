@@ -19,15 +19,27 @@ const ElementRef = Schema.Union([
     role: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(64))),
   }),
 ]);
+/**
+ * Pointer steps reach the app in the background by default. `foreground: true`
+ * instead moves the user's real pointer, bringing the app forward first when
+ * the user is idle, for the rare control that ignores posted input.
+ */
+const Foreground = { foreground: Schema.optionalKey(Schema.Boolean) };
 export const ComputerAction = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("press") }),
-  Schema.Struct({ kind: Schema.Literal("move") }),
+  Schema.Struct({ kind: Schema.Literal("move"), ...Foreground }),
   Schema.Struct({
     kind: Schema.Literal("click"),
     button: Schema.Literals(["left", "right"]),
     count: Schema.Literals([1, 2]),
+    ...Foreground,
   }),
-  Schema.Struct({ kind: Schema.Literal("scroll"), dx: ScrollDelta, dy: ScrollDelta }),
+  Schema.Struct({
+    kind: Schema.Literal("scroll"),
+    dx: ScrollDelta,
+    dy: ScrollDelta,
+    ...Foreground,
+  }),
   Schema.Struct({ kind: Schema.Literal("type"), text: BoundedText, replace: Schema.Boolean }),
   Schema.Struct({
     kind: Schema.Literal("perform"),
@@ -58,13 +70,15 @@ export const ComputerAction = Schema.Union([
     ...ImagePoint.fields,
     button: Schema.Literals(["left", "right"]),
     count: Schema.Literals([1, 2]),
+    ...Foreground,
   }),
-  Schema.Struct({ kind: Schema.Literal("move_at"), ...ImagePoint.fields }),
+  Schema.Struct({ kind: Schema.Literal("move_at"), ...ImagePoint.fields, ...Foreground }),
   // Drags from the step's element, or from a capture pixel, to an element or a capture pixel.
   Schema.Struct({
     kind: Schema.Literal("drag"),
     from: Schema.optionalKey(ImagePoint),
     to: Schema.Union([ImagePoint, ElementRef]),
+    ...Foreground,
   }),
 ]);
 /** Actions that need no element target. A key may optionally focus one first. Drag needs one
@@ -226,6 +240,7 @@ export const WorkerResponse = Schema.Union([
         "accessibility",
         "keyboard_event",
         "menu",
+        "pointer_event",
         "pointer",
         "takeover",
         "launch_services",
@@ -309,9 +324,9 @@ export class ComputerUseError extends Schema.TaggedError<ComputerUseError>()("Co
       case "capture_requires_foreground":
         return "The app has no visible window to capture. Open or unminimize one, or use includeImage=false.";
       case "input_requires_foreground":
-        return "This action needs real pointer input, and the target was not reachable: the app is in the background and pointer takeover is off, or another window still covers the target. Prefer press, type, key, menu, or an action listed for the element; those run in the background. Otherwise ask the user to bring the app forward or turn on pointer takeover in Settings > Integrations > Computer use, then take a fresh snapshot.";
+        return "This step needs the user's real pointer (foreground: true), and the target was not reachable: the app has no window there, or it is in the background and pointer takeover is off, or another window still covers the target. Prefer press, type, key, menu, an action listed for the element, or the same pointer step without foreground; those run in the background. Otherwise ask the user to bring the app forward or turn on pointer takeover in Settings > Integrations > Computer use, then take a fresh snapshot.";
       case "user_active":
-        return "The user is using this machine right now, so the agent did not take over the pointer. Prefer press, type, key, menu, or an action listed for the element; those run in the background. Otherwise ask the user to leave the mouse and keyboard alone for a few seconds, or to bring the app forward, and retry later.";
+        return "The user is using this machine right now, so the agent did not take over the pointer for this foreground step. Prefer press, type, key, menu, an action listed for the element, or the same pointer step without foreground; those run in the background. Otherwise ask the user to leave the mouse and keyboard alone for a few seconds, or to bring the app forward, and retry later.";
       case "invalid_point":
         return "click_at, move_at and drag coordinates are pixels of the app's latest window image and must lie inside it. Take computer_snapshot with includeImage=true and read coordinates from that image.";
       case "menu_not_found":

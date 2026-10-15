@@ -1253,7 +1253,7 @@ export const ServerSettings = Schema.Struct({
   enableComputerScreenCapture: Schema.Boolean.pipe(
     Schema.withDecodingDefault(Effect.succeed(false)),
   ),
-  /** Whether pointer-only computer-use input may briefly bring a background app forward while the user is idle. */
+  /** Whether a computer-use step that asks for the real pointer may briefly bring a background app forward while the user is idle. */
   enableComputerPointerTakeover: Schema.Boolean.pipe(
     Schema.withDecodingDefault(Effect.succeed(true)),
   ),
