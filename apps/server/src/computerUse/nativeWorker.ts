@@ -8,7 +8,14 @@ import * as NodePath from "node:path";
 import * as NodeTimersPromises from "node:timers/promises";
 import * as NodeUtil from "node:util";
 import { isShortcut, menuModifierMask, modifierKeyCode, parseKeyChord } from "./keys.ts";
-import { loadMacNative, type MacNative, type MenuItem } from "./macNative.ts";
+import { loadMacNative, type MacNative, type MenuItem, type PointerWindow } from "./macNative.ts";
+import {
+  clickTransitions,
+  dragTransitions,
+  type Transition,
+  wheelDeltas,
+  windowFor,
+} from "./pointerEvents.ts";
 import { pointerTarget, sameWindowBounds } from "./pointerTarget.ts";
 import { deliverPointer, type Desktop } from "./takeover.ts";
 import {
@@ -241,6 +248,8 @@ async function takeSnapshot(
   let offscreen = 0;
   let truncated = false;
   let more = false;
+  let sawWebContent = false;
+  let sawWebPress = false;
   const visit = async (
     element: Element,
     path: number[],
@@ -248,6 +257,7 @@ async function takeSnapshot(
     walkDepth: number,
     clip: Rect | null,
     context: readonly string[],
+    inWeb: boolean,
   ): Promise<void> => {
     if (more || truncated) return;
     if (
@@ -265,6 +275,8 @@ async function takeSnapshot(
     if (walkDepth > 0 && element.role === "application") return;
     // Never return password values, names, or descendants to the agent.
     if (secure(element)) return;
+    if (element.role === "web_area") sawWebContent = true;
+    if (inWeb && element.actions.includes("press")) sawWebPress = true;
     const bounds = element.bounds;
     const hidden = isOffscreen(bounds, clip);
     if (hidden && !options.includeOffscreen) {
@@ -331,10 +343,27 @@ async function takeSnapshot(
         walkDepth + 1,
         nextClip,
         nextContext,
+        inWeb || element.role === "web_area",
       );
     }
   };
-  await visit(start, startPath, 0, 0, startClip, []);
+  await visit(start, startPath, 0, 0, startClip, [], false);
+  // Chromium and WebKit list press and the other actions of web elements only
+  // for an assistive app that asked for their enhanced interface. Ask once,
+  // then walk again while they rebuild the tree.
+  if (
+    sawWebContent &&
+    !sawWebPress &&
+    !truncated &&
+    !more &&
+    !native.webAccessibilityEnabled(app.pid)
+  ) {
+    native.enableWebAccessibility(app.pid);
+    await NodeTimersPromises.setTimeout(400);
+    elements.length = 0;
+    textSize = visited = matched = offscreen = 0;
+    await visit(start, startPath, 0, 0, startClip, [], false);
+  }
   const menus = options.root
     ? undefined
     : agentMenuBar(native.menuBar(app.pid)).flatMap((item) => (item.title ? [item.title] : []));
@@ -541,6 +570,58 @@ const within = (point: Point, rect: Rect) =>
 const asPoint = (tuple: readonly [number, number] | undefined): Point | undefined =>
   tuple && { x: tuple[0], y: tuple[1] };
 
+/** Posts pointer transitions to the app one by one, pacing them as a person would. */
+async function postTransitions(
+  native: MacNative,
+  pid: number,
+  window: PointerWindow,
+  transitions: readonly Transition[],
+): Promise<void> {
+  for (const [index, transition] of transitions.entries()) {
+    if (index > 0) await NodeTimersPromises.setTimeout(transition.kind === "drag" ? 16 : 40);
+    native.postMouse(pid, window, transition.point, transition);
+  }
+}
+
+/**
+ * Delivers a pointer-only step to the app in the background: through the
+ * pressable element at the point for a single left click, else as pointer
+ * events posted to the app and addressed to `window`. The app stays where it
+ * is and the user's pointer never moves.
+ */
+async function postPointer(
+  native: MacNative,
+  pid: number,
+  window: PointerWindow,
+  point: Point,
+  action:
+    | { readonly kind: "move" }
+    | { readonly kind: "click"; readonly button: "left" | "right"; readonly count: 1 | 2 }
+    | { readonly kind: "scroll"; readonly dx: number; readonly dy: number },
+): Promise<WorkerResponse> {
+  if (
+    action.kind === "click" &&
+    action.button === "left" &&
+    action.count === 1 &&
+    native.pressAt(pid, point)
+  )
+    return { ok: true, via: "accessibility" };
+  if (action.kind === "scroll") {
+    native.postMouse(pid, window, point, { kind: "move", button: "left", clickState: 0 });
+    native.postScroll(pid, window, point, wheelDeltas(action.dx, action.dy));
+    return { ok: true, via: "pointer_event" };
+  }
+  await postTransitions(
+    native,
+    pid,
+    window,
+    action.kind === "click"
+      ? clickTransitions(point, action.button, action.count)
+      : [{ kind: "move", button: "left", clickState: 0, point }],
+  );
+  return { ok: true, via: "pointer_event" };
+}
+
 /**
  * Runs real pointer input at `points`, which must all land on the app: as is
  * when the app is in front, or by briefly bringing it forward while the user
@@ -613,6 +694,7 @@ async function pointerGesture(
   if (action.kind !== "click_at" && action.kind !== "move_at" && action.kind !== "drag")
     return { ok: false, code: "unsupported_action" };
   let window = source?.window;
+  let captured: PointerWindow | undefined;
   if (screen) {
     // Capture pixels are only meaningful while the window has not moved or resized.
     const live = native.windows(app.pid).find((item) => item.id === screen.window.id);
@@ -620,6 +702,7 @@ async function pointerGesture(
       return { ok: false, code: "target_changed" };
     for (const point of [screen.from, screen.to])
       if (point && !within(point, live.bounds)) return { ok: false, code: "target_changed" };
+    captured = { id: live.id, bounds: live.bounds };
     window ??= (await app.children()).find(
       (item) =>
         item.role === "window" && !!item.bounds && sameWindowBounds(item.bounds, live.bounds),
@@ -628,6 +711,19 @@ async function pointerGesture(
   if (action.kind !== "drag") {
     const at = screen?.to;
     if (!at) return { ok: false, code: "unsupported_action" };
+    if (!action.foreground) {
+      const target = captured ?? windowFor(native.windows(app.pid), window?.bounds ?? null, at);
+      if (!target) return { ok: false, code: "input_requires_foreground" };
+      return postPointer(
+        native,
+        app.pid,
+        target,
+        at,
+        action.kind === "click_at"
+          ? { kind: "click", button: action.button, count: action.count }
+          : { kind: "move" },
+      );
+    }
     return runPointer(xa11y, native, request, [at], window, async (input) => {
       if (action.kind === "click_at")
         await input.click([at.x, at.y], { button: action.button, count: action.count });
@@ -648,6 +744,12 @@ async function pointerGesture(
     to = asPoint(pointerTarget(drop.element.bounds, drop.window?.bounds ?? null));
   }
   if (!from || !to) return { ok: false, code: "input_requires_foreground" };
+  if (!action.foreground) {
+    const target = captured ?? windowFor(native.windows(app.pid), window?.bounds ?? null, from);
+    if (!target) return { ok: false, code: "input_requires_foreground" };
+    await postTransitions(native, app.pid, target, dragTransitions(from, to));
+    return { ok: true, via: "pointer_event" };
+  }
   return runPointer(xa11y, native, request, [from, to], window, async () => {
     let at = from;
     native.postDrag(at, "down");
@@ -723,11 +825,17 @@ async function act(
   }
   if (action.kind === "press" || action.kind === "perform")
     return { ok: false, code: "unsupported_action" };
-  // Only synthesized pointer input remains. It moves the user's real cursor and
-  // lands on whatever window is on top, so it runs only where the app's own
-  // element is the topmost one at that point.
   const point = pointerTarget(element.bounds, window?.bounds ?? null);
   if (!point) return { ok: false, code: "input_requires_foreground" };
+  if (!action.foreground) {
+    const at = { x: point[0], y: point[1] };
+    const target = windowFor(native.windows(app.pid), window?.bounds ?? null, at);
+    if (!target) return { ok: false, code: "input_requires_foreground" };
+    return postPointer(native, app.pid, target, at, action);
+  }
+  // Real pointer input moves the user's cursor and lands on whatever window is
+  // on top, so it runs only where the app's own element is the topmost one at
+  // that point.
   return runPointer(
     xa11y,
     native,

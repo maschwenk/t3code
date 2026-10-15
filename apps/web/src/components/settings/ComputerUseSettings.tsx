@@ -87,7 +87,7 @@ export function ComputerUseSettings() {
         {...searchableSetting("computer-pointer-takeover")}
         serverScoped
         settingKeys={["enableComputerPointerTakeover"]}
-        description="Hovering, double-clicking, dragging and clicking inside canvases need the real pointer. When you have not touched the mouse or keyboard for a few seconds, agents may bring the app forward for that one gesture, then put your pointer and front app back. If you are active, the agent waits and asks instead."
+        description="Pointer steps normally reach the app in the background without moving your mouse. For the rare control that ignores them, an agent may ask for the real pointer: when you have not touched the mouse or keyboard for a few seconds, it brings the app forward for that one gesture, then puts your pointer and front app back. If you are active, the agent waits and asks instead."
         control={
           <ScopedSwitch
             settingKeys={["enableComputerPointerTakeover"]}
