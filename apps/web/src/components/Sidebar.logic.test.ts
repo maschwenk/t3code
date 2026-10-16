@@ -2246,6 +2246,7 @@ describe("Working shelf (beta)", () => {
       expect(build(["working", "active", "snoozed", "settled"])).toEqual([
         "working-header",
         "w1",
+        "active-header",
         "pinned-header",
         "p1",
         "pinned-divider",
@@ -2284,6 +2285,24 @@ describe("Working shelf (beta)", () => {
         "settled-header",
         "settled-placeholder",
       ]);
+    });
+
+    it("divides the active rows from a section rendered above them", () => {
+      const build = (
+        order: Parameters<typeof buildSidebarListItems>[0]["order"],
+        hasWorking: boolean,
+      ) =>
+        markersAndRows(buildSidebarListItems({ order, rows: keys, hasWorking, hasSnoozed: true }));
+      const withWorking = build(["working", "active", "snoozed", "settled"], true);
+      const header = withWorking.indexOf("active-header");
+      expect(header).toBeGreaterThan(withWorking.indexOf("working-header"));
+      expect(header).toBe(withWorking.indexOf("pinned-header") - 1);
+      expect(build(["active", "working", "snoozed", "settled"], true)).not.toContain(
+        "active-header",
+      );
+      expect(build(["working", "active", "snoozed", "settled"], false)).not.toContain(
+        "active-header",
+      );
     });
 
     it("anchors the bottom shelves below the active rows, not at a Working section above them", () => {

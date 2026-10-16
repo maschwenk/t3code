@@ -372,7 +372,6 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
         // its models — stale options shouldn't appear in the picker.
         continue;
       }
-      const usage = claudeUsageSummary(entry.snapshot, openedAt);
       for (const model of models) {
         if (
           !shouldIncludeModelPickerOption({
@@ -384,6 +383,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
         ) {
           continue;
         }
+        const usage = claudeUsageSummary(entry.snapshot, model.slug, openedAt);
         out.push({
           slug: model.slug,
           name: model.name,

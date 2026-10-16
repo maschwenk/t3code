@@ -759,6 +759,22 @@ function SidebarDragBoundary(props: {
   );
 }
 
+/** A static divider between sections, styled like the shelf headers but not collapsible. */
+function SidebarStaticSectionHeader(props: { marker: "active-header"; label: string }) {
+  return (
+    <SortableSidebarMarker
+      marker={props.marker}
+      data-testid={`sidebar-${props.marker}`}
+      className="mx-0.5 h-8"
+    >
+      <div className="flex h-8 w-full items-center gap-2 px-2 text-xs font-medium text-sidebar-muted-foreground/60">
+        <span className="shrink-0">{props.label}</span>
+        <span aria-hidden className="h-px min-w-2 flex-1 bg-sidebar-border/60" />
+      </div>
+    </SortableSidebarMarker>
+  );
+}
+
 // Shelf headers stay visible and keep their measured height while dragging.
 function SidebarSectionHeader(props: {
   marker: "working-header" | "snoozed-header" | "settled-header";
@@ -5260,6 +5276,15 @@ export default function Sidebar() {
                           continue;
                         }
                         switch (item.marker) {
+                          case "active-header":
+                            items.push(
+                              <SidebarStaticSectionHeader
+                                key="active-header"
+                                marker="active-header"
+                                label="Active"
+                              />,
+                            );
+                            break;
                           case "pinned-header":
                             items.push(
                               <SidebarDragBoundary

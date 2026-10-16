@@ -163,6 +163,8 @@ export type SidebarListMarker =
   | "settled-placeholder"
   /** The boundary between pinned and active rows. */
   | "pinned-divider"
+  /** A divider above the pinned and active rows when a section renders above them. */
+  | "active-header"
   | "working-header"
   | "snoozed-header"
   | "settled-header";
@@ -235,6 +237,7 @@ export function buildSidebarListItems(input: {
         if (input.hasWorking) items.push(marker("working-header"), ...rowsOf("working"));
         break;
       case "active":
+        if (items.length > 0) items.push(marker("active-header"));
         items.push(
           marker("pinned-header"),
           ...rowsOf("pinned"),
@@ -275,6 +278,7 @@ export function findSidebarShelfAnchorIndex(items: readonly SidebarListItem[]): 
 
 /** The section each marker opens. Placeholders sit inside their section. */
 const SECTION_AT_MARKER: Partial<Record<SidebarListMarker, SidebarSection>> = {
+  "active-header": "pinned",
   "pinned-header": "pinned",
   "pinned-divider": "active",
   "working-header": "working",

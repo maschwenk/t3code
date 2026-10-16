@@ -186,7 +186,9 @@ export function createSidebarSortingStrategy(input: {
     // The preview keeps the blocks in the order the list renders them.
     for (const item of items) {
       if (item.kind !== "marker") continue;
-      if (item.marker === "pinned-header") {
+      if (item.marker === "active-header") {
+        marker("active-header");
+      } else if (item.marker === "pinned-header") {
         marker("pinned-header");
         projected.push(...groups.pinned);
         marker("pinned-divider");
