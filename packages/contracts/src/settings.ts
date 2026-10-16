@@ -295,7 +295,7 @@ export const DEFAULT_BROWSER_LINK_TARGET: BrowserLinkTarget = "system";
  */
 export const PullRequestLinkTarget = Schema.Literals(["browser", "app"]);
 export type PullRequestLinkTarget = typeof PullRequestLinkTarget.Type;
-export const DEFAULT_PULL_REQUEST_LINK_TARGET: PullRequestLinkTarget = "browser";
+const DEFAULT_PULL_REQUEST_LINK_TARGET: PullRequestLinkTarget = "browser";
 
 export const LoadBalancingWeights = Schema.Record(
   TrimmedNonEmptyString,
