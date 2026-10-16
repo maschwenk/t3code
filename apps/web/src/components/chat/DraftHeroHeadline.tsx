@@ -13,7 +13,10 @@ import { projectIconColorClassName } from "~/projectIconColors";
 import { primaryServerKeybindingsAtom } from "~/state/server";
 import { useScratchProject } from "~/hooks/useScratchProject";
 import { useClientSettings } from "~/hooks/useSettings";
-import { hasExplicitComposerModelSelection } from "~/lib/chatThreadActions";
+import {
+  hasExplicitComposerModelSelection,
+  resolveNewThreadClaudeAccount,
+} from "~/lib/chatThreadActions";
 import {
   deriveLogicalProjectKeyFromSettings,
   selectProjectGroupingSettings,
@@ -192,9 +195,10 @@ export function DraftHeroHeadline({
     );
     if (!hasExplicitComposerModelSelection(currentDraft)) {
       applyStickyState(draftId);
-      const environmentSettings = environments.find(
+      const serverConfig = environments.find(
         (environment) => environment.environmentId === project.environmentId,
-      )?.serverConfig?.settings;
+      )?.serverConfig;
+      const environmentSettings = serverConfig?.settings;
       const defaultModelSelection = environmentSettings
         ? resolveProjectSettings(environmentSettings, project.id, project).settings
             .defaultModelSelection
@@ -203,6 +207,15 @@ export function DraftHeroHeadline({
         setModelSelection(draftId, defaultModelSelection, {
           replaceOptions: true,
         });
+      }
+      const rotated = resolveNewThreadClaudeAccount({
+        draft: getComposerDraft(draftId),
+        providers: serverConfig?.providers ?? [],
+        enabled: environmentSettings?.preferClaudeAccountClosestToReset ?? false,
+        now: Date.now(),
+      });
+      if (rotated) {
+        setModelSelection(draftId, rotated, { replaceOptions: true });
       }
     }
   };

@@ -1,4 +1,5 @@
 import { type ProviderDriverKind, type ProviderInstanceId } from "@t3tools/contracts";
+import type { ClaudeUsageSummary } from "@t3tools/shared/usageLimits";
 import { memo } from "react";
 import { CheckIcon, StarIcon } from "lucide-react";
 import {
@@ -41,6 +42,8 @@ export const ModelListRow = memo(function ModelListRow(props: {
   unavailable?: boolean;
   jumpLabel?: string | null;
   disabledReason?: string | null;
+  /** Subscription usage left on the instance's account, with longer windows as detail. */
+  usage?: ClaudeUsageSummary | undefined;
   onToggleFavorite: () => void;
 }) {
   const providerLabel = props.model.subProvider
@@ -96,6 +99,22 @@ export const ModelListRow = memo(function ModelListRow(props: {
             <span className="truncate text-xs font-normal leading-snug text-muted-foreground/70">
               {providerLabel}
             </span>
+            {props.usage ? (
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <span className="shrink-0 text-xs font-normal leading-snug text-muted-foreground/70">
+                      · {props.usage.label}
+                    </span>
+                  }
+                />
+                {props.usage.detail ? (
+                  <TooltipPopup side="top" align="start">
+                    {props.usage.detail}
+                  </TooltipPopup>
+                ) : null}
+              </Tooltip>
+            ) : null}
           </div>
         )}
       </div>

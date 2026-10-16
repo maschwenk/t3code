@@ -1134,6 +1134,8 @@ import { serverEnvironment } from "../../state/server";
 import type { ReviewCommentContext } from "../../reviewCommentContext";
 
 const WORKSPACE_SNAPSHOT_RETRY_COOLDOWN_MS = 10_000;
+// The server caches Claude's usage probe for five minutes; refreshing sooner re-reads the same numbers.
+const CLAUDE_USAGE_REFRESH_AFTER_MS = 5 * 60_000;
 
 const extendReplacementRangeForTrailingSpace = (
   text: string,
@@ -2386,6 +2388,24 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const [isComposerFooterCompact, setIsComposerFooterCompact] = useState(false);
   const [isComposerPrimaryActionsCompact, setIsComposerPrimaryActionsCompact] = useState(false);
   const [isComposerModelPickerOpen, setIsComposerModelPickerOpen] = useState(false);
+  // The picker shows each Claude account's usage left; opening it re-reads stale
+  // accounts, at most once per account per refresh interval.
+  const claudeUsageRefreshRequestedAtRef = useRef(new Map<string, number>());
+  useEffect(() => {
+    if (!isComposerModelPickerOpen) return;
+    const now = Date.now();
+    for (const entry of providerInstanceEntries) {
+      const checkedAt = entry.snapshot.usageLimits?.checkedAt;
+      if (entry.driverKind !== "claudeAgent" || !checkedAt) continue;
+      const key = `${environmentId}:${entry.instanceId}`;
+      const requestedAt = claudeUsageRefreshRequestedAtRef.current.get(key) ?? 0;
+      if (now - Math.max(Date.parse(checkedAt), requestedAt) < CLAUDE_USAGE_REFRESH_AFTER_MS) {
+        continue;
+      }
+      claudeUsageRefreshRequestedAtRef.current.set(key, now);
+      void refreshProviders({ environmentId, input: { instanceId: entry.instanceId } });
+    }
+  }, [environmentId, isComposerModelPickerOpen, providerInstanceEntries, refreshProviders]);
   const isMobileViewport = useMediaQuery("max-sm");
   const {
     isComposerFocused,
