@@ -548,17 +548,21 @@ const CLAUDE_DRIVER = "claudeAgent";
 /** Share of a Claude window an account must have left to take a new thread. */
 const CLAUDE_ROTATION_MIN_REMAINING_PERCENT = 5;
 
+function claudeWindows(provider: ServerProvider): readonly ServerProviderUsageWindow[] {
+  if (provider.driver !== CLAUDE_DRIVER) return [];
+  return provider.usageLimits?.windows ?? [];
+}
+
 /**
  * A Claude window as it stands at `now`. One whose reset has passed rolled
  * over: nothing is used yet and the next window starts on the next request.
  */
 function currentClaudeWindow(
   provider: ServerProvider,
-  id: "five_hour" | "seven_day",
+  id: string,
   now: number,
 ): ServerProviderUsageWindow | undefined {
-  if (provider.driver !== CLAUDE_DRIVER) return undefined;
-  const window = provider.usageLimits?.windows.find((candidate) => candidate.id === id);
+  const window = claudeWindows(provider).find((candidate) => candidate.id === id);
   if (!window) return undefined;
   const resetsAt = resetMillis(window);
   if (resetsAt === null || resetsAt > now) return window;
@@ -576,32 +580,67 @@ export interface ClaudeUsageSummary {
   readonly detail: string | null;
 }
 
+const CLAUDE_PER_MODEL_WEEKLY_PREFIX = "seven_day_";
+
+function isPerModelWeeklyId(id: string, slug: string): id is `seven_day_${string}` {
+  if (!id.startsWith(CLAUDE_PER_MODEL_WEEKLY_PREFIX)) return false;
+  const family = id.slice(CLAUDE_PER_MODEL_WEEKLY_PREFIX.length).toLowerCase();
+  return family.length > 0 && slug.includes(family);
+}
+
 /**
- * The model picker's usage line for a Claude account: the five-hour window,
- * with the weekly window as detail. Null for other drivers and for accounts
- * that report no five-hour window (API keys, a failed probe).
+ * The weekly window that governs `model` on `provider`: a per-model window
+ * such as `seven_day_fable` whose suffix appears in the model slug, else the
+ * account-wide `seven_day`. Null when the account reports neither.
+ */
+export function claudeWeeklyWindowId(
+  provider: ServerProvider,
+  model: string,
+): "seven_day" | `seven_day_${string}` | null {
+  const ids = claudeWindows(provider).map((window) => window.id);
+  const slug = model.toLowerCase();
+  const perModel = ids.find((id): id is `seven_day_${string}` => isPerModelWeeklyId(id, slug));
+  if (perModel) return perModel;
+  return ids.includes("seven_day") ? "seven_day" : null;
+}
+
+/**
+ * The model picker's usage line for a Claude account: the weekly window that
+ * governs `model`, falling back to the five-hour window. The other windows
+ * follow as detail: the account-wide weekly when a per-model window was used,
+ * then the five-hour window. Null for other drivers and for accounts that
+ * report neither a weekly nor a five-hour window (API keys, a failed probe).
  */
 export function claudeUsageSummary(
   provider: ServerProvider,
+  model: string,
   now: number,
 ): ClaudeUsageSummary | null {
   const session = currentClaudeWindow(provider, "five_hour", now);
-  if (!session) return null;
-  const weekly = currentClaudeWindow(provider, "seven_day", now);
+  const weeklyId = claudeWeeklyWindowId(provider, model);
+  const weekly = weeklyId ? currentClaudeWindow(provider, weeklyId, now) : undefined;
+  const primary = weekly ?? session;
+  if (!primary) return null;
+  const details: string[] = [];
+  if (weekly && weeklyId !== "seven_day") {
+    const accountWeekly = currentClaudeWindow(provider, "seven_day", now);
+    if (accountWeekly) details.push(`Weekly: ${describeClaudeWindow(accountWeekly, now)}`);
+  }
+  if (weekly && session) details.push(`Session: ${describeClaudeWindow(session, now)}`);
   return {
-    label: describeClaudeWindow(session, now),
-    detail: weekly ? `Weekly: ${describeClaudeWindow(weekly, now)}` : null,
+    label: describeClaudeWindow(primary, now),
+    detail: details.length > 0 ? details.join(" · ") : null,
   };
 }
 
 /**
  * The Claude instance a new thread on `selection.model` should start on: among
- * ready instances serving that model with more than 5% of their five-hour
- * window left (and a weekly window that is not spent), the one whose five-hour
- * window resets soonest, so accounts nearest a reset are used up first. A
- * window that has not started resets last. Ties keep the current instance.
- * Returns `selection.instanceId` for non-Claude selections or when nothing
- * qualifies.
+ * ready instances serving that model with more than 5% left in their five-hour
+ * window, their account-wide weekly window, and their weekly window for the
+ * model, the one whose weekly window for the model resets soonest, so accounts
+ * nearest a reset are used up first. A window that has not started resets
+ * last. Ties keep the current instance. Returns `selection.instanceId` for
+ * non-Claude selections or when nothing qualifies.
  */
 export function selectClaudeInstanceClosestToReset(
   providers: ReadonlyArray<ServerProvider>,
@@ -624,9 +663,18 @@ export function selectClaudeInstanceClosestToReset(
       continue;
     }
     const session = currentClaudeWindow(provider, "five_hour", now);
-    const weekly = currentClaudeWindow(provider, "seven_day", now);
-    if (!session || !hasRoom(session) || (weekly && !hasRoom(weekly))) continue;
-    const resetsAt = resetMillis(session) ?? Number.POSITIVE_INFINITY;
+    const accountWeekly = currentClaudeWindow(provider, "seven_day", now);
+    const weeklyId = claudeWeeklyWindowId(provider, selection.model);
+    const weekly = weeklyId ? currentClaudeWindow(provider, weeklyId, now) : undefined;
+    if (
+      !session ||
+      !hasRoom(session) ||
+      (accountWeekly && !hasRoom(accountWeekly)) ||
+      (weekly && !hasRoom(weekly))
+    ) {
+      continue;
+    }
+    const resetsAt = resetMillis(weekly ?? session) ?? Number.POSITIVE_INFINITY;
     if (
       best === null ||
       resetsAt < best.resetsAt ||
