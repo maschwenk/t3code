@@ -104,11 +104,6 @@ export async function loadMacNative() {
     y: T.Double,
     ffiTypeTag: ffi.FFITypeTag.StackStruct,
   } as unknown as FfiParams["retType"];
-  const CGSize = {
-    width: T.Double,
-    height: T.Double,
-    ffiTypeTag: ffi.FFITypeTag.StackStruct,
-  } as unknown as FfiParams["retType"];
   const cfTrue = () => {
     // RTLD_DEFAULT; kCFBooleanTrue is a data symbol holding the CFBooleanRef.
     const symbol = call<ReturnType<typeof out>[number]>(
@@ -203,33 +198,31 @@ export async function loadMacNative() {
       [event, call<bigint>("c", "mach_absolute_time", T.U64, [], [])],
     );
   };
-  /** Whether an element's accessibility size is at most `limit` in both dimensions. */
+  /**
+   * Whether an element's accessibility size is at most `limit` in both
+   * dimensions. False when the app reports no size, which also happens for
+   * every window while the screen is locked.
+   */
   const fitsWithin = (element: bigint, limit: { width: number; height: number }) => {
     const size = attribute(element, "AXSize");
     if (!size) return false;
-    const value = ffi.createPointer({
-      paramsType: [CGSize],
-      paramsValue: [{ width: 0, height: 0 }],
-    });
-    // kAXValueTypeCGSize
-    if (
-      !call<boolean>(
-        "ax",
-        "AXValueGetValue",
-        T.Boolean,
-        [Ref, T.I32, T.External],
-        [size, 2, value[0]],
-      )
-    )
-      return false;
-    const { width, height } = ffi.restorePointer({
-      retType: [CGSize],
-      paramsValue: value,
-    })[0] as unknown as {
-      width: number;
-      height: number;
-    };
-    return width <= limit.width && height <= limit.height;
+    // AXValueGetValue fills a CGSize (two doubles); kAXValueTypeCGSize is 2.
+    const buffer = call<bigint>("c", "malloc", Ref, [T.I64], [16]);
+    try {
+      if (!call<boolean>("ax", "AXValueGetValue", T.Boolean, [Ref, T.I32, Ref], [size, 2, buffer]))
+        return false;
+      const double = (offset: bigint) => {
+        const cell = ffi.createPointer({ paramsType: [T.Double], paramsValue: [0] });
+        call("c", "memcpy", T.Void, [T.External, Ref, T.I64], [cell[0], buffer + offset, 8]);
+        return ffi.restorePointer({
+          retType: [T.Double],
+          paramsValue: cell,
+        })[0] as unknown as number;
+      };
+      return double(0n) <= limit.width && double(8n) <= limit.height;
+    } finally {
+      call("c", "free", T.Void, [Ref], [buffer]);
+    }
   };
   const application = (pid: number) =>
     call<bigint>("ax", "AXUIElementCreateApplication", Ref, [T.I32], [pid]);
