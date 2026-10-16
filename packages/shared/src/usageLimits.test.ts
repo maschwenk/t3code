@@ -3,6 +3,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   type ServerProvider,
+  type ServerProviderUsageWindow,
   UsageLimitSourceId,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
@@ -26,6 +27,7 @@ import {
   remainingPercent,
   selectClaudeInstanceClosestToReset,
   claudeUsageSummary,
+  claudeWeeklyWindowId,
   usesChatGptSharing,
 } from "./usageLimits.ts";
 
@@ -1122,6 +1124,8 @@ describe("remainingPercent", () => {
 
 describe("Claude account rotation", () => {
   const opus = "claude-opus-5-5";
+  const fable = "claude-fable-5-1";
+  const weekReset = "2026-09-08T12:00:00.000Z";
   const { resetsAt: _sessionReset, ...sessionWindow } = window;
   const claudeAccount = (instanceId: string, overrides: Partial<ServerProvider> = {}) =>
     provider({
@@ -1130,32 +1134,45 @@ describe("Claude account rotation", () => {
       models: [{ slug: opus, name: "Claude Opus 5.5", isCustom: false, capabilities: null }],
       ...overrides,
     });
+  const weeklyWindow = (
+    id: string,
+    usedPercent: number,
+    resetsAt?: string,
+  ): ServerProviderUsageWindow => ({
+    id,
+    kind: "weekly",
+    label: id,
+    usedPercent,
+    windowDurationMins: 10080,
+    ...(resetsAt === undefined ? {} : { resetsAt }),
+  });
+  const withWindows = (
+    instanceId: string,
+    windows: ServerProviderUsageWindow[],
+    models: readonly string[] = [opus],
+  ) =>
+    claudeAccount(instanceId, {
+      models: models.map((slug) => ({ slug, name: slug, isCustom: false, capabilities: null })),
+      usageLimits: { checkedAt: "2026-09-03T11:59:00.000Z", windows },
+    });
   function claude(
     instanceId: string,
     session: { readonly usedPercent: number; readonly resetsAt?: string },
-    weeklyUsedPercent = 10,
+    weekly: { readonly usedPercent?: number; readonly resetsAt?: string } = {},
   ): ServerProvider {
-    return claudeAccount(instanceId, {
-      usageLimits: {
-        checkedAt: "2026-09-03T11:59:00.000Z",
-        windows: [
-          { ...sessionWindow, ...session },
-          {
-            id: "seven_day",
-            kind: "weekly",
-            label: "Weekly",
-            usedPercent: weeklyUsedPercent,
-            windowDurationMins: 10080,
-            resetsAt: "2026-09-08T12:00:00.000Z",
-          },
-        ],
-      },
-    });
+    return withWindows(instanceId, [
+      { ...sessionWindow, ...session },
+      { ...weeklyWindow("seven_day", 10, weekReset), ...weekly },
+    ]);
   }
-  const select = (providers: ReadonlyArray<ServerProvider>, current = "claude_main") =>
+  const select = (
+    providers: ReadonlyArray<ServerProvider>,
+    current = "claude_main",
+    model = opus,
+  ) =>
     selectClaudeInstanceClosestToReset(
       providers,
-      { instanceId: ProviderInstanceId.make(current), model: opus },
+      { instanceId: ProviderInstanceId.make(current), model },
       now,
     );
 
@@ -1164,18 +1181,33 @@ describe("Claude account rotation", () => {
   it("skips an account with 5% or less of its five-hour window left", () => {
     const providers = [
       claude("claude_main", { usedPercent: 20, resetsAt: "2026-09-03T15:00:00.000Z" }),
-      claude("claude_spent", { usedPercent: 95, resetsAt: "2026-09-03T12:10:00.000Z" }),
-      claude("claude_next", { usedPercent: 60, resetsAt: "2026-09-03T13:00:00.000Z" }),
+      claude(
+        "claude_spent",
+        { usedPercent: 95, resetsAt: "2026-09-03T12:10:00.000Z" },
+        { resetsAt: "2026-09-04T12:00:00.000Z" },
+      ),
+      claude(
+        "claude_next",
+        { usedPercent: 60, resetsAt: "2026-09-03T13:00:00.000Z" },
+        { resetsAt: "2026-09-05T12:00:00.000Z" },
+      ),
     ];
     expect(select(providers)).toBe("claude_next");
   });
 
   // Regression: picking by remaining quota instead of reset time would burn
   // the fresh account first and let the soon-to-reset quota go unused.
-  it("prefers the earliest reset, ranks unstarted windows last, and keeps the current account on a tie", () => {
-    const idle = claude("claude_idle", { usedPercent: 0 });
+  it("prefers the earliest weekly reset, ranks unstarted windows last, and keeps the current account on a tie", () => {
+    const idle = withWindows("claude_idle", [
+      { ...sessionWindow, usedPercent: 0 },
+      weeklyWindow("seven_day", 10),
+    ]);
     const late = claude("claude_main", { usedPercent: 10, resetsAt: "2026-09-03T16:00:00.000Z" });
-    const early = claude("claude_early", { usedPercent: 80, resetsAt: "2026-09-03T12:30:00.000Z" });
+    const early = claude(
+      "claude_early",
+      { usedPercent: 80, resetsAt: "2026-09-03T12:30:00.000Z" },
+      { resetsAt: "2026-09-05T12:00:00.000Z" },
+    );
     expect(select([idle, late, early])).toBe("claude_early");
     expect(select([idle, late])).toBe("claude_main");
     const twin = claude("claude_twin", { usedPercent: 50, resetsAt: "2026-09-03T16:00:00.000Z" });
@@ -1192,10 +1224,49 @@ describe("Claude account rotation", () => {
     expect(select(providers)).toBe("claude_reset");
   });
 
+  it("ranks accounts by weekly reset, so a five-hour reset that comes first does not send a thread to an account whose weekly cap resets later", () => {
+    const providers = [
+      claude("claude_main", { usedPercent: 20, resetsAt: "2026-09-03T12:30:00.000Z" }),
+      claude(
+        "claude_weekly_soon",
+        { usedPercent: 20, resetsAt: "2026-09-03T16:00:00.000Z" },
+        { resetsAt: "2026-09-05T12:00:00.000Z" },
+      ),
+    ];
+    expect(select(providers)).toBe("claude_weekly_soon");
+  });
+
+  it("skips an account whose Fable weekly window has 5% or less left for a Fable model, even when its account-wide weekly has room, and keeps it eligible for Opus", () => {
+    const spent = withWindows(
+      "claude_spent",
+      [
+        { ...sessionWindow, usedPercent: 10, resetsAt: "2026-09-03T12:30:00.000Z" },
+        weeklyWindow("seven_day", 10, "2026-09-04T12:00:00.000Z"),
+        weeklyWindow("seven_day_fable", 96, "2026-09-04T12:00:00.000Z"),
+      ],
+      [fable, opus],
+    );
+    const main = withWindows(
+      "claude_main",
+      [
+        { ...sessionWindow, usedPercent: 20, resetsAt: "2026-09-03T16:00:00.000Z" },
+        weeklyWindow("seven_day", 10, weekReset),
+        weeklyWindow("seven_day_fable", 30, weekReset),
+      ],
+      [fable, opus],
+    );
+    expect(select([spent, main], "claude_main", fable)).toBe("claude_main");
+    expect(select([spent, main], "claude_main", opus)).toBe("claude_spent");
+  });
+
   it("leaves the selection unchanged when no account qualifies or the selection is not Claude", () => {
     const spent = [
       claude("claude_main", { usedPercent: 99, resetsAt: "2026-09-03T15:00:00.000Z" }),
-      claude("claude_weekly_spent", { usedPercent: 10, resetsAt: "2026-09-03T12:30:00.000Z" }, 98),
+      claude(
+        "claude_weekly_spent",
+        { usedPercent: 10, resetsAt: "2026-09-03T12:30:00.000Z" },
+        { usedPercent: 98 },
+      ),
       claudeAccount("claude_api_key"),
     ];
     expect(select(spent)).toBe("claude_main");
@@ -1207,22 +1278,58 @@ describe("Claude account rotation", () => {
     ).toBe("codex");
   });
 
-  it("summarizes the five-hour window with the weekly window as detail", () => {
-    expect(
-      claudeUsageSummary(
-        claude("claude_main", { usedPercent: 38, resetsAt: "2026-09-03T13:20:00.000Z" }, 26),
-        now,
-      ),
-    ).toEqual({
-      label: "62% left, resets in 1h 20m",
-      detail: "Weekly: 74% left, resets in 5d 0h",
+  const fableAccount = withWindows(
+    "claude_main",
+    [
+      { ...sessionWindow, usedPercent: 38, resetsAt: "2026-09-03T13:20:00.000Z" },
+      weeklyWindow("seven_day", 26, weekReset),
+      weeklyWindow("seven_day_fable", 40, "2026-09-06T12:00:00.000Z"),
+    ],
+    [fable, opus],
+  );
+
+  it("returns seven_day_fable for a Fable model, so a Fable line and rotation never read the account-wide weekly instead of the cap that ends Fable turns", () => {
+    expect(claudeWeeklyWindowId(fableAccount, fable)).toBe("seven_day_fable");
+  });
+
+  it("returns seven_day for an Opus model even though a seven_day_fable window exists, so an Opus line never reads the Fable cap", () => {
+    expect(claudeWeeklyWindowId(fableAccount, opus)).toBe("seven_day");
+  });
+
+  it("returns null when the account reports no weekly window, so rotation never ranks an account on a weekly reset it does not report", () => {
+    const sessionOnly = withWindows("claude_main", [{ ...sessionWindow, usedPercent: 38 }]);
+    expect(claudeWeeklyWindowId(sessionOnly, fable)).toBeNull();
+  });
+
+  it("labels the Fable weekly window for a Fable model, so the picker does not headline the account-wide weekly and hide the cap that ends Fable turns", () => {
+    expect(claudeUsageSummary(fableAccount, fable, now)).toEqual({
+      label: "60% left, resets in 3d 0h",
+      detail: "Weekly: 74% left, resets in 5d 0h · Session: 62% left, resets in 1h 20m",
     });
-    expect(claudeUsageSummary(claude("claude_idle", { usedPercent: 0 }), now)?.label).toBe(
-      "100% left",
+  });
+
+  it("labels the account-wide weekly for an Opus model and lists only the session as detail, so the weekly is not repeated as a Weekly entry", () => {
+    expect(claudeUsageSummary(fableAccount, opus, now)).toEqual({
+      label: "74% left, resets in 5d 0h",
+      detail: "Session: 62% left, resets in 1h 20m",
+    });
+  });
+
+  it("summarizes the five-hour window alone when the account reports no weekly window", () => {
+    const sessionOnly = withWindows("claude_main", [
+      { ...sessionWindow, usedPercent: 38, resetsAt: "2026-09-03T13:20:00.000Z" },
+    ]);
+    expect(claudeUsageSummary(sessionOnly, opus, now)).toEqual({
+      label: "62% left, resets in 1h 20m",
+      detail: null,
+    });
+    expect(claudeUsageSummary(claude("claude_idle", { usedPercent: 0 }), opus, now)?.label).toBe(
+      "90% left, resets in 5d 0h",
     );
     expect(
       claudeUsageSummary(
         provider({ usageLimits: { checkedAt: "2026-09-03T11:59:00.000Z", windows: [window] } }),
+        opus,
         now,
       ),
     ).toBeNull();
