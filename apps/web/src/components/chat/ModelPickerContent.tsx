@@ -5,6 +5,7 @@ import {
   type ResolvedKeybindingsConfig,
 } from "@t3tools/contracts";
 import { resolveSelectableModel } from "@t3tools/shared/model";
+import { type ClaudeUsageSummary, claudeUsageSummary } from "@t3tools/shared/usageLimits";
 import { useAtomValue } from "@effect/atom-react";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
 import { memo, useMemo, useState, useCallback, useEffect, useLayoutEffect, useRef } from "react";
@@ -62,6 +63,7 @@ type ModelPickerItem = {
   continuationGroupKey?: string | undefined;
   isLegacy?: boolean | undefined;
   isUnavailable?: boolean | undefined;
+  usage?: ClaudeUsageSummary | undefined;
 };
 
 export function resolveModelPickerSelectedModel(input: {
@@ -194,6 +196,8 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     onToggleModel,
   } = props;
   const [searchQuery, setSearchQuery] = useState("");
+  // The picker mounts on open; reset countdowns are read against that moment.
+  const [openedAt] = useState(Date.now);
   const [showTopScrollFade, setShowTopScrollFade] = useState(false);
   const [showBottomScrollFade, setShowBottomScrollFade] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -368,6 +372,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
         // its models — stale options shouldn't appear in the picker.
         continue;
       }
+      const usage = claudeUsageSummary(entry.snapshot, openedAt);
       for (const model of models) {
         if (
           !shouldIncludeModelPickerOption({
@@ -396,11 +401,18 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
           ...(entry.continuationGroupKey
             ? { continuationGroupKey: entry.continuationGroupKey }
             : {}),
+          ...(usage ? { usage } : {}),
         });
       }
     }
     return out;
-  }, [modelOptionsByInstance, entryByInstanceId, props.activeInstanceId, activeModelSlug]);
+  }, [
+    modelOptionsByInstance,
+    entryByInstanceId,
+    props.activeInstanceId,
+    activeModelSlug,
+    openedAt,
+  ]);
 
   const isLocked = props.lockedProvider !== null;
   const isSearching = searchQuery.trim().length > 0;
@@ -1031,6 +1043,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                         unavailable={model.isUnavailable === true}
                         jumpLabel={modelJumpLabelByKey.get(modelKey) ?? null}
                         disabledReason={disabledReason}
+                        usage={model.usage}
                         onToggleFavorite={() => toggleFavorite(model.instanceId, model.slug)}
                       />
                     );
