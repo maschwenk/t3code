@@ -9,7 +9,12 @@ import {
 import { defaultAnimateLayoutChanges, type AnimateLayoutChanges } from "@dnd-kit/sortable";
 import { threadSearchMatchKey } from "@t3tools/client-runtime/state/thread-search";
 import type { ContextMenuItem, EnvironmentId, ThreadId } from "@t3tools/contracts";
-import type { SidebarProjectSortOrder, SidebarThreadSortOrder } from "@t3tools/contracts/settings";
+import {
+  SIDEBAR_SECTION_KEYS,
+  type SidebarProjectSortOrder,
+  type SidebarSectionKey,
+  type SidebarThreadSortOrder,
+} from "@t3tools/contracts/settings";
 import type { AsyncResult } from "effect/reactivity";
 import { planPinnedReorder } from "@t3tools/client-runtime/state/thread-sort";
 import {
@@ -174,19 +179,117 @@ export function sidebarListItemId(item: SidebarListItem): string {
   return item.kind === "thread" ? item.key : sidebarMarkerId(item.marker);
 }
 
-/** The section a slot belongs to, read off the markers around it: from
-    the top down, everything before the pinned divider is pinned, then the
-    inbox until the first shelf header, each shelf until the next header,
-    then settled. */
+function isSidebarSectionKey(key: string): key is SidebarSectionKey {
+  return SIDEBAR_SECTION_KEYS.some((candidate) => candidate === key);
+}
+
+/** Top-to-bottom order of the sidebar sections from the stored setting.
+    Unknown and repeated keys drop, and keys the list lacks follow in default
+    order, so an older or hand-edited settings file still shows every section. */
+export function resolveSidebarSectionOrder(stored: readonly string[]): SidebarSectionKey[] {
+  const order = new Set<SidebarSectionKey>(stored.filter(isSidebarSectionKey));
+  for (const key of SIDEBAR_SECTION_KEYS) order.add(key);
+  return [...order];
+}
+
+export function isDefaultSidebarSectionOrder(stored: readonly string[]): boolean {
+  return resolveSidebarSectionOrder(stored).every(
+    (key, index) => key === SIDEBAR_SECTION_KEYS[index],
+  );
+}
+
+/** Pinned rows travel with the active ones: the drag boundary between them
+    only works while the two stay adjacent. */
+const SECTIONS_OF_BLOCK: Record<SidebarSectionKey, readonly SidebarSection[]> = {
+  working: ["working"],
+  active: ["pinned", "active"],
+  snoozed: ["snoozed"],
+  settled: ["settled"],
+};
+
+/** Concatenate per-section rows in the order the sections are shown. */
+export function flattenSidebarSections<T>(
+  order: readonly SidebarSectionKey[],
+  rows: Readonly<Record<SidebarSection, readonly T[]>>,
+): T[] {
+  return order.flatMap((block) => SECTIONS_OF_BLOCK[block].flatMap((section) => rows[section]));
+}
+
+/** The sortable list: markers and rows laid out in section order. Shelf
+    headers render while the shelf holds threads, even when collapsed to no
+    rows; the settled shelf always renders. */
+export function buildSidebarListItems(input: {
+  readonly order: readonly SidebarSectionKey[];
+  /** Thread keys rendered in each section, in display order. */
+  readonly rows: Readonly<Record<SidebarSection, readonly string[]>>;
+  readonly hasWorking: boolean;
+  readonly hasSnoozed: boolean;
+}): SidebarListItem[] {
+  const marker = (name: SidebarListMarker): SidebarListItem => ({ kind: "marker", marker: name });
+  const rowsOf = (section: SidebarSection): SidebarListItem[] =>
+    input.rows[section].map((key): SidebarListItem => ({ kind: "thread", key, section }));
+  const items: SidebarListItem[] = [];
+  for (const block of input.order) {
+    switch (block) {
+      case "working":
+        if (input.hasWorking) items.push(marker("working-header"), ...rowsOf("working"));
+        break;
+      case "active":
+        items.push(
+          marker("pinned-header"),
+          ...rowsOf("pinned"),
+          marker("pinned-divider"),
+          marker("active-placeholder"),
+          ...rowsOf("active"),
+        );
+        break;
+      case "snoozed":
+        if (input.hasSnoozed) items.push(marker("snoozed-header"), ...rowsOf("snoozed"));
+        break;
+      case "settled":
+        items.push(marker("settled-header"), marker("settled-placeholder"), ...rowsOf("settled"));
+        break;
+    }
+  }
+  return items;
+}
+
+export function isSidebarShelfHeader(item: SidebarListItem | undefined): boolean {
+  return (
+    item?.kind === "marker" &&
+    (item.marker === "working-header" ||
+      item.marker === "snoozed-header" ||
+      item.marker === "settled-header")
+  );
+}
+
+/** The first shelf header below the pinned and active rows. It carries the
+    auto margin that anchors the shelves beneath it to the bottom of the
+    sidebar; shelves above the active rows stay at the top. -1 when none. */
+export function findSidebarShelfAnchorIndex(items: readonly SidebarListItem[]): number {
+  const divider = items.findIndex(
+    (item) => item.kind === "marker" && item.marker === "pinned-divider",
+  );
+  return items.findIndex((item, index) => index > divider && isSidebarShelfHeader(item));
+}
+
+/** The section each marker opens. Placeholders sit inside their section. */
+const SECTION_AT_MARKER: Partial<Record<SidebarListMarker, SidebarSection>> = {
+  "pinned-header": "pinned",
+  "pinned-divider": "active",
+  "working-header": "working",
+  "snoozed-header": "snoozed",
+  "settled-header": "settled",
+};
+
+/** The section a slot belongs to, read off the markers around it: each
+    marker opens its section until the next one, and a slot above every
+    marker counts as pinned. */
 function sectionAtSidebarSlot(items: readonly SidebarListItem[], index: number): SidebarSection {
   let section: SidebarSection = "pinned";
   for (let i = 0; i < index && i < items.length; i += 1) {
     const item = items[i]!;
-    if (item.kind !== "marker") continue;
-    if (item.marker === "pinned-divider") section = "active";
-    else if (item.marker === "working-header") section = "working";
-    else if (item.marker === "snoozed-header") section = "snoozed";
-    else if (item.marker === "settled-header") section = "settled";
+    if (item.kind === "marker") section = SECTION_AT_MARKER[item.marker] ?? section;
   }
   return section;
 }
@@ -215,16 +318,9 @@ export function resolveSidebarDropTarget(
   const activeOrder: string[] = [];
   let currentSection: SidebarSection = "pinned";
   for (const item of moved) {
-    if (item.kind === "marker") {
-      if (item.marker === "pinned-divider") currentSection = "active";
-      else if (
-        item.marker === "working-header" ||
-        item.marker === "snoozed-header" ||
-        item.marker === "settled-header"
-      )
-        break;
-    } else if (currentSection === "pinned") pinnedOrder.push(item.key);
-    else activeOrder.push(item.key);
+    if (item.kind === "marker") currentSection = SECTION_AT_MARKER[item.marker] ?? currentSection;
+    else if (currentSection === "pinned") pinnedOrder.push(item.key);
+    else if (currentSection === "active") activeOrder.push(item.key);
   }
   return { section, pinnedOrder, activeOrder };
 }

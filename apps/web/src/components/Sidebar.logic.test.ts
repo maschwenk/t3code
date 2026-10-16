@@ -11,10 +11,13 @@ import {
   buildBulkTitleRegenerationContextMenuItem,
   buildBulkUnpinContextMenuItem,
   buildMultiSelectThreadContextMenuItems,
+  buildSidebarListItems,
   createThreadJumpHintVisibilityController,
   deleteSelectedThreadEntries,
   filterSidebarProjectScopeItems,
   filterSidebarV2VisibleThreads,
+  findSidebarShelfAnchorIndex,
+  flattenSidebarSections,
   formatWorkingDurationLabel,
   getFallbackThreadIdAfterDelete,
   getProjectSortTimestamp,
@@ -22,6 +25,7 @@ import {
   getSidebarThreadIdsToPrewarm,
   hasUnseenCompletion,
   isContextMenuPointerDown,
+  isDefaultSidebarSectionOrder,
   isSidebarSubagentThread,
   isSidebarThreadWorking,
   isTrailingDoubleClick,
@@ -30,6 +34,7 @@ import {
   reduceSidebarProjectScopeMenuState,
   resolveAdjacentThreadId,
   resolveProjectStatusIndicator,
+  resolveSidebarSectionOrder,
   resolveSidebarSweepKeys,
   resolveSidebarStageBadgeLabel,
   resolveSidebarThreadSection,
@@ -2205,6 +2210,113 @@ describe("Working shelf (beta)", () => {
     });
   });
 
+  describe("section order", () => {
+    it("shows Working first by default and fills in sections an old settings file lacks", () => {
+      expect(resolveSidebarSectionOrder(["working", "active", "snoozed", "settled"])).toEqual([
+        "working",
+        "active",
+        "snoozed",
+        "settled",
+      ]);
+      // A file written before the setting existed decodes to the default list.
+      expect(isDefaultSidebarSectionOrder(["working", "active", "snoozed", "settled"])).toBe(true);
+      // Unknown and repeated keys drop; missing keys follow in default order.
+      expect(resolveSidebarSectionOrder(["settled", "later-section", "settled", "active"])).toEqual(
+        ["settled", "active", "working", "snoozed"],
+      );
+      expect(resolveSidebarSectionOrder([])).toEqual(["working", "active", "snoozed", "settled"]);
+      expect(isDefaultSidebarSectionOrder(["active", "working"])).toBe(false);
+    });
+
+    const keys = {
+      pinned: ["p1"],
+      active: ["a1"],
+      working: ["w1"],
+      snoozed: ["z1"],
+      settled: ["s1"],
+    };
+    const markersAndRows = (items: readonly SidebarListItem[]) =>
+      items.map((item) => (item.kind === "thread" ? item.key : item.marker));
+
+    it("lays the list out in the chosen order and keeps pinned rows with the active ones", () => {
+      const build = (order: Parameters<typeof buildSidebarListItems>[0]["order"]) =>
+        markersAndRows(
+          buildSidebarListItems({ order, rows: keys, hasWorking: true, hasSnoozed: true }),
+        );
+      expect(build(["working", "active", "snoozed", "settled"])).toEqual([
+        "working-header",
+        "w1",
+        "pinned-header",
+        "p1",
+        "pinned-divider",
+        "active-placeholder",
+        "a1",
+        "snoozed-header",
+        "z1",
+        "settled-header",
+        "settled-placeholder",
+        "s1",
+      ]);
+      expect(build(["active", "snoozed", "settled", "working"]).slice(0, 6)).toEqual([
+        "pinned-header",
+        "p1",
+        "pinned-divider",
+        "active-placeholder",
+        "a1",
+        "snoozed-header",
+      ]);
+      // Empty shelves leave no header; the settled shelf always has one.
+      expect(
+        markersAndRows(
+          buildSidebarListItems({
+            order: ["working", "active", "snoozed", "settled"],
+            rows: { ...keys, working: [], snoozed: [], settled: [] },
+            hasWorking: false,
+            hasSnoozed: false,
+          }),
+        ),
+      ).toEqual([
+        "pinned-header",
+        "p1",
+        "pinned-divider",
+        "active-placeholder",
+        "a1",
+        "settled-header",
+        "settled-placeholder",
+      ]);
+    });
+
+    it("anchors the bottom shelves below the active rows, not at a Working section above them", () => {
+      const items = buildSidebarListItems({
+        order: ["working", "active", "snoozed", "settled"],
+        rows: keys,
+        hasWorking: true,
+        hasSnoozed: true,
+      });
+      expect(items[findSidebarShelfAnchorIndex(items)]).toEqual({
+        kind: "marker",
+        marker: "snoozed-header",
+      });
+    });
+
+    it("numbers jump shortcuts in the order the sections are shown", () => {
+      expect(flattenSidebarSections(["working", "active", "snoozed", "settled"], keys)).toEqual([
+        "w1",
+        "p1",
+        "a1",
+        "z1",
+        "s1",
+      ]);
+      expect(flattenSidebarSections(["settled", "active", "working", "snoozed"], keys)).toEqual([
+        "s1",
+        "p1",
+        "a1",
+        "w1",
+        "z1",
+      ]);
+    });
+  });
+
   describe("dragging", () => {
     const marker = (name: SidebarListMarker): SidebarListItem => ({ kind: "marker", marker: name });
     const row = (key: string, section: SidebarSection): SidebarListItem => ({
@@ -2233,6 +2345,33 @@ describe("Working shelf (beta)", () => {
         activeOrder: ["a1", "a2", "p1"],
       });
       expect(resolveSidebarDropVerb("active", "working")).toBeNull();
+    });
+
+    it("resolves drops among pinned and active rows when Working is listed above them", () => {
+      const workingFirst: readonly SidebarListItem[] = [
+        marker("working-header"),
+        row("w1", "working"),
+        marker("pinned-header"),
+        row("p1", "pinned"),
+        marker("pinned-divider"),
+        row("a1", "active"),
+        row("a2", "active"),
+        marker("settled-header"),
+        row("s1", "settled"),
+      ];
+      // Working rows must not leak into the pinned order, and the pinned
+      // section must still be recognized below the Working shelf.
+      expect(resolveSidebarDropTarget(workingFirst, "a2", "p1")).toEqual({
+        section: "pinned",
+        pinnedOrder: ["a2", "p1"],
+        activeOrder: ["a1"],
+      });
+      expect(resolveSidebarDropTarget(workingFirst, "p1", "a2")).toEqual({
+        section: "active",
+        pinnedOrder: [],
+        activeOrder: ["a1", "a2", "p1"],
+      });
+      expect(resolveSidebarDropTarget(workingFirst, "a1", "w1")).toBeNull();
     });
 
     it("arranges the rows it can write when another row's server cannot store an order", () => {

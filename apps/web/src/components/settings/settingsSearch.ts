@@ -315,6 +315,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["hide fold running monitoring threads inbox sidebar shelf"],
   },
   {
+    id: "sidebar-section-order",
+    title: "Sidebar section order",
+    to: "/settings/general",
+    searchTerms: ["thread list working pinned active snoozed settled move reorder top bottom"],
+  },
+  {
     id: "auto-settle-inactive-threads",
     title: "Auto-settle inactive threads",
     to: "/settings/general",
