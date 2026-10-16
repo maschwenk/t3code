@@ -366,10 +366,19 @@ export async function loadMacNative() {
     /**
      * Whether `pid` already exposes its web content fully. Chromium and WebKit
      * list actions such as AXPress on web elements only once an assistive app
-     * has asked for the enhanced interface.
+     * has asked for the enhanced interface. Electron reads this back as set
+     * once asked, but never AXManualAccessibility, so that cannot be the check.
      */
     webAccessibilityEnabled: (pid: number) =>
       toBoolean(attribute(application(pid), "AXEnhancedUserInterface")) === true,
+    /**
+     * Whether `pid` is an Electron app: only Electron answers
+     * AXManualAccessibility. Its Chromium lists AXPress on web elements as soon
+     * as any assistive app reads them, but performing it does nothing until
+     * web accessibility is enabled.
+     */
+    isElectron: (pid: number) =>
+      toBoolean(attribute(application(pid), "AXManualAccessibility")) !== null,
     /**
      * Asks `pid` to expose its web content fully: AXEnhancedUserInterface for
      * Chromium and WebKit, AXManualAccessibility for Electron. Chromium reports

@@ -8,7 +8,7 @@ const dependencies = [ComputerUse.ComputerUse, McpInvocationContext.McpInvocatio
 const AppName = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(200));
 const Status = Tool.make("computer_status", {
   description:
-    "Check native computer use on the machine running this T3 environment. When allowAllApps is true, any app is permitted, including apps absent from allowedApps. Otherwise only the exact names in allowedApps are permitted. Also returns whether computer use and screen capture are enabled. Works when the user connects remotely. Browser tasks inside T3 should prefer preview_* tools. Never change access settings yourself.",
+    'Check native computer use on the machine running this T3 environment. When allowAllApps is true, any app is permitted, including apps absent from allowedApps. Otherwise only the exact names in allowedApps are permitted. Also returns whether computer use and screen capture are enabled. Works when the user connects remotely. Browser tasks inside T3 should prefer preview_* tools; when they cannot drive a page (it blocks injected scripts or needs trusted input), computer tools on the T3 app itself (its app name starts with "T3 Code") reach the preview page the user can see: snapshot with roles ["web_area"], then pass the page\'s ref as root. Never change access settings yourself.',
   parameters: Schema.Struct({ refresh: Schema.optionalKey(Schema.Boolean) }),
   success: Schema.Struct({
     enabled: Schema.Boolean,
