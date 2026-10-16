@@ -516,6 +516,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["generated thread titles source control content default provider"],
   },
   {
+    id: "auto-rename-recent-threads",
+    title: "Auto-rename recent threads",
+    to: "/settings/general",
+    searchTerms: ["regenerate refresh thread titles automatically active"],
+  },
+  {
     id: "diagnostics",
     title: "Diagnostics",
     to: "/settings/general",

@@ -600,6 +600,9 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.snoozeLimitedThreads !== DEFAULT_UNIFIED_SETTINGS.snoozeLimitedThreads
         ? ["Snooze limited threads"]
         : []),
+      ...(settings.autoRenameRecentThreads !== DEFAULT_UNIFIED_SETTINGS.autoRenameRecentThreads
+        ? ["Auto-rename recent threads"]
+        : []),
       ...(settings.wordWrap !== DEFAULT_UNIFIED_SETTINGS.wordWrap ? ["Word wrap"] : []),
       ...(settings.persistComposerContextStrip !==
       DEFAULT_UNIFIED_SETTINGS.persistComposerContextStrip
@@ -721,6 +724,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.sidebarAutoSettleOnMerge,
       settings.autoResumeLimitedThreads,
       settings.snoozeLimitedThreads,
+      settings.autoRenameRecentThreads,
       settings.sidebarProjectGroupingMode,
       settings.sidebarProjectSortOrder,
       settings.sidebarWorkingShelfEnabled,
@@ -831,6 +835,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       sidebarAutoSettleOnMerge: DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleOnMerge,
       autoResumeLimitedThreads: DEFAULT_UNIFIED_SETTINGS.autoResumeLimitedThreads,
       snoozeLimitedThreads: DEFAULT_UNIFIED_SETTINGS.snoozeLimitedThreads,
+      autoRenameRecentThreads: DEFAULT_UNIFIED_SETTINGS.autoRenameRecentThreads,
       responseStreamingMode: DEFAULT_UNIFIED_SETTINGS.responseStreamingMode,
       enableProviderUpdateChecks: DEFAULT_UNIFIED_SETTINGS.enableProviderUpdateChecks,
       continueThreadsAfterServerUpdate: DEFAULT_UNIFIED_SETTINGS.continueThreadsAfterServerUpdate,
@@ -3412,6 +3417,22 @@ export function GeneralSettingsPanel() {
                 ) : null}
               </div>
             )
+          }
+        />
+        <SettingsRow
+          serverScoped
+          {...searchableSetting("auto-rename-recent-threads")}
+          description="Every 30 minutes, regenerate the titles of threads with activity in the last 3 hours."
+          settingKeys={["autoRenameRecentThreads"]}
+          control={
+            <ScopedSwitch
+              settingKeys={["autoRenameRecentThreads"]}
+              checked={settings.autoRenameRecentThreads}
+              onCheckedChange={(checked) =>
+                updateSettings({ autoRenameRecentThreads: Boolean(checked) })
+              }
+              aria-label="Auto-rename recent threads"
+            />
           }
         />
       </SettingsSection>

@@ -47,6 +47,7 @@ import * as ProviderTurnStartServiceTestkit from "../ProviderTurnStartService.te
 import * as RunExecutionService from "../RunExecutionService.ts";
 import * as RunFinalizationService from "../RunFinalizationService.ts";
 import * as ThreadTitleRegenerationService from "../ThreadTitleRegenerationService.ts";
+import type * as TextGeneration from "../../textGeneration/TextGeneration.ts";
 import * as RuntimePolicy from "../RuntimePolicy.ts";
 import * as TurnItemPositionStore from "../TurnItemPositionStore.ts";
 import * as RuntimeRequestService from "../RuntimeRequestService.ts";
@@ -259,6 +260,9 @@ export function layerWithRegistry<Error>(
     // as server startup does after a crash or restart.
     readonly recoverOnStartup?: boolean;
     readonly continueThreadsAfterServerUpdate?: boolean;
+    // Run title generation effects through the real service with this text
+    // generation. Without it, they are no-ops.
+    readonly textGeneration?: Layer.Layer<TextGeneration.TextGeneration>;
   } = {},
 ): Layer.Layer<
   Orchestrator.OrchestratorV2 | EffectWorker.OrchestrationEffectWorkerV2 | EventSink.EventSinkV2,
@@ -442,6 +446,19 @@ export function layerWithRegistry<Error>(
       });
     }),
   ).pipe(Layer.provide(layerOrchestratorProvided));
+  const layerThreadTitleRegeneration =
+    options.textGeneration === undefined
+      ? layerThreadTitleRegenerationTest
+      : ThreadTitleRegenerationService.layer.pipe(
+          Layer.provide(
+            Layer.mergeAll(
+              layerThreadManagementProvided,
+              layerStores,
+              layerServerSettings,
+              options.textGeneration,
+            ),
+          ),
+        );
   const layerContinuationWorkerProvided =
     options.runContinuationWorker === true
       ? ProviderContinuationService.layer.pipe(
@@ -463,7 +480,7 @@ export function layerWithRegistry<Error>(
         layerProviderTurnControlServiceProvided,
         layerProviderTurnStartServiceProvided,
         layerRuntimeRequestServiceProvided,
-        layerThreadTitleRegenerationTest,
+        layerThreadTitleRegeneration,
         layerServerSettings,
         layerThreadManagementProvided,
       ),
