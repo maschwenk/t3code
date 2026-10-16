@@ -48,6 +48,9 @@ const MAX_VISITED = 6_000;
 const MAX_DEPTH = 48;
 // The driver kills the worker at 12 s; leave room for capture and the reply.
 const WALK_BUDGET_MS = 6_500;
+// Electron's Chromium rebuilds its web trees about two seconds after
+// AXManualAccessibility is set when the window is in the background.
+const ELECTRON_SETTLE_MS = 2_500;
 const MAX_IMAGE_SIDE = 1600;
 
 const secure = (element: Element) =>
@@ -229,6 +232,14 @@ async function takeSnapshot(
   const terms = queryTerms(options.query);
   const roles = options.roles?.length ? new Set(options.roles) : undefined;
   const filtering = terms.length > 0 || roles !== undefined;
+  // The wait below counts against the walk budget, so the reply stays in time.
+  const started = performance.now();
+  // Electron web elements list press before this, so the check after the walk
+  // never fires for them, yet pressing them does nothing until it is enabled.
+  if (native.isElectron(app.pid) && !native.webAccessibilityEnabled(app.pid)) {
+    native.enableWebAccessibility(app.pid);
+    await NodeTimersPromises.setTimeout(ELECTRON_SETTLE_MS);
+  }
   let start = app.asElement();
   let startClip: Rect | null = null;
   let window: Element | undefined;
@@ -241,7 +252,6 @@ async function takeSnapshot(
   }
   const startPath = [...(options.root?.path ?? [])];
   const elements: ElementTarget[] = [];
-  const started = performance.now();
   let textSize = 0;
   let visited = 0;
   let matched = 0;
