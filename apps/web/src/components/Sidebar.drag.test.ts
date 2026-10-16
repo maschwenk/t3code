@@ -679,6 +679,26 @@ describe("sidebar drag projection", () => {
     expect(byTime.get("w")).toEqual(stationary);
   });
 
+  it("keeps a Working section listed above the pinned rows in place while a pinned row moves to Active", () => {
+    const items = [
+      marker("working-header"),
+      thread("w", "working"),
+      pinnedHeader,
+      thread("p", "pinned"),
+      divider,
+      thread("a1", "active"),
+      settledHeader,
+      marker("settled-placeholder"),
+    ];
+    const result = preview({ items, settledOrder: [], settledExpanded: false }, "p", "a1");
+    expect(result.get(sidebarMarkerId("working-header"))).toEqual(stationary);
+    expect(result.get("w")).toEqual(stationary);
+    expect(result.get(sidebarMarkerId("pinned-header"))).toEqual(stationary);
+    // The pinned slot closes up: one card and its gap.
+    expect(result.get(sidebarMarkerId("pinned-divider"))?.y).toBe(-83);
+    expect(result.get("a1")?.y).toBe(-83);
+  });
+
   it("derives missing card geometry from the measured root scale", () => {
     const items = [
       pinnedHeader,

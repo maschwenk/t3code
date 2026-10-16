@@ -177,8 +177,11 @@ import {
   filterSidebarV2VisibleThreads,
   buildBulkTitleRegenerationContextMenuItem,
   buildBulkUnpinContextMenuItem,
+  buildSidebarListItems,
   deleteSelectedThreadEntries,
   filterSidebarProjectScopeItems,
+  findSidebarShelfAnchorIndex,
+  flattenSidebarSections,
   formatWorkingDurationLabel,
   firstValidTimestampMs,
   hasUnseenCompletion,
@@ -189,6 +192,7 @@ import {
   planSidebarThreadDrop,
   reduceSidebarProjectScopeMenuState,
   resolveAdjacentThreadId,
+  resolveSidebarSectionOrder,
   resolveSidebarSweepKeys,
   resolveSidebarDropTarget,
   resolveSidebarDropVerb,
@@ -2334,6 +2338,11 @@ export default function Sidebar() {
   const sidebarProjectSortOrder = useClientSettings((s) => s.sidebarProjectSortOrder);
   const timestampFormat = useClientSettings((s) => s.timestampFormat);
   const workingShelfEnabled = useClientSettings((s) => s.sidebarWorkingShelfEnabled);
+  const storedSectionOrder = useClientSettings((s) => s.sidebarSectionOrder);
+  const sectionOrder = useMemo(
+    () => resolveSidebarSectionOrder(storedSectionOrder),
+    [storedSectionOrder],
+  );
   const projectGroupingSettings = useClientSettings(selectProjectGroupingSettings);
   const {
     settleThread,
@@ -2822,14 +2831,15 @@ export default function Sidebar() {
   const [activeSearchResultIndex, setActiveSearchResultIndex] = useState(0);
   const isSearchingThreads = threadSearchQuery.trim().length > 0;
   const searchableThreads = useMemo(
-    () => [
-      ...pinnedThreads,
-      ...activeThreads,
-      ...workingThreads,
-      ...snoozedThreads,
-      ...settledThreads,
-    ],
-    [activeThreads, pinnedThreads, settledThreads, snoozedThreads, workingThreads],
+    () =>
+      flattenSidebarSections(sectionOrder, {
+        pinned: pinnedThreads,
+        active: activeThreads,
+        working: workingThreads,
+        snoozed: snoozedThreads,
+        settled: settledThreads,
+      }),
+    [activeThreads, pinnedThreads, sectionOrder, settledThreads, snoozedThreads, workingThreads],
   );
   const searchEnvironmentIds = useConnectedEnvironmentIds();
   // useThreadSearch owns the debounce and the two-character floor.
@@ -2982,16 +2992,18 @@ export default function Sidebar() {
   }, [routeThreadKey, workingShelfExpanded, workingThreads]);
 
   const orderedThreads = useMemo(
-    () => [
-      ...pinnedThreads,
-      ...activeThreads,
-      ...visibleWorkingThreads,
-      ...visibleSnoozedThreads,
-      ...renderedSettledThreads,
-    ],
+    () =>
+      flattenSidebarSections(sectionOrder, {
+        pinned: pinnedThreads,
+        active: activeThreads,
+        working: visibleWorkingThreads,
+        snoozed: visibleSnoozedThreads,
+        settled: renderedSettledThreads,
+      }),
     [
       pinnedThreads,
       activeThreads,
+      sectionOrder,
       visibleWorkingThreads,
       visibleSnoozedThreads,
       renderedSettledThreads,
@@ -3704,14 +3716,8 @@ export default function Sidebar() {
   // Include every visible row in the measured order. Older servers disable
   // pickup on their rows without changing where those rows render.
   const sidebarListItems = useMemo((): readonly SidebarListItem[] => {
-    const rowsOf = (
-      list: readonly EnvironmentThreadShell[],
-      section: SidebarSection,
-    ): SidebarListItem[] =>
-      list.map((thread) => {
-        const key = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
-        return { kind: "thread", key, section };
-      });
+    const keysOf = (list: readonly EnvironmentThreadShell[]) =>
+      list.map((thread) => scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)));
     if (
       pinnedThreads.length +
         activeThreads.length +
@@ -3722,30 +3728,23 @@ export default function Sidebar() {
     ) {
       return [];
     }
-    const items: SidebarListItem[] = [{ kind: "marker", marker: "pinned-header" }];
-    const pinnedRows = rowsOf(pinnedThreads, "pinned");
-    items.push(...pinnedRows);
-    items.push({ kind: "marker", marker: "pinned-divider" });
-    const activeRows = rowsOf(activeThreads, "active");
-    items.push({ kind: "marker", marker: "active-placeholder" });
-    items.push(...activeRows);
-    if (workingThreads.length > 0) {
-      items.push({ kind: "marker", marker: "working-header" });
-      items.push(...rowsOf(visibleWorkingThreads, "working"));
-    }
-    if (snoozedThreads.length > 0) {
-      items.push({ kind: "marker", marker: "snoozed-header" });
-      items.push(...rowsOf(visibleSnoozedThreads, "snoozed"));
-    }
-    items.push({ kind: "marker", marker: "settled-header" });
-    const settledRows = rowsOf(renderedSettledThreads, "settled");
-    items.push({ kind: "marker", marker: "settled-placeholder" });
-    items.push(...settledRows);
-    return items;
+    return buildSidebarListItems({
+      order: sectionOrder,
+      rows: {
+        pinned: keysOf(pinnedThreads),
+        active: keysOf(activeThreads),
+        working: keysOf(visibleWorkingThreads),
+        snoozed: keysOf(visibleSnoozedThreads),
+        settled: keysOf(renderedSettledThreads),
+      },
+      hasWorking: workingThreads.length > 0,
+      hasSnoozed: snoozedThreads.length > 0,
+    });
   }, [
     activeThreads,
     pinnedThreads,
     renderedSettledThreads,
+    sectionOrder,
     settledThreads.length,
     snoozedThreads.length,
     visibleSnoozedThreads,
@@ -5251,6 +5250,10 @@ export default function Sidebar() {
                           onDraftContextMenu={handleDraftContextMenu}
                         />,
                       ];
+                      // Shelves below the active rows sit at the bottom of the
+                      // sidebar; the first one carries the auto margin.
+                      const shelfAnchor =
+                        sidebarListItems[findSidebarShelfAnchorIndex(sidebarListItems)];
                       for (const item of sidebarListItems) {
                         if (item.kind === "thread") {
                           items.push(renderThreadRow(threadByKey.get(item.key)!, item.section));
@@ -5302,7 +5305,7 @@ export default function Sidebar() {
                               <SidebarSectionHeader
                                 key="working-shelf-header"
                                 marker="working-header"
-                                className="mt-auto"
+                                className={cn(item === shelfAnchor && "mt-auto")}
                                 label={
                                   workingShelfExpanded
                                     ? "Working"
@@ -5320,7 +5323,7 @@ export default function Sidebar() {
                               <SidebarSectionHeader
                                 key="snoozed-shelf-header"
                                 marker="snoozed-header"
-                                className={cn(workingThreads.length === 0 && "mt-auto")}
+                                className={cn(item === shelfAnchor && "mt-auto")}
                                 label={
                                   snoozedShelfExpanded
                                     ? "Snoozed"
@@ -5338,9 +5341,7 @@ export default function Sidebar() {
                               <SidebarSectionHeader
                                 key="settled-shelf-header"
                                 marker="settled-header"
-                                className={cn(
-                                  workingThreads.length + snoozedThreads.length === 0 && "mt-auto",
-                                )}
+                                className={cn(item === shelfAnchor && "mt-auto")}
                                 label={
                                   settledShelfExpanded
                                     ? "Settled"

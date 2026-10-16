@@ -59,6 +59,14 @@ export type SidebarThreadSortOrder = typeof SidebarThreadSortOrder.Type;
 // wire field keeps its decoding default below.
 const DEFAULT_SIDEBAR_THREAD_SORT_ORDER: SidebarThreadSortOrder = "updated_at";
 
+// Thread list sections, top to bottom. "active" is the pinned and active
+// block, which stays together. The stored order is a plain string list so a
+// file written by another version still decodes; the web sidebar drops
+// unknown keys and appends missing ones.
+export const SIDEBAR_SECTION_KEYS = ["working", "active", "snoozed", "settled"] as const;
+export type SidebarSectionKey = (typeof SIDEBAR_SECTION_KEYS)[number];
+const DEFAULT_SIDEBAR_SECTION_ORDER: ReadonlyArray<SidebarSectionKey> = SIDEBAR_SECTION_KEYS;
+
 export const SidebarProjectGroupingMode = Schema.Literals([
   "repository",
   "repository_path",
@@ -477,6 +485,9 @@ export const ClientSettingsSchema = Schema.Struct({
   // time, so manual placement there is ignored (and kept) while it is on.
   sidebarWorkingShelfEnabled: Schema.Boolean.pipe(
     Schema.withDecodingDefault(Effect.succeed(false)),
+  ),
+  sidebarSectionOrder: Schema.Array(Schema.String).pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_SECTION_ORDER)),
   ),
   sidebarProjectGroupingMode: SidebarProjectGroupingMode.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_PROJECT_GROUPING_MODE)),
@@ -1857,6 +1868,7 @@ export const ClientSettingsPatch = Schema.Struct({
   showSkillsInSlashMenu: Schema.optionalKey(Schema.Boolean),
   legacySidebarEnabled: Schema.optionalKey(Schema.Boolean),
   sidebarWorkingShelfEnabled: Schema.optionalKey(Schema.Boolean),
+  sidebarSectionOrder: Schema.optionalKey(Schema.Array(Schema.String)),
   sidebarProjectGroupingMode: Schema.optionalKey(SidebarProjectGroupingMode),
   sidebarProjectGroupingOverrides: Schema.optionalKey(
     Schema.Record(TrimmedNonEmptyString, SidebarProjectGroupingMode),

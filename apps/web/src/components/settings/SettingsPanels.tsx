@@ -136,7 +136,9 @@ import {
 } from "../ui/number-field";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Switch } from "../ui/switch";
+import { isDefaultSidebarSectionOrder, resolveSidebarSectionOrder } from "../Sidebar.logic";
 import { ScopedSwitch } from "./ScopedSwitch";
+import { SidebarSectionOrderControl } from "./SidebarSectionOrderControl";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { ThemeLibrary } from "./ThemeSettings";
@@ -582,6 +584,9 @@ export function useSettingsRestore(onRestored?: () => void) {
       DEFAULT_UNIFIED_SETTINGS.sidebarWorkingShelfEnabled
         ? ["Working section"]
         : []),
+      ...(!isDefaultSidebarSectionOrder(settings.sidebarSectionOrder)
+        ? ["Sidebar section order"]
+        : []),
       ...(settings.sidebarAutoSettleAfterDays !==
       DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleAfterDays
         ? ["Auto-settle inactive threads"]
@@ -719,6 +724,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.sidebarProjectGroupingMode,
       settings.sidebarProjectSortOrder,
       settings.sidebarWorkingShelfEnabled,
+      settings.sidebarSectionOrder,
       settings.sidebarThreadPreviewCount,
       settings.showSkillsInSlashMenu,
       settings.timestampFormat,
@@ -820,6 +826,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       sidebarProjectGroupingMode: DEFAULT_UNIFIED_SETTINGS.sidebarProjectGroupingMode,
       sidebarProjectSortOrder: DEFAULT_UNIFIED_SETTINGS.sidebarProjectSortOrder,
       sidebarWorkingShelfEnabled: DEFAULT_UNIFIED_SETTINGS.sidebarWorkingShelfEnabled,
+      sidebarSectionOrder: DEFAULT_UNIFIED_SETTINGS.sidebarSectionOrder,
       sidebarAutoSettleAfterDays: DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleAfterDays,
       sidebarAutoSettleOnMerge: DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleOnMerge,
       autoResumeLimitedThreads: DEFAULT_UNIFIED_SETTINGS.autoResumeLimitedThreads,
@@ -2397,6 +2404,29 @@ export function GeneralSettingsPanel() {
                 updateSettings({ sidebarWorkingShelfEnabled: Boolean(checked) })
               }
               aria-label="Working section (beta)"
+            />
+          }
+        />
+
+        <SettingsRow
+          {...searchableSetting("sidebar-section-order")}
+          description="Top-to-bottom order of the thread list sections."
+          resetAction={
+            !isDefaultSidebarSectionOrder(settings.sidebarSectionOrder) ? (
+              <SettingResetButton
+                label="sidebar section order"
+                onClick={() =>
+                  updateSettings({
+                    sidebarSectionOrder: DEFAULT_UNIFIED_SETTINGS.sidebarSectionOrder,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <SidebarSectionOrderControl
+              order={resolveSidebarSectionOrder(settings.sidebarSectionOrder)}
+              onChange={(order) => updateSettings({ sidebarSectionOrder: order })}
             />
           }
         />
