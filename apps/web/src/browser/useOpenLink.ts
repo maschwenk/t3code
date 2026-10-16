@@ -6,6 +6,7 @@ import {
 import { useCallback } from "react";
 
 import { recordVisitForThread } from "~/browserHistoryStore";
+import { getClientSettings } from "~/hooks/useSettings";
 import { readLocalApi } from "~/localApi";
 import { previewEnvironment } from "~/state/preview";
 import { useAtomCommand } from "~/state/use-atom-command";
@@ -46,6 +47,7 @@ export function useOpenLink(threadRef: ScopedThreadRef | null | undefined): (
         url,
         event: options.event ?? NO_MODIFIER,
         preference: await resolveBrowserLinkTargetPreference(),
+        pullRequestLinkTarget: getClientSettings().pullRequestLinkTarget,
         canOpenInApp: canOpenLinksInApp(Boolean(targetThreadRef)),
       });
       if (target === "app" && targetThreadRef) {

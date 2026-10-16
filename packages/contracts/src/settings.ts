@@ -281,6 +281,14 @@ export const BrowserLinkTarget = Schema.Literals(["system", "app"]);
 export type BrowserLinkTarget = typeof BrowserLinkTarget.Type;
 export const DEFAULT_BROWSER_LINK_TARGET: BrowserLinkTarget = "system";
 
+/**
+ * Where a clicked pull request link goes: the user's default browser, or T3 Code's own pull
+ * request view (the right panel beside a thread, the pull requests page otherwise).
+ */
+export const PullRequestLinkTarget = Schema.Literals(["browser", "app"]);
+export type PullRequestLinkTarget = typeof PullRequestLinkTarget.Type;
+export const DEFAULT_PULL_REQUEST_LINK_TARGET: PullRequestLinkTarget = "browser";
+
 export const LoadBalancingWeights = Schema.Record(
   TrimmedNonEmptyString,
   Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 100 })),
@@ -335,6 +343,10 @@ export const ClientSettingsSchema = Schema.Struct({
    */
   browserLinkTarget: BrowserLinkTarget.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_BROWSER_LINK_TARGET)),
+  ),
+  /** Where clicked pull request links open, wherever they appear in the app. */
+  pullRequestLinkTarget: PullRequestLinkTarget.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_PULL_REQUEST_LINK_TARGET)),
   ),
   /**
    * Whether an agent using a preview pops the floating mini player into
@@ -1787,6 +1799,7 @@ export const ClientSettingsPatch = Schema.Struct({
   browserRecordingShowKeyPresses: Schema.optionalKey(Schema.Boolean),
   browserRecordingShowMousePresses: Schema.optionalKey(Schema.Boolean),
   browserLinkTarget: Schema.optionalKey(BrowserLinkTarget),
+  pullRequestLinkTarget: Schema.optionalKey(PullRequestLinkTarget),
   browserAutoShowFloatingPreview: Schema.optionalKey(Schema.Boolean),
   browserProfiles: Schema.optionalKey(Schema.Array(BrowserProfile)),
   browserDefaultProfileId: Schema.optionalKey(BrowserProfileId),

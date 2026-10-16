@@ -43,6 +43,7 @@ import {
   MIN_SIDEBAR_AUTO_SETTLE_AFTER_DAYS,
   type ResponseStreamingMode,
   MIN_TERMINAL_FONT_SIZE,
+  type PullRequestLinkTarget,
   type QuitConfirmationMode,
   SidebarProjectSortOrder,
 } from "@t3tools/contracts/settings";
@@ -201,6 +202,11 @@ const CHAT_WIDTH_LABELS: Record<ChatWidth, string> = {
   comfortable: "Comfortable",
   wide: "Wide",
   full: "Full",
+};
+
+const PULL_REQUEST_LINK_TARGET_LABELS: Record<PullRequestLinkTarget, string> = {
+  browser: "Your default browser",
+  app: "T3 Code",
 };
 
 const DIFF_LAYOUT_LABELS: Record<DiffLayout, string> = {
@@ -543,6 +549,9 @@ export function useSettingsRestore(onRestored?: () => void) {
         ? ["Diff colors"]
         : []),
       ...(settings.chatWidth !== DEFAULT_UNIFIED_SETTINGS.chatWidth ? ["Chat width"] : []),
+      ...(settings.pullRequestLinkTarget !== DEFAULT_UNIFIED_SETTINGS.pullRequestLinkTarget
+        ? ["Pull request links"]
+        : []),
       ...(settings.panelAnimationDurationMs !== DEFAULT_UNIFIED_SETTINGS.panelAnimationDurationMs
         ? ["Panel animations"]
         : []),
@@ -670,6 +679,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.appearanceContrast,
       settings.diffColorScheme,
       settings.chatWidth,
+      settings.pullRequestLinkTarget,
       settings.enableAgentBrowserAccess,
       settings.confirmQuit,
       settings.confirmThreadArchive,
@@ -787,6 +797,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       appearanceContrast: DEFAULT_UNIFIED_SETTINGS.appearanceContrast,
       diffColorScheme: DEFAULT_UNIFIED_SETTINGS.diffColorScheme,
       chatWidth: DEFAULT_UNIFIED_SETTINGS.chatWidth,
+      pullRequestLinkTarget: DEFAULT_UNIFIED_SETTINGS.pullRequestLinkTarget,
       timestampFormat: DEFAULT_UNIFIED_SETTINGS.timestampFormat,
       notificationMode: DEFAULT_UNIFIED_SETTINGS.notificationMode,
       inAppNotificationsEnabled: DEFAULT_UNIFIED_SETTINGS.inAppNotificationsEnabled,
@@ -2670,6 +2681,51 @@ export function GeneralSettingsPanel() {
                 </SelectItem>
                 <SelectItem hideIndicator value="split">
                   {DIFF_LAYOUT_LABELS.split}
+                </SelectItem>
+              </SelectPopup>
+            </Select>
+          }
+        />
+
+        <SettingsRow
+          {...searchableSetting("pull-request-link-target")}
+          description="Where pull request links open: in your default browser or in T3 Code's pull request view. Hold ⌘ or Ctrl while clicking to open one in your default browser either way."
+          resetAction={
+            settings.pullRequestLinkTarget !== DEFAULT_UNIFIED_SETTINGS.pullRequestLinkTarget ? (
+              <SettingResetButton
+                label="pull request links"
+                onClick={() =>
+                  updateSettings({
+                    pullRequestLinkTarget: DEFAULT_UNIFIED_SETTINGS.pullRequestLinkTarget,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Select
+              value={settings.pullRequestLinkTarget}
+              onValueChange={(value) => {
+                if (value === "browser" || value === "app") {
+                  updateSettings({ pullRequestLinkTarget: value });
+                }
+              }}
+            >
+              <SelectTrigger
+                size="sm"
+                className="w-full sm:w-40"
+                aria-label="Open pull requests in"
+              >
+                <SelectValue>
+                  {PULL_REQUEST_LINK_TARGET_LABELS[settings.pullRequestLinkTarget]}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                <SelectItem hideIndicator value="browser">
+                  {PULL_REQUEST_LINK_TARGET_LABELS.browser}
+                </SelectItem>
+                <SelectItem hideIndicator value="app">
+                  {PULL_REQUEST_LINK_TARGET_LABELS.app}
                 </SelectItem>
               </SelectPopup>
             </Select>

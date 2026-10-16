@@ -3129,6 +3129,7 @@ const CHAT_MARKDOWN_COMPONENTS = {
                 url: href,
                 event,
                 preference: linkTargetPreference,
+                pullRequestLinkTarget: getClientSettings().pullRequestLinkTarget,
                 canOpenInApp: canOpenInPreview,
               }) !== "app"
             ) {

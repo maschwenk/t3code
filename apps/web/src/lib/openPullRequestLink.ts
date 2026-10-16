@@ -1,4 +1,9 @@
-import type { EnvironmentId, PullRequestRef, ScopedThreadRef } from "@t3tools/contracts";
+import type {
+  EnvironmentId,
+  PullRequestLinkTarget,
+  PullRequestRef,
+  ScopedThreadRef,
+} from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigate } from "@tanstack/react-router";
 import { type MouseEvent, useCallback, useMemo } from "react";
@@ -11,6 +16,7 @@ import {
 } from "@t3tools/shared/sourceControl";
 
 import { useOpenLink } from "../browser/useOpenLink";
+import { getClientSettings } from "../hooks/useSettings";
 import { stackedThreadToast, toastManager } from "../components/ui/toast";
 import { useRightPanelStore } from "../rightPanelStore";
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
@@ -200,8 +206,9 @@ export function findProjectOnChangeRequestHost(
  */
 export function shouldOpenPullRequestExternally(
   event: Pick<MouseEvent<HTMLElement>, "metaKey" | "ctrlKey">,
+  linkTarget: PullRequestLinkTarget,
 ): boolean {
-  return event.metaKey || event.ctrlKey;
+  return linkTarget === "browser" || event.metaKey || event.ctrlKey;
 }
 
 export function useOpenChangeRequestLink(
@@ -222,7 +229,9 @@ export function useOpenChangeRequestLink(
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   return useCallback(
     (event, targetUrl, targetThreadRef, targetEnvironmentId) => {
-      if (shouldOpenPullRequestExternally(event)) return false;
+      if (shouldOpenPullRequestExternally(event, getClientSettings().pullRequestLinkTarget)) {
+        return false;
+      }
       const resolvedThreadRef = targetThreadRef ?? threadRef;
       const resolvedPanelRef = panelRef ?? resolvedThreadRef;
       const parsed = parseChangeRequestUrl(targetUrl);
@@ -328,7 +337,10 @@ export function useOpenPrLink(threadRef?: ScopedThreadRef) {
   return useCallback(
     (event: MouseEvent<HTMLElement>, prUrl: string, targetThreadRef?: ScopedThreadRef) => {
       event.stopPropagation();
-      const openInBrowser = shouldOpenPullRequestExternally(event);
+      const openInBrowser = shouldOpenPullRequestExternally(
+        event,
+        getClientSettings().pullRequestLinkTarget,
+      );
       const isAnchor =
         event.currentTarget instanceof HTMLAnchorElement && event.currentTarget.href.length > 0;
       // A real link already knows how to cmd/ctrl+click. Leave its default
@@ -339,8 +351,9 @@ export function useOpenPrLink(threadRef?: ScopedThreadRef) {
       event.preventDefault();
       if (!openInBrowser && openChangeRequest(event, prUrl, targetThreadRef)) return true;
 
-      // No project to show it in, so it is an ordinary link and follows the
-      // "Open links in" setting; the modifier still forces the system browser.
+      // The setting asks for the browser, or there is no project to show it in. useOpenLink
+      // sends pull request links to the system browser under the setting and treats any
+      // other link as ordinary; the modifier always forces the system browser.
       void openLink(prUrl, { event, threadRef: targetThreadRef }).catch((error: unknown) => {
         console.error(error);
         toastManager.add(

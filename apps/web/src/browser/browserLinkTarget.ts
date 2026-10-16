@@ -8,7 +8,8 @@
  *
  * @module browserLinkTarget
  */
-import type { BrowserLinkTarget } from "@t3tools/contracts";
+import type { BrowserLinkTarget, PullRequestLinkTarget } from "@t3tools/contracts";
+import { parseChangeRequestUrl } from "@t3tools/shared/changeRequestUrl";
 
 import { ensureClientSettingsHydrated, getClientSettings } from "~/hooks/useSettings";
 import { isPreviewSupportedInRuntime } from "~/previewStateStore";
@@ -18,6 +19,8 @@ export interface ResolveLinkTargetInput {
   /** Cmd/Ctrl-click always goes to the system browser, whatever the default. */
   readonly event: { readonly metaKey: boolean; readonly ctrlKey: boolean };
   readonly preference: BrowserLinkTarget;
+  /** With "browser", pull request links go to the system browser whatever `preference` says. */
+  readonly pullRequestLinkTarget?: PullRequestLinkTarget;
   /** Whether this client has an in-app browser and a thread to open it beside. */
   readonly canOpenInApp: boolean;
 }
@@ -31,6 +34,9 @@ export interface ResolveLinkTargetInput {
  */
 export function resolveLinkTarget(input: ResolveLinkTargetInput): BrowserLinkTarget {
   if (input.event.metaKey || input.event.ctrlKey) return "system";
+  if (input.pullRequestLinkTarget === "browser" && parseChangeRequestUrl(input.url) !== null) {
+    return "system";
+  }
   if (input.preference !== "app") return "system";
   if (!input.canOpenInApp) return "system";
   if (!isWebUrl(input.url)) return "system";

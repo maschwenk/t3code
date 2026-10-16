@@ -358,6 +358,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["timestamp clock locale system browser os 12 hour 24 hour"],
   },
   {
+    id: "pull-request-link-target",
+    title: "Pull request links",
+    to: "/settings/general",
+    searchTerms: ["open pull requests in default browser github merge request panel view links"],
+  },
+  {
     id: "response-streaming",
     title: "Response streaming",
     to: "/settings/general",
