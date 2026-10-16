@@ -19,8 +19,9 @@ const TITLE_REFRESH_SETTLE_TIMEOUT = Duration.minutes(4);
 
 /**
  * Threads whose latest user message or agent turn falls inside the activity
- * window, newest first, each once. A thread with a title generation already
- * in flight is left to that request.
+ * window, newest first, each once, with that activity time. A thread with a
+ * title generation already in flight is left to that request, and one with no
+ * activity after the time recorded in `refreshedActivityMs` is skipped.
  */
 export function threadsDueForTitleRefresh(
   threads: ReadonlyArray<
@@ -37,7 +38,8 @@ export function threadsDueForTitleRefresh(
     >
   >,
   nowMs: number,
-): ReadonlyArray<ThreadId> {
+  refreshedActivityMs: ReadonlyMap<ThreadId, number> = new Map(),
+): ReadonlyArray<{ readonly threadId: ThreadId; readonly activityMs: number }> {
   const windowStartMs = nowMs - Duration.toMillis(TITLE_REFRESH_ACTIVITY_WINDOW);
   const due = new Map<ThreadId, number>();
   for (const thread of threads) {
@@ -52,18 +54,29 @@ export function threadsDueForTitleRefresh(
         thread.latestRunCompletedAt,
       ].flatMap((value) => (value == null ? [] : [DateTime.toEpochMillis(value)])),
     );
-    if (activityMs >= windowStartMs) due.set(thread.id, activityMs);
+    if (
+      activityMs >= windowStartMs &&
+      activityMs > (refreshedActivityMs.get(thread.id) ?? Number.NEGATIVE_INFINITY)
+    ) {
+      due.set(thread.id, activityMs);
+    }
   }
-  return [...due].sort(([, left], [, right]) => right - left).map(([threadId]) => threadId);
+  return [...due]
+    .sort(([, left], [, right]) => right - left)
+    .map(([threadId, activityMs]) => ({ threadId, activityMs }));
 }
 
 /** One refresh pass; `layer` runs it every `TITLE_REFRESH_INTERVAL`. */
 export const makeRefreshPass = Effect.gen(function* () {
   const threads = yield* ThreadManagement.ThreadManagementService;
   const settings = yield* ServerSettings.ServerSettingsService;
+  // Activity each thread had when its last rename was sent. A restart forgets
+  // it, which costs at most one extra rename per thread.
+  const refreshedActivityMs = new Map<ThreadId, number>();
 
   const refreshTitle = Effect.fn("ThreadTitleRefreshWorker.refreshTitle")(function* (
     threadId: ThreadId,
+    activityMs: number,
     requestId: CommandId,
   ) {
     const dispatched = yield* threads.dispatch({
@@ -72,6 +85,7 @@ export const makeRefreshPass = Effect.gen(function* () {
       threadId,
       regenerateTitle: true,
     });
+    refreshedActivityMs.set(threadId, activityMs);
     // Holding the slot until this request's marker clears bounds the work
     // the pass puts on the effect worker at once.
     yield* threads
@@ -96,9 +110,13 @@ export const makeRefreshPass = Effect.gen(function* () {
     const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
     const snapshot = yield* threads.getShellSnapshot({ location: "active" });
     yield* Effect.forEach(
-      threadsDueForTitleRefresh(snapshot.threads, nowMs),
-      (threadId) =>
-        refreshTitle(threadId, CommandId.make(`title-refresh:${threadId}:${nowMs}`)).pipe(
+      threadsDueForTitleRefresh(snapshot.threads, nowMs, refreshedActivityMs),
+      ({ threadId, activityMs }) =>
+        refreshTitle(
+          threadId,
+          activityMs,
+          CommandId.make(`title-refresh:${threadId}:${nowMs}`),
+        ).pipe(
           Effect.catchCause((cause) =>
             Cause.hasInterruptsOnly(cause)
               ? Effect.interrupt
