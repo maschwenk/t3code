@@ -48,7 +48,13 @@ const MAX_VISITED = 6_000;
 const MAX_DEPTH = 48;
 // The driver kills the worker at 12 s; leave room for capture and the reply.
 const WALK_BUDGET_MS = 6_500;
+// Electron's Chromium rebuilds its web trees about two seconds after
+// AXManualAccessibility is set when the window is in the background.
+const ELECTRON_SETTLE_MS = 2_500;
 const MAX_IMAGE_SIDE = 1600;
+// A pressable element this small can take a coordinate click at its centre;
+// canvases and clickable containers are larger and get real pointer events.
+const COORDINATE_PRESS_LIMIT = { width: 480, height: 160 };
 
 const secure = (element: Element) =>
   /password|secure/i.test(`${element.role} ${String(element.raw.ax_subrole ?? "")}`);
@@ -229,6 +235,14 @@ async function takeSnapshot(
   const terms = queryTerms(options.query);
   const roles = options.roles?.length ? new Set(options.roles) : undefined;
   const filtering = terms.length > 0 || roles !== undefined;
+  // The wait below counts against the walk budget, so the reply stays in time.
+  const started = performance.now();
+  // Electron web elements list press before this, so the check after the walk
+  // never fires for them, yet pressing them does nothing until it is enabled.
+  if (native.isElectron(app.pid) && !native.webAccessibilityEnabled(app.pid)) {
+    native.enableWebAccessibility(app.pid);
+    await NodeTimersPromises.setTimeout(ELECTRON_SETTLE_MS);
+  }
   let start = app.asElement();
   let startClip: Rect | null = null;
   let window: Element | undefined;
@@ -241,7 +255,6 @@ async function takeSnapshot(
   }
   const startPath = [...(options.root?.path ?? [])];
   const elements: ElementTarget[] = [];
-  const started = performance.now();
   let textSize = 0;
   let visited = 0;
   let matched = 0;
@@ -570,16 +583,38 @@ const within = (point: Point, rect: Rect) =>
 const asPoint = (tuple: readonly [number, number] | undefined): Point | undefined =>
   tuple && { x: tuple[0], y: tuple[1] };
 
-/** Posts pointer transitions to the app one by one, pacing them as a person would. */
+// How long a background app gets to process a posted activation before the
+// press that must not raise its window, and the press before the deactivation.
+const ACTIVATION_SETTLE_MS = 150;
+
+/**
+ * Posts pointer transitions to the app one by one, pacing them as a person
+ * would. A button press goes to a background app while it believes it is
+ * active, so AppKit does not raise the window; the app is told it is inactive
+ * again afterwards. The front app is never told anything.
+ */
 async function postTransitions(
   native: MacNative,
   pid: number,
   window: PointerWindow,
   transitions: readonly Transition[],
 ): Promise<void> {
-  for (const [index, transition] of transitions.entries()) {
-    if (index > 0) await NodeTimersPromises.setTimeout(transition.kind === "drag" ? 16 : 40);
-    native.postMouse(pid, window, transition.point, transition);
+  const pressing = transitions.some((transition) => transition.kind === "down");
+  const activate = pressing && (await frontmostPid()) !== pid;
+  if (activate) {
+    native.postActivation(pid, window, true);
+    await NodeTimersPromises.setTimeout(ACTIVATION_SETTLE_MS);
+  }
+  try {
+    for (const [index, transition] of transitions.entries()) {
+      if (index > 0) await NodeTimersPromises.setTimeout(transition.kind === "drag" ? 16 : 40);
+      native.postMouse(pid, window, transition.point, transition);
+    }
+  } finally {
+    if (activate) {
+      await NodeTimersPromises.setTimeout(ACTIVATION_SETTLE_MS);
+      native.postActivation(pid, window, false);
+    }
   }
 }
 
@@ -598,12 +633,14 @@ async function postPointer(
     | { readonly kind: "move" }
     | { readonly kind: "click"; readonly button: "left" | "right"; readonly count: 1 | 2 }
     | { readonly kind: "scroll"; readonly dx: number; readonly dy: number },
+  /** For a click at chosen coordinates, how large a pressable element may be before its centre is too far from the point to stand in for it. */
+  pressWithin?: { width: number; height: number },
 ): Promise<WorkerResponse> {
   if (
     action.kind === "click" &&
     action.button === "left" &&
     action.count === 1 &&
-    native.pressAt(pid, point)
+    native.pressAt(pid, point, pressWithin)
   )
     return { ok: true, via: "accessibility" };
   if (action.kind === "scroll") {
@@ -722,6 +759,7 @@ async function pointerGesture(
         action.kind === "click_at"
           ? { kind: "click", button: action.button, count: action.count }
           : { kind: "move" },
+        COORDINATE_PRESS_LIMIT,
       );
     }
     return runPointer(xa11y, native, request, [at], window, async (input) => {

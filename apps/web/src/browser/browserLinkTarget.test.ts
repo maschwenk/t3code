@@ -69,6 +69,37 @@ describe("resolveLinkTarget", () => {
     ).toBe("system");
   });
 
+  it("sends pull request links to the system browser when asked, whatever the in-app default", () => {
+    const pullRequest = "https://github.com/acme/widgets/pull/12";
+    expect(
+      resolveLinkTarget({
+        url: pullRequest,
+        event: click,
+        preference: "app",
+        pullRequestLinkTarget: "browser",
+        canOpenInApp: true,
+      }),
+    ).toBe("system");
+    expect(
+      resolveLinkTarget({
+        url: "https://example.com/",
+        event: click,
+        preference: "app",
+        pullRequestLinkTarget: "browser",
+        canOpenInApp: true,
+      }),
+    ).toBe("app");
+    expect(
+      resolveLinkTarget({
+        url: pullRequest,
+        event: click,
+        preference: "app",
+        pullRequestLinkTarget: "app",
+        canOpenInApp: true,
+      }),
+    ).toBe("app");
+  });
+
   it("leaves non-web schemes to the shell", () => {
     for (const url of ["mailto:someone@example.com", "vscode://file/x", "not a url"]) {
       expect(resolveLinkTarget({ url, event: click, preference: "app", canOpenInApp: true })).toBe(

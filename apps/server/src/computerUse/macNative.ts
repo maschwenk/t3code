@@ -47,6 +47,9 @@ const FIELD = {
   clickState: 1,
   sourcePid: 41,
   windowNumber: 51,
+  /** The subtype of an AppKit-defined event, stored twice by +[NSEvent otherEventWithType:...]. */
+  appKitSubtype: 83,
+  appKitSubtypeCopy: 99,
   windowUnderPointer: 91,
   windowThatCanHandle: 92,
 } as const;
@@ -195,6 +198,32 @@ export async function loadMacNative() {
       [event, call<bigint>("c", "mach_absolute_time", T.U64, [], [])],
     );
   };
+  /**
+   * Whether an element's accessibility size is at most `limit` in both
+   * dimensions. False when the app reports no size, which also happens for
+   * every window while the screen is locked.
+   */
+  const fitsWithin = (element: bigint, limit: { width: number; height: number }) => {
+    const size = attribute(element, "AXSize");
+    if (!size) return false;
+    // AXValueGetValue fills a CGSize (two doubles); kAXValueTypeCGSize is 2.
+    const buffer = call<bigint>("c", "malloc", Ref, [T.I64], [16]);
+    try {
+      if (!call<boolean>("ax", "AXValueGetValue", T.Boolean, [Ref, T.I32, Ref], [size, 2, buffer]))
+        return false;
+      const double = (offset: bigint) => {
+        const cell = ffi.createPointer({ paramsType: [T.Double], paramsValue: [0] });
+        call("c", "memcpy", T.Void, [T.External, Ref, T.I64], [cell[0], buffer + offset, 8]);
+        return ffi.restorePointer({
+          retType: [T.Double],
+          paramsValue: cell,
+        })[0] as unknown as number;
+      };
+      return double(0n) <= limit.width && double(8n) <= limit.height;
+    } finally {
+      call("c", "free", T.Void, [Ref], [buffer]);
+    }
+  };
   const application = (pid: number) =>
     call<bigint>("ax", "AXUIElementCreateApplication", Ref, [T.I32], [pid]);
   const actionNames = (element: bigint) => {
@@ -310,6 +339,31 @@ export async function loadMacNative() {
       address(event, window, point);
       post(pid, event);
     },
+    /**
+     * Tells `pid` it became (or stopped being) the active app, the way the
+     * window server does, without changing the real front app. A button press
+     * posted to an app that believes it is inactive makes AppKit raise the
+     * window above every other inactive app's; one posted while it believes
+     * it is active leaves the window where it is. The flags are what AppKit
+     * sets on an activation that names a window.
+     */
+    postActivation(pid: number, window: PointerWindow, active: boolean) {
+      const event = call<bigint>("cg", "CGEventCreate", Ref, [Ref], [0n]);
+      // NSEventTypeAppKitDefined; subtype 1 is activated, 2 deactivated.
+      call("cg", "CGEventSetType", T.Void, [Ref, T.U32], [event, 13]);
+      setField(event, FIELD.windowNumber, window.id);
+      for (const field of [FIELD.appKitSubtype, FIELD.appKitSubtypeCopy])
+        setField(event, field, active ? 1 : 2);
+      if (active) call("cg", "CGEventSetFlags", T.Void, [Ref, T.U64], [event, 0xc0000]);
+      call(
+        "cg",
+        "CGEventSetTimestamp",
+        T.Void,
+        [Ref, T.U64],
+        [event, call<bigint>("c", "mach_absolute_time", T.U64, [], [])],
+      );
+      post(pid, event);
+    },
     /** Posts one scroll wheel event to `pid` only, in pixels, at `point` of `window`. */
     postScroll(
       pid: number,
@@ -333,9 +387,11 @@ export async function loadMacNative() {
      * Presses, through accessibility, the element of `pid` at a screen point or
      * its nearest ancestor that offers AXPress. Chromium and WebKit dispatch
      * that as a real click on the element, in the background. False when
-     * nothing there is pressable.
+     * nothing there is pressable, or when the pressable element is larger than
+     * `within`: a press lands at an element's centre, which is wrong for a
+     * point chosen inside a canvas or another large clickable area.
      */
-    pressAt(pid: number, point: Point): boolean {
+    pressAt(pid: number, point: Point, within?: { width: number; height: number }): boolean {
       const element = out();
       if (
         call<number>(
@@ -349,7 +405,8 @@ export async function loadMacNative() {
         return false;
       let current = read(element);
       for (let level = 0; current && level < 4; level++) {
-        if (actionNames(current).includes("AXPress"))
+        if (actionNames(current).includes("AXPress")) {
+          if (within && !fitsWithin(current, within)) return false;
           return (
             call<number>(
               "ax",
@@ -359,6 +416,7 @@ export async function loadMacNative() {
               [current, cfString("AXPress")],
             ) === 0
           );
+        }
         current = attribute(current, "AXParent");
       }
       return false;
@@ -366,10 +424,19 @@ export async function loadMacNative() {
     /**
      * Whether `pid` already exposes its web content fully. Chromium and WebKit
      * list actions such as AXPress on web elements only once an assistive app
-     * has asked for the enhanced interface.
+     * has asked for the enhanced interface. Electron reads this back as set
+     * once asked, but never AXManualAccessibility, so that cannot be the check.
      */
     webAccessibilityEnabled: (pid: number) =>
       toBoolean(attribute(application(pid), "AXEnhancedUserInterface")) === true,
+    /**
+     * Whether `pid` is an Electron app: only Electron answers
+     * AXManualAccessibility. Its Chromium lists AXPress on web elements as soon
+     * as any assistive app reads them, but performing it does nothing until
+     * web accessibility is enabled.
+     */
+    isElectron: (pid: number) =>
+      toBoolean(attribute(application(pid), "AXManualAccessibility")) !== null,
     /**
      * Asks `pid` to expose its web content fully: AXEnhancedUserInterface for
      * Chromium and WebKit, AXManualAccessibility for Electron. Chromium reports

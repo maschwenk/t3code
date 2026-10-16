@@ -43,6 +43,7 @@ import {
   MIN_SIDEBAR_AUTO_SETTLE_AFTER_DAYS,
   type ResponseStreamingMode,
   MIN_TERMINAL_FONT_SIZE,
+  type PullRequestLinkTarget,
   type QuitConfirmationMode,
   SidebarProjectSortOrder,
 } from "@t3tools/contracts/settings";
@@ -135,7 +136,9 @@ import {
 } from "../ui/number-field";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Switch } from "../ui/switch";
+import { isDefaultSidebarSectionOrder, resolveSidebarSectionOrder } from "../Sidebar.logic";
 import { ScopedSwitch } from "./ScopedSwitch";
+import { SidebarSectionOrderControl } from "./SidebarSectionOrderControl";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { ThemeLibrary } from "./ThemeSettings";
@@ -201,6 +204,11 @@ const CHAT_WIDTH_LABELS: Record<ChatWidth, string> = {
   comfortable: "Comfortable",
   wide: "Wide",
   full: "Full",
+};
+
+const PULL_REQUEST_LINK_TARGET_LABELS: Record<PullRequestLinkTarget, string> = {
+  browser: "Your default browser",
+  app: "T3 Code",
 };
 
 const DIFF_LAYOUT_LABELS: Record<DiffLayout, string> = {
@@ -543,6 +551,9 @@ export function useSettingsRestore(onRestored?: () => void) {
         ? ["Diff colors"]
         : []),
       ...(settings.chatWidth !== DEFAULT_UNIFIED_SETTINGS.chatWidth ? ["Chat width"] : []),
+      ...(settings.pullRequestLinkTarget !== DEFAULT_UNIFIED_SETTINGS.pullRequestLinkTarget
+        ? ["Pull request links"]
+        : []),
       ...(settings.panelAnimationDurationMs !== DEFAULT_UNIFIED_SETTINGS.panelAnimationDurationMs
         ? ["Panel animations"]
         : []),
@@ -573,6 +584,9 @@ export function useSettingsRestore(onRestored?: () => void) {
       DEFAULT_UNIFIED_SETTINGS.sidebarWorkingShelfEnabled
         ? ["Working section"]
         : []),
+      ...(!isDefaultSidebarSectionOrder(settings.sidebarSectionOrder)
+        ? ["Sidebar section order"]
+        : []),
       ...(settings.sidebarAutoSettleAfterDays !==
       DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleAfterDays
         ? ["Auto-settle inactive threads"]
@@ -585,6 +599,9 @@ export function useSettingsRestore(onRestored?: () => void) {
         : []),
       ...(settings.snoozeLimitedThreads !== DEFAULT_UNIFIED_SETTINGS.snoozeLimitedThreads
         ? ["Snooze limited threads"]
+        : []),
+      ...(settings.autoRenameRecentThreads !== DEFAULT_UNIFIED_SETTINGS.autoRenameRecentThreads
+        ? ["Auto-rename recent threads"]
         : []),
       ...(settings.wordWrap !== DEFAULT_UNIFIED_SETTINGS.wordWrap ? ["Word wrap"] : []),
       ...(settings.persistComposerContextStrip !==
@@ -670,6 +687,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.appearanceContrast,
       settings.diffColorScheme,
       settings.chatWidth,
+      settings.pullRequestLinkTarget,
       settings.enableAgentBrowserAccess,
       settings.confirmQuit,
       settings.confirmThreadArchive,
@@ -706,9 +724,11 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.sidebarAutoSettleOnMerge,
       settings.autoResumeLimitedThreads,
       settings.snoozeLimitedThreads,
+      settings.autoRenameRecentThreads,
       settings.sidebarProjectGroupingMode,
       settings.sidebarProjectSortOrder,
       settings.sidebarWorkingShelfEnabled,
+      settings.sidebarSectionOrder,
       settings.sidebarThreadPreviewCount,
       settings.showSkillsInSlashMenu,
       settings.timestampFormat,
@@ -787,6 +807,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       appearanceContrast: DEFAULT_UNIFIED_SETTINGS.appearanceContrast,
       diffColorScheme: DEFAULT_UNIFIED_SETTINGS.diffColorScheme,
       chatWidth: DEFAULT_UNIFIED_SETTINGS.chatWidth,
+      pullRequestLinkTarget: DEFAULT_UNIFIED_SETTINGS.pullRequestLinkTarget,
       timestampFormat: DEFAULT_UNIFIED_SETTINGS.timestampFormat,
       notificationMode: DEFAULT_UNIFIED_SETTINGS.notificationMode,
       inAppNotificationsEnabled: DEFAULT_UNIFIED_SETTINGS.inAppNotificationsEnabled,
@@ -809,10 +830,12 @@ export function useSettingsRestore(onRestored?: () => void) {
       sidebarProjectGroupingMode: DEFAULT_UNIFIED_SETTINGS.sidebarProjectGroupingMode,
       sidebarProjectSortOrder: DEFAULT_UNIFIED_SETTINGS.sidebarProjectSortOrder,
       sidebarWorkingShelfEnabled: DEFAULT_UNIFIED_SETTINGS.sidebarWorkingShelfEnabled,
+      sidebarSectionOrder: DEFAULT_UNIFIED_SETTINGS.sidebarSectionOrder,
       sidebarAutoSettleAfterDays: DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleAfterDays,
       sidebarAutoSettleOnMerge: DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleOnMerge,
       autoResumeLimitedThreads: DEFAULT_UNIFIED_SETTINGS.autoResumeLimitedThreads,
       snoozeLimitedThreads: DEFAULT_UNIFIED_SETTINGS.snoozeLimitedThreads,
+      autoRenameRecentThreads: DEFAULT_UNIFIED_SETTINGS.autoRenameRecentThreads,
       responseStreamingMode: DEFAULT_UNIFIED_SETTINGS.responseStreamingMode,
       enableProviderUpdateChecks: DEFAULT_UNIFIED_SETTINGS.enableProviderUpdateChecks,
       continueThreadsAfterServerUpdate: DEFAULT_UNIFIED_SETTINGS.continueThreadsAfterServerUpdate,
@@ -2390,6 +2413,29 @@ export function GeneralSettingsPanel() {
           }
         />
 
+        <SettingsRow
+          {...searchableSetting("sidebar-section-order")}
+          description="Top-to-bottom order of the thread list sections."
+          resetAction={
+            !isDefaultSidebarSectionOrder(settings.sidebarSectionOrder) ? (
+              <SettingResetButton
+                label="sidebar section order"
+                onClick={() =>
+                  updateSettings({
+                    sidebarSectionOrder: DEFAULT_UNIFIED_SETTINGS.sidebarSectionOrder,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <SidebarSectionOrderControl
+              order={resolveSidebarSectionOrder(settings.sidebarSectionOrder)}
+              onChange={(order) => updateSettings({ sidebarSectionOrder: order })}
+            />
+          }
+        />
+
         {supportsAutoSettlement ? (
           <>
             <SettingsRow
@@ -2670,6 +2716,51 @@ export function GeneralSettingsPanel() {
                 </SelectItem>
                 <SelectItem hideIndicator value="split">
                   {DIFF_LAYOUT_LABELS.split}
+                </SelectItem>
+              </SelectPopup>
+            </Select>
+          }
+        />
+
+        <SettingsRow
+          {...searchableSetting("pull-request-link-target")}
+          description="Where pull request links open: in your default browser or in T3 Code's pull request view. Hold ⌘ or Ctrl while clicking to open one in your default browser either way."
+          resetAction={
+            settings.pullRequestLinkTarget !== DEFAULT_UNIFIED_SETTINGS.pullRequestLinkTarget ? (
+              <SettingResetButton
+                label="pull request links"
+                onClick={() =>
+                  updateSettings({
+                    pullRequestLinkTarget: DEFAULT_UNIFIED_SETTINGS.pullRequestLinkTarget,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Select
+              value={settings.pullRequestLinkTarget}
+              onValueChange={(value) => {
+                if (value === "browser" || value === "app") {
+                  updateSettings({ pullRequestLinkTarget: value });
+                }
+              }}
+            >
+              <SelectTrigger
+                size="sm"
+                className="w-full sm:w-40"
+                aria-label="Open pull requests in"
+              >
+                <SelectValue>
+                  {PULL_REQUEST_LINK_TARGET_LABELS[settings.pullRequestLinkTarget]}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                <SelectItem hideIndicator value="browser">
+                  {PULL_REQUEST_LINK_TARGET_LABELS.browser}
+                </SelectItem>
+                <SelectItem hideIndicator value="app">
+                  {PULL_REQUEST_LINK_TARGET_LABELS.app}
                 </SelectItem>
               </SelectPopup>
             </Select>
@@ -3326,6 +3417,22 @@ export function GeneralSettingsPanel() {
                 ) : null}
               </div>
             )
+          }
+        />
+        <SettingsRow
+          serverScoped
+          {...searchableSetting("auto-rename-recent-threads")}
+          description="Every 30 minutes, regenerate the titles of threads with activity in the last 3 hours."
+          settingKeys={["autoRenameRecentThreads"]}
+          control={
+            <ScopedSwitch
+              settingKeys={["autoRenameRecentThreads"]}
+              checked={settings.autoRenameRecentThreads}
+              onCheckedChange={(checked) =>
+                updateSettings({ autoRenameRecentThreads: Boolean(checked) })
+              }
+              aria-label="Auto-rename recent threads"
+            />
           }
         />
       </SettingsSection>

@@ -107,6 +107,10 @@ To generate a fresh title from the conversation, open a thread's menu and choose
 **Regenerate title**. The action is unavailable while title generation is in progress
 or when the connected environment needs a server update.
 
+Every 30 minutes, the server also regenerates the titles of threads with a message or turn in the
+last 3 hours. Turn this off with **Settings → General → Auto-rename recent threads** on web and
+desktop.
+
 Agents connected through T3 Code can use the same server-owned metadata workflow to
 rename a thread, regenerate its title, or link and unlink a pull request. These changes
 appear on web, desktop, and mobile without requiring the originating browser to remain
@@ -116,10 +120,14 @@ open.
 
 Turn on **Settings → General → Working section (beta)** on web and desktop, or **Settings →
 Thread behavior → Working section** on iOS and Android, to move threads that are working or
-monitoring into a collapsed **Working** section below the active list. A thread returns to the top
-of the active list when it finishes, fails, or needs an approval or answer. The Working section
-lists the thread you last sent work to first. Pinned threads stay in the pinned section. Each
-device keeps its own choice.
+monitoring into a collapsed **Working** section. A thread returns to the top of the active list
+when it finishes, fails, or needs an approval or answer. The Working section lists the thread you
+last sent work to first. Pinned threads stay in the pinned section. Each device keeps its own
+choice.
+
+On web and desktop the Working section sits above the pinned and active lists. Change the order
+of the sections in **Settings → General → Sidebar section order**. On iOS and Android it sits below
+the active list.
 
 While this is on, the active list is ordered by when each thread last came back to you, so you
 cannot drag or move threads within it. Your saved order returns when you turn it off.

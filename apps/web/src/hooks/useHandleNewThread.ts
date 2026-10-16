@@ -27,6 +27,7 @@ import { readProjects, readThreadShell, useProjects, useThreadShell } from "../s
 import {
   hasExplicitComposerModelSelection,
   resolveNewDraftStartFromOrigin,
+  resolveNewThreadClaudeAccount,
   resolveNewThreadModelSelectionOverride,
 } from "../lib/chatThreadActions";
 import { readT3ProjectFile } from "../lib/t3ProjectFileDefaults";
@@ -78,8 +79,8 @@ export function useNewThreadHandler() {
       // up again and finding whichever draft it happens to hold.
     ): Promise<{ draftId: DraftId; threadId: ThreadId } | null> => {
       const projects = readProjects();
-      const targetServerSettings =
-        environmentServerConfigs.get(projectRef.environmentId)?.settings ?? DEFAULT_SERVER_SETTINGS;
+      const targetServerConfig = environmentServerConfigs.get(projectRef.environmentId);
+      const targetServerSettings = targetServerConfig?.settings ?? DEFAULT_SERVER_SETTINGS;
       const {
         getComposerDraft,
         getDraftSessionByLogicalProjectKey,
@@ -145,6 +146,19 @@ export function useNewThreadHandler() {
             currentRouteTarget?.kind === "draft" ? currentRouteTarget.draftId : null,
           destinationDraftId,
         });
+      // Call after the sticky/override seed: the seeded model stays and only
+      // the Claude account moves.
+      const rotateClaudeAccount = (destinationDraftId: DraftId) => {
+        const rotated = resolveNewThreadClaudeAccount({
+          draft: getComposerDraft(destinationDraftId),
+          providers: targetServerConfig?.providers ?? [],
+          enabled: targetServerSettings.preferClaudeAccountClosestToReset,
+          now: Date.now(),
+        });
+        if (rotated) {
+          setModelSelection(destinationDraftId, rotated, { replaceOptions: true });
+        }
+      };
       // The shared resolver owns the priority order. The t3.json read is
       // skipped entirely when a higher-priority source decides, and its
       // query atom caches per project after the first call.
@@ -287,6 +301,7 @@ export function useNewThreadHandler() {
                 replaceOptions: true,
               });
             }
+            rotateClaudeAccount(emptyStoredDraftThread.draftId);
           }
           // The workspace context must also ride along here: when projectRef
           // targets a different physical member of the logical project,
@@ -422,6 +437,7 @@ export function useNewThreadHandler() {
           // state. The project default wins when both are present.
           setModelSelection(draftId, modelSelectionOverride, { replaceOptions: true });
         }
+        rotateClaudeAccount(draftId);
         await router.navigate({
           to: "/draft/$draftId",
           params: { draftId },

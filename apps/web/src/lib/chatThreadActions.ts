@@ -4,7 +4,9 @@ import type {
   ModelSelection,
   ProjectId,
   ScopedProjectRef,
+  ServerProvider,
 } from "@t3tools/contracts";
+import { selectClaudeInstanceClosestToReset } from "@t3tools/shared/usageLimits";
 import type { ComposerThreadDraftState, DraftThreadEnvMode } from "../composerDraftStore";
 
 type ComposerModelSelectionState = Pick<
@@ -54,6 +56,24 @@ export function resolveNewThreadModelSelectionOverride(input: {
     input.projectDefaultSelection ??
     (input.carrySourceDraftId === input.destinationDraftId ? null : input.carrySelection)
   );
+}
+
+/**
+ * The selection a freshly seeded draft switches to so it starts on the Claude
+ * account nearest its five-hour reset, keeping model and options. Null keeps
+ * the seed.
+ */
+export function resolveNewThreadClaudeAccount(input: {
+  readonly draft: ComposerModelSelectionState | null | undefined;
+  readonly providers: ReadonlyArray<ServerProvider>;
+  readonly enabled: boolean;
+  readonly now: number;
+}): ModelSelection | null {
+  const activeProvider = input.draft?.activeProvider;
+  const selection = activeProvider ? input.draft?.modelSelectionByProvider[activeProvider] : null;
+  if (!input.enabled || !selection) return null;
+  const instanceId = selectClaudeInstanceClosestToReset(input.providers, selection, input.now);
+  return instanceId === selection.instanceId ? null : { ...selection, instanceId };
 }
 
 export function hasExplicitComposerModelSelection(

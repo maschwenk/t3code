@@ -24,6 +24,8 @@ import {
   paceOf,
   providersWithLimits,
   remainingPercent,
+  selectClaudeInstanceClosestToReset,
+  claudeUsageSummary,
   usesChatGptSharing,
 } from "./usageLimits.ts";
 
@@ -1115,6 +1117,115 @@ describe("remainingPercent", () => {
     expect(remainingPercent({ ...window, usedPercent: 0 })).toBe(100);
     expect(remainingPercent({ ...window, usedPercent: 100 })).toBe(0);
     expect(remainingPercent({ ...window, usedPercent: 33.4 })).toBe(67);
+  });
+});
+
+describe("Claude account rotation", () => {
+  const opus = "claude-opus-5-5";
+  const { resetsAt: _sessionReset, ...sessionWindow } = window;
+  const claudeAccount = (instanceId: string, overrides: Partial<ServerProvider> = {}) =>
+    provider({
+      instanceId: ProviderInstanceId.make(instanceId),
+      driver: ProviderDriverKind.make("claudeAgent"),
+      models: [{ slug: opus, name: "Claude Opus 5.5", isCustom: false, capabilities: null }],
+      ...overrides,
+    });
+  function claude(
+    instanceId: string,
+    session: { readonly usedPercent: number; readonly resetsAt?: string },
+    weeklyUsedPercent = 10,
+  ): ServerProvider {
+    return claudeAccount(instanceId, {
+      usageLimits: {
+        checkedAt: "2026-09-03T11:59:00.000Z",
+        windows: [
+          { ...sessionWindow, ...session },
+          {
+            id: "seven_day",
+            kind: "weekly",
+            label: "Weekly",
+            usedPercent: weeklyUsedPercent,
+            windowDurationMins: 10080,
+            resetsAt: "2026-09-08T12:00:00.000Z",
+          },
+        ],
+      },
+    });
+  }
+  const select = (providers: ReadonlyArray<ServerProvider>, current = "claude_main") =>
+    selectClaudeInstanceClosestToReset(
+      providers,
+      { instanceId: ProviderInstanceId.make(current), model: opus },
+      now,
+    );
+
+  // Regression: a nearly spent account that resets soonest would take the
+  // thread and hit its limit on the first turn.
+  it("skips an account with 5% or less of its five-hour window left", () => {
+    const providers = [
+      claude("claude_main", { usedPercent: 20, resetsAt: "2026-09-03T15:00:00.000Z" }),
+      claude("claude_spent", { usedPercent: 95, resetsAt: "2026-09-03T12:10:00.000Z" }),
+      claude("claude_next", { usedPercent: 60, resetsAt: "2026-09-03T13:00:00.000Z" }),
+    ];
+    expect(select(providers)).toBe("claude_next");
+  });
+
+  // Regression: picking by remaining quota instead of reset time would burn
+  // the fresh account first and let the soon-to-reset quota go unused.
+  it("prefers the earliest reset, ranks unstarted windows last, and keeps the current account on a tie", () => {
+    const idle = claude("claude_idle", { usedPercent: 0 });
+    const late = claude("claude_main", { usedPercent: 10, resetsAt: "2026-09-03T16:00:00.000Z" });
+    const early = claude("claude_early", { usedPercent: 80, resetsAt: "2026-09-03T12:30:00.000Z" });
+    expect(select([idle, late, early])).toBe("claude_early");
+    expect(select([idle, late])).toBe("claude_main");
+    const twin = claude("claude_twin", { usedPercent: 50, resetsAt: "2026-09-03T16:00:00.000Z" });
+    expect(select([twin, late])).toBe("claude_main");
+  });
+
+  // Regression: a stale snapshot taken before the reset would keep a
+  // recovered account out of rotation until the next probe.
+  it("counts a window whose reset has passed as fresh", () => {
+    const providers = [
+      claude("claude_main", { usedPercent: 99, resetsAt: "2026-09-03T15:00:00.000Z" }),
+      claude("claude_reset", { usedPercent: 100, resetsAt: "2026-09-03T11:00:00.000Z" }),
+    ];
+    expect(select(providers)).toBe("claude_reset");
+  });
+
+  it("leaves the selection unchanged when no account qualifies or the selection is not Claude", () => {
+    const spent = [
+      claude("claude_main", { usedPercent: 99, resetsAt: "2026-09-03T15:00:00.000Z" }),
+      claude("claude_weekly_spent", { usedPercent: 10, resetsAt: "2026-09-03T12:30:00.000Z" }, 98),
+      claudeAccount("claude_api_key"),
+    ];
+    expect(select(spent)).toBe("claude_main");
+    expect(
+      select(
+        [provider({}), claude("claude_main", { usedPercent: 0, resetsAt: window.resetsAt })],
+        "codex",
+      ),
+    ).toBe("codex");
+  });
+
+  it("summarizes the five-hour window with the weekly window as detail", () => {
+    expect(
+      claudeUsageSummary(
+        claude("claude_main", { usedPercent: 38, resetsAt: "2026-09-03T13:20:00.000Z" }, 26),
+        now,
+      ),
+    ).toEqual({
+      label: "62% left, resets in 1h 20m",
+      detail: "Weekly: 74% left, resets in 5d 0h",
+    });
+    expect(claudeUsageSummary(claude("claude_idle", { usedPercent: 0 }), now)?.label).toBe(
+      "100% left",
+    );
+    expect(
+      claudeUsageSummary(
+        provider({ usageLimits: { checkedAt: "2026-09-03T11:59:00.000Z", windows: [window] } }),
+        now,
+      ),
+    ).toBeNull();
   });
 });
 

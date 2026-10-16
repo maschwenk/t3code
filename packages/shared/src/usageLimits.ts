@@ -7,6 +7,7 @@
  */
 import {
   type EnvironmentId,
+  type ModelSelection,
   type UsageLimitsReport,
   type ProviderInstanceId,
   type ProviderConsumeResetCreditInput,
@@ -540,6 +541,101 @@ export function formatResetsIn(window: ServerProviderUsageWindow, now: number): 
   const resetsAt = resetMillis(window);
   if (resetsAt === null) return null;
   return resetsAt <= now ? "resets now" : `resets in ${formatDuration(resetsAt - now)}`;
+}
+
+const CLAUDE_DRIVER = "claudeAgent";
+
+/** Share of a Claude window an account must have left to take a new thread. */
+const CLAUDE_ROTATION_MIN_REMAINING_PERCENT = 5;
+
+/**
+ * A Claude window as it stands at `now`. One whose reset has passed rolled
+ * over: nothing is used yet and the next window starts on the next request.
+ */
+function currentClaudeWindow(
+  provider: ServerProvider,
+  id: "five_hour" | "seven_day",
+  now: number,
+): ServerProviderUsageWindow | undefined {
+  if (provider.driver !== CLAUDE_DRIVER) return undefined;
+  const window = provider.usageLimits?.windows.find((candidate) => candidate.id === id);
+  if (!window) return undefined;
+  const resetsAt = resetMillis(window);
+  if (resetsAt === null || resetsAt > now) return window;
+  const { resetsAt: _rolledOver, ...rest } = window;
+  return { ...rest, usedPercent: 0 };
+}
+
+function describeClaudeWindow(window: ServerProviderUsageWindow, now: number): string {
+  const resets = formatResetsIn(window, now);
+  return `${remainingPercent(window)}% left${resets ? `, ${resets}` : ""}`;
+}
+
+export interface ClaudeUsageSummary {
+  readonly label: string;
+  readonly detail: string | null;
+}
+
+/**
+ * The model picker's usage line for a Claude account: the five-hour window,
+ * with the weekly window as detail. Null for other drivers and for accounts
+ * that report no five-hour window (API keys, a failed probe).
+ */
+export function claudeUsageSummary(
+  provider: ServerProvider,
+  now: number,
+): ClaudeUsageSummary | null {
+  const session = currentClaudeWindow(provider, "five_hour", now);
+  if (!session) return null;
+  const weekly = currentClaudeWindow(provider, "seven_day", now);
+  return {
+    label: describeClaudeWindow(session, now),
+    detail: weekly ? `Weekly: ${describeClaudeWindow(weekly, now)}` : null,
+  };
+}
+
+/**
+ * The Claude instance a new thread on `selection.model` should start on: among
+ * ready instances serving that model with more than 5% of their five-hour
+ * window left (and a weekly window that is not spent), the one whose five-hour
+ * window resets soonest, so accounts nearest a reset are used up first. A
+ * window that has not started resets last. Ties keep the current instance.
+ * Returns `selection.instanceId` for non-Claude selections or when nothing
+ * qualifies.
+ */
+export function selectClaudeInstanceClosestToReset(
+  providers: ReadonlyArray<ServerProvider>,
+  selection: Pick<ModelSelection, "instanceId" | "model">,
+  now: number,
+): ProviderInstanceId {
+  const current = providers.find((provider) => provider.instanceId === selection.instanceId);
+  if (current?.driver !== CLAUDE_DRIVER) return selection.instanceId;
+  const hasRoom = (window: ServerProviderUsageWindow) =>
+    100 - window.usedPercent > CLAUDE_ROTATION_MIN_REMAINING_PERCENT;
+  let best: { readonly instanceId: ProviderInstanceId; readonly resetsAt: number } | null = null;
+  for (const provider of providers) {
+    if (
+      !provider.enabled ||
+      !provider.installed ||
+      provider.status !== "ready" ||
+      !isProviderAvailable(provider) ||
+      !provider.models.some((model) => model.slug === selection.model)
+    ) {
+      continue;
+    }
+    const session = currentClaudeWindow(provider, "five_hour", now);
+    const weekly = currentClaudeWindow(provider, "seven_day", now);
+    if (!session || !hasRoom(session) || (weekly && !hasRoom(weekly))) continue;
+    const resetsAt = resetMillis(session) ?? Number.POSITIVE_INFINITY;
+    if (
+      best === null ||
+      resetsAt < best.resetsAt ||
+      (resetsAt === best.resetsAt && provider.instanceId === selection.instanceId)
+    ) {
+      best = { instanceId: provider.instanceId, resetsAt };
+    }
+  }
+  return best?.instanceId ?? selection.instanceId;
 }
 
 /** Limit commands are served by T3 from the same snapshots as Usage → Limits. */

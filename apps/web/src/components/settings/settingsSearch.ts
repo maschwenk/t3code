@@ -315,6 +315,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["hide fold running monitoring threads inbox sidebar shelf"],
   },
   {
+    id: "sidebar-section-order",
+    title: "Sidebar section order",
+    to: "/settings/general",
+    searchTerms: ["thread list working pinned active snoozed settled move reorder top bottom"],
+  },
+  {
     id: "auto-settle-inactive-threads",
     title: "Auto-settle inactive threads",
     to: "/settings/general",
@@ -356,6 +362,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     title: "Time format",
     to: "/settings/general",
     searchTerms: ["timestamp clock locale system browser os 12 hour 24 hour"],
+  },
+  {
+    id: "pull-request-link-target",
+    title: "Pull request links",
+    to: "/settings/general",
+    searchTerms: ["open pull requests in default browser github merge request panel view links"],
   },
   {
     id: "response-streaming",
@@ -504,6 +516,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["generated thread titles source control content default provider"],
   },
   {
+    id: "auto-rename-recent-threads",
+    title: "Auto-rename recent threads",
+    to: "/settings/general",
+    searchTerms: ["regenerate refresh thread titles automatically active"],
+  },
+  {
     id: "diagnostics",
     title: "Diagnostics",
     to: "/settings/general",
@@ -602,6 +620,13 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["cursor macOS keychain usage tokens cost limits permission"],
     providerSettingsOnly: true,
     macProviderSettingsOnly: true,
+  },
+  {
+    id: "claude-account-rotation",
+    title: "Claude account rotation",
+    to: "/settings/providers",
+    searchTerms: ["claude accounts instances usage limit five hour reset new thread switch"],
+    providerSettingsOnly: true,
   },
   {
     id: "provider-health-check-interval",
