@@ -1,0 +1,26 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self'; frame-src https: http: about:"
+    />
+    <link rel="stylesheet" href="shell.css" />
+    <title>T3 Browser · 1Password</title>
+  </head>
+  <body>
+    <header>
+      <button id="back" title="Back">←</button><button id="forward" title="Forward">→</button
+      ><button id="reload">Reload</button>
+      <form id="navigation">
+        <input id="address" aria-label="Page address" spellcheck="false" /><button>Go</button>
+      </form>
+      <button id="password">1Password</button><button id="stop">Stop agent</button
+      ><button id="close">Close page</button>
+    </header>
+    <div id="notice" role="status">Managed Chromium companion · the live page runs here</div>
+    <main id="page"></main>
+    <script src="shell.js"></script>
+  </body>
+</html>

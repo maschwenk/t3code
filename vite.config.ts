@@ -94,6 +94,8 @@ export default defineConfig({
       "pnpm-lock.yaml",
       "*.tsbuildinfo",
       "**/routeTree.gen.ts",
+      // Keep the pinned third-party selector engine byte-for-byte with its checksum.
+      "apps/macos/Sources/T3Native/Resources/PlaywrightInjected.js",
       "apps/mobile/android/**",
       "apps/mobile/ios/**",
       "apps/mobile/uniwind-types.d.ts",
@@ -119,6 +121,7 @@ export default defineConfig({
       "pnpm-lock.yaml",
       "*.tsbuildinfo",
       "**/routeTree.gen.ts",
+      "apps/macos/Sources/T3Native/Resources/PlaywrightInjected.js",
       "apps/mobile/android/**",
       "apps/mobile/ios/**",
       "apps/mobile/uniwind-types.d.ts",
