@@ -233,7 +233,6 @@ export class ExtensionHost {
     for (const notification of this.#notifications.values()) notification.close();
   }
 
-  // ---------------------------------------------------------------------------
   // Sessions and loading
 
   /** Loads the enabled extensions into a persistent preview session. Idempotent. */
@@ -356,7 +355,6 @@ export class ExtensionHost {
     }, 50);
   }
 
-  // ---------------------------------------------------------------------------
   // Installing
 
   async importFromProfile(input: {
@@ -420,7 +418,6 @@ export class ExtensionHost {
     this.#notifyChange();
   }
 
-  // ---------------------------------------------------------------------------
   // Toolbar
 
   /** Installed extensions, with toolbar state as one preview tab sees it. */
@@ -645,7 +642,6 @@ export class ExtensionHost {
     });
   }
 
-  // ---------------------------------------------------------------------------
   // Contexts and events
 
   #workerStatusChanged(state: SessionState, versionId: number, status: string): void {
@@ -731,7 +727,6 @@ export class ExtensionHost {
     }
   }
 
-  // ---------------------------------------------------------------------------
   // Tabs and windows
 
   /** Follows a preview tab or extension window so extensions can see it as a tab. */
@@ -1090,7 +1085,6 @@ export class ExtensionHost {
     return window;
   }
 
-  // ---------------------------------------------------------------------------
   // API implementations
 
   #makeHandlers(): Readonly<Record<string, Handler>> {

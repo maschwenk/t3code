@@ -236,38 +236,37 @@ const make = Effect.gen(function* () {
    * authorization. A text-only snapshot keeps the caller's latest capture of
    * the same app, whose window the worker checks before using its pixels.
    */
-  const observe = (
+  const observe = Effect.fn("ComputerUse.observe")(function* (
     caller: string,
     app: string,
     includeImage: boolean,
     options: SnapshotOptions,
     previousCapture?: Capture,
-  ) =>
-    Effect.gen(function* () {
-      let inherited = previousCapture;
-      for (const receipt of receipts.values())
-        if (receipt.caller === caller && receipt.snapshot.app === app && receipt.capture)
-          inherited = receipt.capture;
-      // A failed refresh must not leave an older observation usable.
-      for (const [id, receipt] of receipts) if (receipt.caller === caller) receipts.delete(id);
-      const result = yield* execute({ kind: "snapshot", app, includeImage, options });
-      if (!result.snapshot) return yield* fail("failed");
-      const at = yield* Clock.currentTimeMillis;
-      for (const [id, receipt] of receipts)
-        if (at - receipt.at > RECEIPT_TTL_MS || receipt.caller === caller) receipts.delete(id);
-      const oldest = receipts.keys().next().value;
-      if (receipts.size >= 32 && oldest !== undefined) receipts.delete(oldest);
-      const snapshotId = yield* crypto.randomUUIDv4.pipe(
-        Effect.mapError((cause) => new ComputerUseError({ code: "failed", cause })),
-      );
-      // Images live only in the tool response, never in the receipt cache.
-      const { image, ...remembered } = result.snapshot;
-      const capture = image
-        ? { window: image.window, width: image.width, height: image.height }
-        : inherited;
-      receipts.set(snapshotId, { at, caller, snapshot: remembered, options, capture });
-      return { ...result.snapshot, snapshotId };
-    });
+  ) {
+    let inherited = previousCapture;
+    for (const receipt of receipts.values())
+      if (receipt.caller === caller && receipt.snapshot.app === app && receipt.capture)
+        inherited = receipt.capture;
+    // A failed refresh must not leave an older observation usable.
+    for (const [id, receipt] of receipts) if (receipt.caller === caller) receipts.delete(id);
+    const result = yield* execute({ kind: "snapshot", app, includeImage, options });
+    if (!result.snapshot) return yield* fail("failed");
+    const at = yield* Clock.currentTimeMillis;
+    for (const [id, receipt] of receipts)
+      if (at - receipt.at > RECEIPT_TTL_MS || receipt.caller === caller) receipts.delete(id);
+    const oldest = receipts.keys().next().value;
+    if (receipts.size >= 32 && oldest !== undefined) receipts.delete(oldest);
+    const snapshotId = yield* crypto
+      .randomUUIDv4()
+      .pipe(Effect.mapError((cause) => new ComputerUseError({ code: "failed", cause })));
+    // Images live only in the tool response, never in the receipt cache.
+    const { image, ...remembered } = result.snapshot;
+    const capture = image
+      ? { window: image.window, width: image.width, height: image.height }
+      : inherited;
+    receipts.set(snapshotId, { at, caller, snapshot: remembered, options, capture });
+    return { ...result.snapshot, snapshotId };
+  });
 
   const snapshot: ComputerUse["Service"]["snapshot"] = (caller, input) =>
     mutex.withPermits(1)(

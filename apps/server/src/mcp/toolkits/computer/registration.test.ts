@@ -11,7 +11,7 @@ import type { WorkerRequest } from "../../../computerUse/protocol.ts";
 import * as DesktopTelemetryReceiver from "../../../resourceTelemetry/DesktopTelemetryReceiver.ts";
 import * as ServerSettings from "../../../serverSettings.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
-import * as Registration from "./registration.ts";
+import * as McpHttpServer from "../../McpHttpServer.ts";
 
 const invocation: McpInvocationContext.McpInvocationScope = {
   environmentId: EnvironmentId.make("computer-test"),
@@ -40,7 +40,7 @@ const client = McpSchema.McpServerClient.of({
 const png =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a9ZkAAAAASUVORK5CYII=";
 const layerTest = (calls: WorkerRequest[]) =>
-  Registration.layer.pipe(
+  McpHttpServer.layerComputerTools.pipe(
     Layer.provideMerge(McpServer.McpServer.layer),
     Layer.provide(
       ComputerUse.layer.pipe(

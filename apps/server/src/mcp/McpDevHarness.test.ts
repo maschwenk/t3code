@@ -2,7 +2,7 @@ import { expect, it } from "@effect/vitest";
 import { NodeHttpServer } from "@effect/platform-node";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
-  AuthAdministrativeScopes,
+  AuthAccessWriteScope,
   AuthSessionId,
   AuthStandardClientScopes,
   EnvironmentId,
@@ -19,11 +19,11 @@ import * as ServerConfig from "../config.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
 import * as McpSessionRegistry from "./McpSessionRegistry.ts";
-import * as ComputerRegistration from "./toolkits/computer/registration.ts";
 
+// Standard client grants include access management; a narrowed grant does not.
 const sessionsByToken = {
-  "admin-token": AuthAdministrativeScopes,
-  "standard-token": AuthStandardClientScopes,
+  "admin-token": AuthStandardClientScopes,
+  "narrow-token": AuthStandardClientScopes.filter((scope) => scope !== AuthAccessWriteScope),
 } as const;
 
 /** Serves `/mcp` like the server does, with a computer service that records who called it. */
@@ -62,7 +62,7 @@ const serveMcp = (devUrl: URL | undefined) =>
       path: "/mcp",
       protocols: [McpProtocol.v2025_06_18],
     }).pipe(Layer.provide(McpHttpServer.layerMcpAuthMiddleware));
-    yield* HttpRouter.serve(ComputerRegistration.layer.pipe(Layer.provideMerge(transport)), {
+    yield* HttpRouter.serve(McpHttpServer.layerComputerTools.pipe(Layer.provideMerge(transport)), {
       disableListenLog: true,
       disableLogger: true,
     }).pipe(
@@ -125,7 +125,7 @@ it.effect("lets an admin credential on a dev server drive computer use as the de
 );
 
 it.effect.each([
-  ["a standard credential", devUrl, { authorization: "Bearer standard-token" }],
+  ["a credential without access management", devUrl, { authorization: "Bearer narrow-token" }],
   ["a non-dev server", undefined, { authorization: "Bearer admin-token" }],
   [
     "a proxied request",

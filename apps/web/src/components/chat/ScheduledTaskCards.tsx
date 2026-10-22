@@ -2,13 +2,12 @@ import { useAtomValue } from "@effect/atom-react";
 import type {
   EnvironmentId,
   ScheduledTask,
-  ScheduledTaskId,
   ScopedThreadRef,
   TimestampFormat,
 } from "@t3tools/contracts";
 import { CalendarClockIcon } from "lucide-react";
 import { Atom } from "effect/reactivity";
-import { createContext, type ReactNode, use, useCallback, useMemo } from "react";
+import { createContext, type ReactNode, use } from "react";
 
 import { appAtomRegistry } from "~/rpc/atomRegistry";
 import { useThreadShell } from "~/state/entities";
@@ -29,7 +28,7 @@ import {
   scheduledTaskTiming,
   type ScheduledTaskCardPlacement,
 } from "@t3tools/client-runtime/scheduled-tasks";
-import { Button, InlineButton } from "../ui/button";
+import { Button } from "../ui/button";
 
 interface ScheduledTaskEditorRequest {
   readonly environmentId: EnvironmentId;
@@ -74,7 +73,7 @@ export function ScheduledTaskEditorHost() {
 /** Opens the editor for a new schedule that posts into this thread. */
 export function useScheduleInThread(threadRef: ScopedThreadRef | null): (() => void) | null {
   const shell = useThreadShell(threadRef);
-  const open = useCallback(() => {
+  const open = () => {
     if (threadRef === null || shell === null) return;
     openScheduledTaskEditor({
       environmentId: threadRef.environmentId,
@@ -87,7 +86,7 @@ export function useScheduleInThread(threadRef: ScopedThreadRef | null): (() => v
         interactionMode: shell.interactionMode,
       },
     });
-  }, [shell, threadRef]);
+  };
   return threadRef === null || shell === null ? null : open;
 }
 
@@ -96,13 +95,7 @@ interface ThreadScheduledTaskCardsValue extends ScheduledTaskCardPlacement {
   readonly timestampFormat: TimestampFormat;
 }
 
-interface ScheduledRunTasksValue {
-  readonly environmentId: EnvironmentId;
-  readonly tasksById: ReadonlyMap<ScheduledTaskId, ScheduledTask>;
-}
-
 const ThreadScheduledTaskCardsContext = createContext<ThreadScheduledTaskCardsValue | null>(null);
-const ScheduledRunTasksContext = createContext<ScheduledRunTasksValue | null>(null);
 
 /**
  * Owns the schedule subscription for an open thread so a change to any
@@ -128,14 +121,11 @@ export function ThreadScheduledTaskCardsProvider({
       : serverEnvironment.scheduledTasksLive({ environmentId: threadRef.environmentId, input: {} }),
   );
   const allTasks = tasksQuery.data?.tasks;
-  const boundTasks = useMemo(
-    () =>
-      threadRef === null
-        ? []
-        : (allTasks ?? []).filter((task) => task.threadId === threadRef.threadId),
-    [allTasks, threadRef],
-  );
-  const placement = useMemo(() => {
+  const boundTasks =
+    threadRef === null
+      ? []
+      : (allTasks ?? []).filter((task) => task.threadId === threadRef.threadId);
+  const placement = (() => {
     // Most threads have no schedules; skip walking rows on every streamed update.
     if (boundTasks.length === 0) return NO_SCHEDULED_TASK_CARDS;
     const anchors = rows.flatMap((row) =>
@@ -150,26 +140,11 @@ export function ThreadScheduledTaskCardsProvider({
       anchors,
       oldestLoadedAt: oldest && "createdAt" in oldest ? oldest.createdAt : null,
     });
-  }, [boundTasks, rows]);
+  })();
   const environmentId = threadRef?.environmentId ?? null;
-  const cardsValue = useMemo(
-    () => ({ ...placement, environmentId, timestampFormat }),
-    [placement, environmentId, timestampFormat],
-  );
-  const runTasksValue = useMemo(
-    () =>
-      environmentId === null
-        ? null
-        : {
-            environmentId,
-            tasksById: new Map((allTasks ?? []).map((task) => [task.id, task] as const)),
-          },
-    [allTasks, environmentId],
-  );
+  const cardsValue = { ...placement, environmentId, timestampFormat };
   return (
-    <ThreadScheduledTaskCardsContext value={cardsValue}>
-      <ScheduledRunTasksContext value={runTasksValue}>{children}</ScheduledRunTasksContext>
-    </ThreadScheduledTaskCardsContext>
+    <ThreadScheduledTaskCardsContext value={cardsValue}>{children}</ThreadScheduledTaskCardsContext>
   );
 }
 
@@ -248,24 +223,5 @@ export function TrailingScheduledTaskCards() {
         ))}
       </div>
     </div>
-  );
-}
-
-/**
- * "Sent by scheduled task" above a run's message. Rendered only for messages
- * a schedule sent, so ordinary rows never read schedule state.
- */
-export function ScheduledRunAttribution({ taskId }: { readonly taskId: ScheduledTaskId }) {
-  const value = use(ScheduledRunTasksContext);
-  const task = value?.tasksById.get(taskId);
-  if (!value || !task) return "Sent by scheduled task";
-  return (
-    <InlineButton
-      onClick={() => openScheduledTaskEditor({ environmentId: value.environmentId, task })}
-      tone="muted"
-      aria-label={`Open scheduled task ${task.title}`}
-    >
-      Sent by scheduled task
-    </InlineButton>
   );
 }

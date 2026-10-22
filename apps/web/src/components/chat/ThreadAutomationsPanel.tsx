@@ -1,9 +1,11 @@
+import { useAtomValue } from "@effect/atom-react";
 import { ThreadDetailsControl } from "./ThreadDetailsControl";
 import { useNavigate } from "@tanstack/react-router";
 import { CalendarClockIcon, PencilIcon, PlayIcon, PlusIcon, Settings2Icon } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
+  AuthOrchestrationOperateScope,
   scheduledTaskLifecycle,
   type EnvironmentId,
   type ScheduledTask,
@@ -16,13 +18,15 @@ import {
 
 import { ThreadDetailsSection } from "./ThreadDetailsSection";
 import { cn } from "../../lib/utils";
-import { relativeLabel } from "../settings/ScheduledTasksSettings";
+import { ScheduledRelativeLabel } from "../settings/ScheduledTasksSettings";
 import { scheduledTaskStatusText } from "@t3tools/client-runtime/scheduled-tasks";
 import { openScheduledTaskEditor, useScheduleInThread } from "./ScheduledTaskCards";
+import { useNowMinute } from "../../hooks/useNowMinute";
 import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 
+import { readEnvironmentScope } from "../../state/session";
 import { Switch } from "../ui/switch";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -38,16 +42,31 @@ const STATUS_DOT_CLASS: Record<ScheduledTask["lastRunStatus"], string> = {
   failed: "bg-destructive",
 };
 
-/**
- * Thread details panel section listing the automations (scheduled tasks) bound
- * to this thread. Fed by the live scheduled-task subscription, so run status
- * and next-run times update as the scheduler works — no manual refresh.
- * Renders nothing when the thread has no bound automations.
- */
+function taskScheduleLine(task: ScheduledTask, nowMs: number) {
+  return (
+    <>
+      {scheduledTaskStatusText(
+        task,
+        (iso) => new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
+        nowMs,
+      )}
+      {task.enabled && task.nextRunAt !== null ? (
+        <>
+          {" · next "}
+          <ScheduledRelativeLabel value={task.nextRunAt} />
+        </>
+      ) : null}
+    </>
+  );
+}
+
 export function ThreadAutomationsPanel(props: {
   readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
 }) {
+  const canOperate = useAtomValue(
+    serverEnvironment.runScheduledTaskNow.permissionAtom(props.environmentId),
+  );
   const tasksQuery = useEnvironmentQuery(
     serverEnvironment.scheduledTasksLive({ environmentId: props.environmentId, input: {} }),
   );
@@ -59,18 +78,15 @@ export function ThreadAutomationsPanel(props: {
   });
   const navigate = useNavigate();
   const [busyTaskId, setBusyTaskId] = useState<string | null>(null);
-  const threadRef = useMemo(
-    () => scopeThreadRef(props.environmentId, props.threadId),
-    [props.environmentId, props.threadId],
-  );
+  const nowMinute = useNowMinute();
+  const nowMs = Date.parse(`${nowMinute}:00.000Z`);
+  const threadRef = scopeThreadRef(props.environmentId, props.threadId);
   const scheduleInThread = useScheduleInThread(threadRef);
 
   const boundTasks = (tasksQuery.data?.tasks ?? []).filter(
     (task) => task.threadId === props.threadId,
   );
-  // A load error must not look like "no automations" — this thread may have
-  // tasks whose controls would silently vanish. Only hide the section when we
-  // positively know there is nothing bound to it.
+
   if (tasksQuery.error === null && boundTasks.length === 0) return null;
 
   const reportFailure = (title: string, error: unknown) => {
@@ -84,7 +100,11 @@ export function ThreadAutomationsPanel(props: {
   };
 
   const toggleEnabled = async (task: ScheduledTask, enabled: boolean) => {
-    if (busyTaskId !== null) return;
+    if (
+      busyTaskId !== null ||
+      !readEnvironmentScope(props.environmentId, AuthOrchestrationOperateScope)
+    )
+      return;
     setBusyTaskId(task.id);
     // Partial update: only the enabled flag changes, so a toggle can never
     // revert concurrent edits made to the task elsewhere.
@@ -99,7 +119,11 @@ export function ThreadAutomationsPanel(props: {
   };
 
   const runNow = async (task: ScheduledTask) => {
-    if (busyTaskId !== null) return;
+    if (
+      busyTaskId !== null ||
+      !readEnvironmentScope(props.environmentId, AuthOrchestrationOperateScope)
+    )
+      return;
     setBusyTaskId(task.id);
     const result = await runTaskNow({
       environmentId: props.environmentId,
@@ -180,22 +204,20 @@ export function ThreadAutomationsPanel(props: {
                 aria-hidden
               />
             </span>
-            <div className="min-w-0 flex-1">
-              <span className="block truncate text-sm font-medium text-foreground/80">
-                {task.title}
-              </span>
-              <p className="truncate text-2xs text-muted-foreground">
-                {scheduledTaskStatusText(
-                  task,
-                  (iso) =>
-                    new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
-                  Date.now(),
-                )}
-                {task.enabled && task.nextRunAt !== null
-                  ? ` · next ${relativeLabel(task.nextRunAt)}`
-                  : ""}
-              </p>
-            </div>
+            <Tooltip>
+              <TooltipTrigger render={<div className="min-w-0 flex-1" />}>
+                <span className="block truncate text-sm font-medium text-foreground/80">
+                  {task.title}
+                </span>
+                <p className="truncate text-2xs text-muted-foreground">
+                  {taskScheduleLine(task, nowMs)}
+                </p>
+              </TooltipTrigger>
+              <TooltipPopup side="left">
+                <p className="font-medium">{task.title}</p>
+                <p className="text-muted-foreground">{taskScheduleLine(task, nowMs)}</p>
+              </TooltipPopup>
+            </Tooltip>
             <Tooltip>
               <TooltipTrigger
                 render={
@@ -224,7 +246,9 @@ export function ThreadAutomationsPanel(props: {
                       variant="ghost"
                       part="icon"
                       aria-label={`Run ${task.title} now`}
-                      disabled={busyTaskId !== null || task.lastRunStatus === "running"}
+                      disabled={
+                        !canOperate || busyTaskId !== null || task.lastRunStatus === "running"
+                      }
                       onClick={() => void runNow(task)}
                     >
                       <PlayIcon className="size-3.5" />
@@ -235,10 +259,10 @@ export function ThreadAutomationsPanel(props: {
               </Tooltip>
             )}
             {/* An ended schedule only reopens by moving its end, which the editor does. */}
-            {scheduledTaskLifecycle(task, Date.now()) === "ended" ? null : (
+            {scheduledTaskLifecycle(task, nowMs) === "ended" ? null : (
               <Switch
                 checked={task.enabled}
-                disabled={busyTaskId !== null}
+                disabled={!canOperate || busyTaskId !== null}
                 aria-label={task.enabled ? `Pause ${task.title}` : `Resume ${task.title}`}
                 onCheckedChange={(enabled) => void toggleEnabled(task, enabled)}
               />

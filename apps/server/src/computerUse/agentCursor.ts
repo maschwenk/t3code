@@ -102,8 +102,8 @@ export const make = Effect.gen(function* () {
   const last = new Map<string, { readonly point: Point; readonly at: number }>();
   const names = new Map<string, string>();
 
-  const agentName = (caller: string) =>
-    Effect.gen(function* () {
+  const agentName = Effect.fn("AgentCursor.agentName")(
+    function* (caller: string) {
       // caller = environmentId:threadId:providerInstanceId:providerSessionId
       const instanceId = caller.split(":")[2] ?? "";
       const cached = names.get(instanceId);
@@ -122,71 +122,77 @@ export const make = Effect.gen(function* () {
       const resolved = name ?? fallbackAgentName(instanceId);
       names.set(instanceId, resolved);
       return resolved;
-    }).pipe(Effect.catchCause(() => Effect.succeed(fallbackAgentName(""))));
+    },
+    Effect.catchCause(() => Effect.succeed(fallbackAgentName(""))),
+  );
 
-  const send = (
+  const send = Effect.fn("AgentCursor.send")(function* (
     caller: string,
     point: Point,
     cursor: { readonly cue: ReturnType<typeof cursorCue> | "look"; readonly bounds: Bounds },
-  ) =>
-    Effect.gen(function* () {
-      const now = yield* Clock.currentTimeMillis;
-      const previous = last.get(caller);
-      const from = previous?.point ?? { x: point.x + 140, y: point.y + 110 };
-      const durationMs = computerCursorGlideMs(Math.hypot(point.x - from.x, point.y - from.y));
-      const shown = yield* desktop.showComputerCursor({
-        ...point,
-        ...cursor,
-        durationMs,
-        cursorId: caller,
-        label: yield* agentName(caller),
-      });
-      last.delete(caller);
-      last.set(caller, { point, at: now });
-      for (const key of last.keys()) {
-        if (last.size <= MAX_TRACKED) break;
-        last.delete(key);
-      }
-      return shown ? durationMs : undefined;
+  ) {
+    const now = yield* Clock.currentTimeMillis;
+    const previous = last.get(caller);
+    const from = previous?.point ?? { x: point.x + 140, y: point.y + 110 };
+    const durationMs = computerCursorGlideMs(Math.hypot(point.x - from.x, point.y - from.y));
+    const shown = yield* desktop.showComputerCursor({
+      ...point,
+      ...cursor,
+      durationMs,
+      cursorId: caller,
+      label: yield* agentName(caller),
     });
+    last.delete(caller);
+    last.set(caller, { point, at: now });
+    for (const key of last.keys()) {
+      if (last.size <= MAX_TRACKED) break;
+      last.delete(key);
+    }
+    return shown ? durationMs : undefined;
+  });
 
   return {
     /**
      * Glides to an action's target element or screen point and waits for it
      * to land, so the user sees where the agent acts first.
      */
-    point: (caller: string, action: ComputerAction, target: ElementTarget | Point) =>
-      Effect.gen(function* () {
-        const bounds =
-          "ref" in target
-            ? target.bounds
-            : {
-                x: target.x - POINT_BOX / 2,
-                y: target.y - POINT_BOX / 2,
-                width: POINT_BOX,
-                height: POINT_BOX,
-              };
-        if (!hasArea(bounds)) return;
-        const center = { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 };
-        const durationMs = yield* send(caller, center, {
-          cue: cursorCue(action, "ref" in target ? target.role : null),
-          bounds,
-        });
-        if (durationMs !== undefined) yield* Effect.sleep(durationMs + 60);
-      }),
+    point: Effect.fn("AgentCursor.point")(function* (
+      caller: string,
+      action: ComputerAction,
+      target: ElementTarget | Point,
+    ) {
+      const bounds =
+        "ref" in target
+          ? target.bounds
+          : {
+              x: target.x - POINT_BOX / 2,
+              y: target.y - POINT_BOX / 2,
+              width: POINT_BOX,
+              height: POINT_BOX,
+            };
+      if (!hasArea(bounds)) return;
+      const center = { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 };
+      const durationMs = yield* send(caller, center, {
+        cue: cursorCue(action, "ref" in target ? target.role : null),
+        bounds,
+      });
+      if (durationMs !== undefined) yield* Effect.sleep(durationMs + 60);
+    }),
     /**
      * Moves to the app window when the agent observes it, without waiting.
      * Skipped while this agent's cursor is already working inside that window.
      */
-    look: (caller: string, snapshot: Pick<NativeSnapshot, "elements">) =>
-      Effect.gen(function* () {
-        const target = lookTarget(snapshot);
-        if (!target) return;
-        const previous = last.get(caller);
-        const now = yield* Clock.currentTimeMillis;
-        if (previous && now - previous.at < PRESENT_MS && contains(target.window, previous.point))
-          return;
-        yield* send(caller, target.point, { cue: "look", bounds: target.window });
-      }),
+    look: Effect.fn("AgentCursor.look")(function* (
+      caller: string,
+      snapshot: Pick<NativeSnapshot, "elements">,
+    ) {
+      const target = lookTarget(snapshot);
+      if (!target) return;
+      const previous = last.get(caller);
+      const now = yield* Clock.currentTimeMillis;
+      if (previous && now - previous.at < PRESENT_MS && contains(target.window, previous.point))
+        return;
+      yield* send(caller, target.point, { cue: "look", bounds: target.window });
+    }),
   };
 });

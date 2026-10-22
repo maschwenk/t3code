@@ -24,6 +24,7 @@ export interface ManagedEndpointAllocation {
   readonly origin: RelayManagedEndpointOrigin | null;
   readonly updatedAt: string;
   readonly generation: number;
+  readonly tunnelReleasedAt: string | null;
 }
 
 export interface ManagedEndpointTunnelAllocation extends ManagedEndpointAllocation {
@@ -111,6 +112,7 @@ interface MarkManagedEndpointReadyInput extends ManagedEndpointAllocationKey {
 interface ClaimManagedEndpointReleaseInput extends ManagedEndpointAllocationKey {
   readonly tunnelId: string;
   readonly generation: number;
+  readonly markReleased?: boolean;
 }
 
 interface EnableManagedEndpointRecoveryInput extends ManagedEndpointAllocationKey {
@@ -133,7 +135,6 @@ export class ManagedEndpointAllocations extends Context.Service<
     readonly get: (
       input: ManagedEndpointAllocationKey,
     ) => Effect.Effect<ManagedEndpointAllocation | null, ManagedEndpointAllocationPersistenceError>;
-    /** The allocation that owns a tunnel name; tunnel names are unique. */
     readonly getByTunnelName: (
       tunnelName: string,
     ) => Effect.Effect<ManagedEndpointAllocation | null, ManagedEndpointAllocationPersistenceError>;
@@ -202,6 +203,7 @@ const allocationSelection = {
   origin: relayManagedEndpointAllocations.origin,
   updatedAt: relayManagedEndpointAllocations.updatedAt,
   generation: relayManagedEndpointAllocations.generation,
+  tunnelReleasedAt: relayManagedEndpointAllocations.tunnelReleasedAt,
 };
 
 const whereAllocation = (input: ManagedEndpointAllocationKey) =>
@@ -326,6 +328,7 @@ export const make = Effect.gen(function* () {
           // again before the reaper may treat it as recoverable.
           recoveryEnabledAt: sql`case when ${relayManagedEndpointAllocations.tunnelId} = ${input.tunnelId} then ${relayManagedEndpointAllocations.recoveryEnabledAt} else null end`,
           recoveryEnvironmentPublicKey: sql`case when ${relayManagedEndpointAllocations.tunnelId} = ${input.tunnelId} then ${relayManagedEndpointAllocations.recoveryEnvironmentPublicKey} else null end`,
+          tunnelReleasedAt: null,
           updatedAt: DateTime.formatIso(yield* DateTime.now),
           generation: sql`${relayManagedEndpointAllocations.generation} + 1`,
         })
@@ -534,11 +537,13 @@ export const make = Effect.gen(function* () {
     claimRelease: Effect.fn("relay.managed_endpoint_allocations.claim_release")(function* (
       input: ClaimManagedEndpointReleaseInput,
     ) {
+      const now = DateTime.formatIso(yield* DateTime.now);
       const claimed = yield* db
         .update(relayManagedEndpointAllocations)
         .set({
-          updatedAt: DateTime.formatIso(yield* DateTime.now),
+          updatedAt: now,
           generation: sql`${relayManagedEndpointAllocations.generation} + 1`,
+          ...(input.markReleased === true ? { tunnelReleasedAt: now } : {}),
         })
         .where(
           and(

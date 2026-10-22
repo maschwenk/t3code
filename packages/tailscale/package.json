@@ -9,9 +9,8 @@
     }
   },
   "scripts": {
-    "typecheck": "tsrs --noEmit",
-    "test": "vp test run --config ../../vite.config.ts --dir .",
-    "lint:effect": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vp test run --config ../../vite.config.ts --dir ."
   },
   "dependencies": {
     "@t3tools/shared": "workspace:*",
