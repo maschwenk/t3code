@@ -30,7 +30,8 @@ export function usePreviewExtensions(
     let current = true;
     let request = 0;
     const refresh = () => {
-      const id = ++request;
+      request += 1;
+      const id = request;
       bridge.list(tabWebContentsId ?? undefined).then(
         (next) => {
           if (current && id === request) setExtensions(next);
