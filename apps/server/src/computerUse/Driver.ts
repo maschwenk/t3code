@@ -1,11 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Native addon isolation requires a killable child process.
 import * as NodeChildProcess from "node:child_process";
-import {
-  HostProcessArguments,
-  HostProcessExecutablePath,
-  HostProcessEnvironment,
-  HostProcessIsExecutable,
-} from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -24,10 +19,10 @@ const encodeRequest = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const isComputerUseError = Schema.is(ComputerUseError);
 
 const make = Effect.gen(function* () {
-  const argv = yield* HostProcessArguments;
-  const execPath = yield* HostProcessExecutablePath;
-  const env = yield* HostProcessEnvironment;
-  const isExecutable = yield* HostProcessIsExecutable;
+  const argv = yield* HostProcess.Arguments;
+  const execPath = yield* HostProcess.ExecutablePath;
+  const env = yield* HostProcess.Environment;
+  const isExecutable = yield* HostProcess.IsExecutable;
   return Driver.of({
     execute: (request) =>
       Effect.tryPromise({

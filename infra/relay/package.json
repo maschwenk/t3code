@@ -6,13 +6,14 @@
     "deploy": "alchemy deploy",
     "push:android:smoke": "node scripts/android-push-smoke.ts",
     "push:android:watch": "node scripts/android-push-watch.ts",
+    "tunnels:census": "node scripts/tunnel-census.ts",
     "destroy": "alchemy destroy",
     "test": "vp test run --config ../../vite.config.ts --dir .",
-    "typecheck": "tsrs --noEmit",
-    "lint:effect": "tsc --noEmit"
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@clerk/backend": "catalog:",
+    "@distilled.cloud/cloudflare": "catalog:",
     "@effect/sql-pg": "catalog:",
     "@effect/sql-sqlite-do": "catalog:",
     "@noble/curves": "catalog:",

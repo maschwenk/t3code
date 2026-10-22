@@ -21,6 +21,7 @@ export const ChatCanvasContext = createContext<
       lane: { padding: number; minChatWidth: number };
       layout: ReturnType<typeof resolveChatCanvasLayout>;
       previewKey: string | null;
+      detailsCardTopInset: number;
     } & ChatCanvasActions)
   | null
 >(null);

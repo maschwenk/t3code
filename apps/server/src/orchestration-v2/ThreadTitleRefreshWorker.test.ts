@@ -17,13 +17,14 @@ import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
+import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import { OrchestratorDispatchError } from "./Orchestrator.ts";
 import * as ProjectStore from "./ProjectStore.ts";
-import type { ProviderAdapterV2Shape } from "./ProviderAdapter.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ThreadManagement from "./ThreadManagementService.ts";
 import * as ThreadTitleRefreshWorker from "./ThreadTitleRefreshWorker.ts";
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
+import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 
 describe("threadsDueForTitleRefresh", () => {
   const nowMs = Date.parse("2026-10-15T12:00:00.000Z");
@@ -104,11 +105,12 @@ const adapter = {
   getCapabilities: () => Effect.succeed(CodexProviderCapabilitiesV2),
   planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" as const }),
   openSession: () => Effect.die("provider execution is disabled in title refresh tests"),
-} as ProviderAdapterV2Shape;
+} as ProviderAdapter.ProviderAdapterV2["Service"];
 
 function makeLayer() {
   const sentRenames: Array<ThreadId> = [];
   const layerDatabase = SqlitePersistence.layerMemory;
+  const layerServerSettings = ServerSettings.layerTest({});
   const layerOrchestrator = ProviderReplayHarness.layerWithRegistry(
     { name: "thread-title-refresh" },
     ProviderAdapterRegistry.layerFromAdapters([adapter]),
@@ -145,13 +147,21 @@ function makeLayer() {
         },
       });
     }),
-  ).pipe(Layer.provide(ThreadManagement.layer.pipe(Layer.provide(layerOrchestrator))));
+  ).pipe(
+    Layer.provide(
+      ThreadManagement.layer.pipe(
+        Layer.provide(layerOrchestrator),
+        Layer.provide(layerServerSettings),
+        Layer.provide(CommandReceiptStore.layer.pipe(Layer.provide(layerDatabase))),
+      ),
+    ),
+  );
   return {
     sentRenames,
     layer: Layer.mergeAll(
       layerThreadManagement,
       ProjectStore.layer.pipe(Layer.provide(layerDatabase)),
-      ServerSettings.layerTest({}),
+      layerServerSettings,
     ),
   };
 }

@@ -10,6 +10,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
+import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
@@ -32,6 +33,10 @@ const layerRecordingSends = (sends: Ref.Ref<ReadonlyArray<string>>) =>
         ),
     }),
     Layer.mock(SecretRequests.SecretRequests)({}),
+    Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+      namedProjectsRoot: "/projects",
+      isScratchProject: () => Effect.succeed(false),
+    }),
   );
 
 // The poll loop sleeps five seconds between passes; stepping the clock by

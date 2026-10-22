@@ -19,7 +19,7 @@ import {
   PlusIcon,
   Trash2Icon,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useState } from "react";
 
 import { openScheduledTaskEditor } from "../components/chat/ScheduledTaskCards";
 import {
@@ -64,13 +64,9 @@ function ScheduledRouteView() {
   useEscapeToGoBack();
   const { environments } = useEnvironments();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
-  const connected = useMemo(
-    () =>
-      environments.filter(
-        (environment) =>
-          environment.connection.phase === "connected" && environment.serverConfig !== null,
-      ),
-    [environments],
+  const connected = environments.filter(
+    (environment) =>
+      environment.connection.phase === "connected" && environment.serverConfig !== null,
   );
   const newTaskEnvironmentId =
     connected.find((environment) => environment.environmentId === primaryEnvironmentId)
@@ -141,10 +137,7 @@ function EnvironmentSchedules({
     serverEnvironment.scheduledTasksLive({ environmentId: environment.environmentId, input: {} }),
   );
   const timestampFormat = useEnvironmentSettings(environment.environmentId).timestampFormat;
-  const tasks = useMemo(
-    () => sortScheduledTasksByUpcoming(tasksQuery.data?.tasks ?? [], Date.now()),
-    [tasksQuery.data],
-  );
+  const tasks = sortScheduledTasksByUpcoming(tasksQuery.data?.tasks ?? [], Date.now());
   const upcoming = tasks.filter((task) => scheduledTaskLifecycle(task, Date.now()) === "active");
   const inactive = tasks.filter((task) => scheduledTaskLifecycle(task, Date.now()) !== "active");
   return (
@@ -227,10 +220,7 @@ function ScheduleRow({
   readonly timestampFormat: TimestampFormat;
 }) {
   const navigate = useNavigate();
-  const threadRef = useMemo(
-    () => (task.threadId === null ? null : scopeThreadRef(environmentId, task.threadId)),
-    [environmentId, task.threadId],
-  );
+  const threadRef = task.threadId === null ? null : scopeThreadRef(environmentId, task.threadId);
   const thread = useThreadShell(threadRef);
   const project = useProjects().find(
     (candidate) => candidate.environmentId === environmentId && candidate.id === task.projectId,

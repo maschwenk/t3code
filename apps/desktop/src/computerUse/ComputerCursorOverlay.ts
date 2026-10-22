@@ -148,89 +148,89 @@ export const listen: Effect.Effect<
     return cursor;
   };
 
-  const show = (request: DesktopTelemetryShowComputerCursor) =>
-    Effect.gen(function* () {
-      const id = request.cursorId ?? "agent";
-      const cursor = cursorFor(id, request.label ?? "Agent");
-      const now = yield* Clock.currentTimeMillis;
-      const target = { x: request.x, y: request.y };
-      let from: Point;
-      let velocity: Point | undefined;
-      if (cursor.glide && cursor.visible) {
-        // Continue from wherever the cursor is right now, at its current speed.
-        const sample = sampleGlide(cursor.glide.path, now - cursor.glide.startedAt);
-        from = sample.position;
-        velocity = sample.velocity;
-      } else if (cursor.glide) {
-        from = cursor.glide.path.to;
-      } else {
-        from = { x: target.x + ENTRY_OFFSET.x, y: target.y + ENTRY_OFFSET.y };
-      }
-      const durationMs =
-        request.durationMs ??
-        computerCursorGlideMs(Math.hypot(target.x - from.x, target.y - from.y));
-      const path = planGlide(from, target, durationMs, velocity);
-      cursor.glide = { path, startedAt: now };
-      cursor.visible = true;
-      const frames = glideKeyframes(path);
-      const box = {
-        minX: Math.min(...frames.map((p) => p.x)) - MARGIN,
-        minY: Math.min(...frames.map((p) => p.y)) - MARGIN,
-        maxX: Math.max(...frames.map((p) => p.x)) + MARGIN,
-        maxY: Math.max(...frames.map((p) => p.y)) + MARGIN,
-      };
-      yield* Effect.forEach(
-        Electron.screen.getAllDisplays().filter((display) => intersects(box, display.bounds)),
-        (display) =>
-          Effect.gen(function* () {
-            const overlay = overlayFor(display);
-            const origin = display.bounds;
-            // Numbers, a schema literal, and quoted strings only.
-            const local = frames
-              .map((p) => `[${round(p.x - origin.x)},${round(p.y - origin.y)}]`)
-              .join(",");
-            const bounds = request.bounds
-              ? `[${round(request.bounds.x - origin.x)},${round(request.bounds.y - origin.y)},${round(request.bounds.width)},${round(request.bounds.height)}]`
-              : "null";
-            const cue = request.cue ? `"${request.cue}"` : "null";
-            yield* Effect.tryPromise(() => overlay.loaded);
-            if (overlay.window.isDestroyed()) return;
-            yield* Effect.tryPromise(() =>
-              overlay.window.webContents.executeJavaScript(
-                `glide(${quote(id)},[${local}],${Math.round(durationMs)},${cue},${bounds},${quote(cursor.tag)},${cursor.tone})`,
-              ),
-            );
-            if (!overlay.window.isVisible()) overlay.window.showInactive();
-          }).pipe(
-            Effect.catchCause((cause) =>
-              Effect.logWarning("computer cursor overlay failed", { cause: String(cause) }),
+  const show = Effect.fn("ComputerCursorOverlay.show")(function* (
+    request: DesktopTelemetryShowComputerCursor,
+  ) {
+    const id = request.cursorId ?? "agent";
+    const cursor = cursorFor(id, request.label ?? "Agent");
+    const now = yield* Clock.currentTimeMillis;
+    const target = { x: request.x, y: request.y };
+    let from: Point;
+    let velocity: Point | undefined;
+    if (cursor.glide && cursor.visible) {
+      // Continue from wherever the cursor is right now, at its current speed.
+      const sample = sampleGlide(cursor.glide.path, now - cursor.glide.startedAt);
+      from = sample.position;
+      velocity = sample.velocity;
+    } else if (cursor.glide) {
+      from = cursor.glide.path.to;
+    } else {
+      from = { x: target.x + ENTRY_OFFSET.x, y: target.y + ENTRY_OFFSET.y };
+    }
+    const durationMs =
+      request.durationMs ?? computerCursorGlideMs(Math.hypot(target.x - from.x, target.y - from.y));
+    const path = planGlide(from, target, durationMs, velocity);
+    cursor.glide = { path, startedAt: now };
+    cursor.visible = true;
+    const frames = glideKeyframes(path);
+    const box = {
+      minX: Math.min(...frames.map((p) => p.x)) - MARGIN,
+      minY: Math.min(...frames.map((p) => p.y)) - MARGIN,
+      maxX: Math.max(...frames.map((p) => p.x)) + MARGIN,
+      maxY: Math.max(...frames.map((p) => p.y)) + MARGIN,
+    };
+    yield* Effect.forEach(
+      Electron.screen.getAllDisplays().filter((display) => intersects(box, display.bounds)),
+      (display) =>
+        Effect.gen(function* () {
+          const overlay = overlayFor(display);
+          const origin = display.bounds;
+          // Numbers, a schema literal, and quoted strings only.
+          const local = frames
+            .map((p) => `[${round(p.x - origin.x)},${round(p.y - origin.y)}]`)
+            .join(",");
+          const bounds = request.bounds
+            ? `[${round(request.bounds.x - origin.x)},${round(request.bounds.y - origin.y)},${round(request.bounds.width)},${round(request.bounds.height)}]`
+            : "null";
+          const cue = request.cue ? `"${request.cue}"` : "null";
+          yield* Effect.tryPromise(() => overlay.loaded);
+          if (overlay.window.isDestroyed()) return;
+          yield* Effect.tryPromise(() =>
+            overlay.window.webContents.executeJavaScript(
+              `glide(${quote(id)},[${local}],${Math.round(durationMs)},${cue},${bounds},${quote(cursor.tag)},${cursor.tone})`,
             ),
+          );
+          if (!overlay.window.isVisible()) overlay.window.showInactive();
+        }).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("computer cursor overlay failed", { cause: String(cause) }),
           ),
-        { concurrency: "unbounded", discard: true },
-      );
+        ),
+      { concurrency: "unbounded", discard: true },
+    );
 
-      if (cursor.idleFiber) yield* Fiber.interrupt(cursor.idleFiber);
-      cursor.idleFiber = yield* Effect.gen(function* () {
-        // Once arrived, drop overlays on displays cursors only passed through.
-        yield* Effect.sleep(durationMs + 50);
-        cursor.home = Electron.screen.getDisplayNearestPoint({
-          x: Math.round(target.x),
-          y: Math.round(target.y),
-        }).id;
-        hideIdleWindows();
-        yield* Effect.sleep(IDLE_MS);
-        cursor.visible = false;
-        for (const overlay of overlays.values())
-          if (!overlay.window.isDestroyed())
-            yield* Effect.promise(() =>
-              overlay.window.webContents
-                .executeJavaScript(`fadeOut(${quote(id)})`)
-                .catch(() => undefined),
-            );
-        yield* Effect.sleep(FADE_MS);
-        hideIdleWindows();
-      }).pipe(Effect.forkScoped);
-    });
+    if (cursor.idleFiber) yield* Fiber.interrupt(cursor.idleFiber);
+    cursor.idleFiber = yield* Effect.gen(function* () {
+      // Once arrived, drop overlays on displays cursors only passed through.
+      yield* Effect.sleep(durationMs + 50);
+      cursor.home = Electron.screen.getDisplayNearestPoint({
+        x: Math.round(target.x),
+        y: Math.round(target.y),
+      }).id;
+      hideIdleWindows();
+      yield* Effect.sleep(IDLE_MS);
+      cursor.visible = false;
+      for (const overlay of overlays.values())
+        if (!overlay.window.isDestroyed())
+          yield* Effect.promise(() =>
+            overlay.window.webContents
+              .executeJavaScript(`fadeOut(${quote(id)})`)
+              .catch(() => undefined),
+          );
+      yield* Effect.sleep(FADE_MS);
+      hideIdleWindows();
+    }).pipe(Effect.forkScoped);
+  });
 
   yield* Stream.runForEach(publisher.computerCursorRequests, show).pipe(Effect.forkScoped);
 

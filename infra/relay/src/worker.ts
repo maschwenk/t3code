@@ -57,6 +57,7 @@ import * as ApnsClient from "./agentActivity/ApnsClient.ts";
 import * as ApnsProviderTokens from "./agentActivity/ApnsProviderTokens.ts";
 import * as ApnsDeliveryQueue from "./agentActivity/ApnsDeliveryQueue.ts";
 import * as ApnsDeliveries from "./agentActivity/ApnsDeliveries.ts";
+import * as CloudflareApiPause from "./environments/CloudflareApiPause.ts";
 import * as EnvironmentConnector from "./environments/EnvironmentConnector.ts";
 import * as EnvironmentLinker from "./environments/EnvironmentLinker.ts";
 import * as EnvironmentPublishSignatures from "./environments/EnvironmentPublishSignatures.ts";
@@ -117,14 +118,15 @@ export const layer = Api.make(
         date: "2026-05-22",
         flags: ["nodejs_compat"],
       },
+      // Requests run several Postgres queries in sequence. At the user's edge
+      // each one paid the round trip to the database (~300 ms from JNB); next
+      // to PlanetScale `us-west` the request pays that distance once.
+      placement: { region: "aws:us-west-2" },
       domain: relayPublicDomain,
     })),
     Effect.orDie,
   ),
   Effect.gen(function* () {
-    //
-    // 1. Provision Infrastructure for the Worker to use
-    //
     const { relayPublicOrigin, stage } = yield* RelayDeploymentConfig;
     const apnsDeliveryQueue = yield* RelayApnsDeliveryQueue;
     const apnsDeliveryDeadLetterQueue = yield* RelayApnsDeliveryDeadLetterQueue;
@@ -134,11 +136,8 @@ export const layer = Api.make(
     const relayApiZone = yield* RelayApiZone;
     const managedEndpointZone = yield* ManagedEndpointZone;
     const randomApnsDeliveryJobSigningSecret = yield* ApnsDeliveryJobSigningSecret;
-    const observability = yield* RelayObservability;
+    yield* RelayObservability;
 
-    //
-    // 2. Create bindings
-    //
     const apnsEnabled = yield* Config.Boolean("APNS_ENABLED").pipe(Config.withDefault(true));
     const apnsCredentials = apnsEnabled
       ? {
@@ -158,10 +157,6 @@ export const layer = Api.make(
     const apnsDeliveryJobSigningSecret = yield* randomApnsDeliveryJobSigningSecret;
     const apnsDeliveryQueueSender = yield* Cloudflare.Queues.WriteQueue(apnsDeliveryQueue);
     const fcmDeliveryQueueSender = yield* Cloudflare.Queues.WriteQueue(fcmDeliveryQueue);
-
-    const axiomDatasetName = yield* observability.traces.name;
-    const axiomIngestToken = yield* observability.workerIngestToken.token;
-    const axiomTracesEndpoint = yield* observability.traces.otelTracesEndpoint;
 
     const clerkSecretKey = yield* Config.Redacted("CLERK_SECRET_KEY");
     const clerkPublishableKey = yield* Config.String("CLERK_PUBLISHABLE_KEY");
@@ -184,6 +179,11 @@ export const layer = Api.make(
     const managedEndpointDnsBinding = yield* Cloudflare.DNS.ReadWriteDns(managedEndpointZone);
     const managedEndpointZoneName = yield* managedEndpointZone.name;
     const managedEndpointCleanupMode = yield* RelayConfiguration.managedEndpointCleanupModeConfig;
+    const legacyManagedEndpointCleanupMode =
+      yield* RelayConfiguration.legacyManagedEndpointCleanupModeConfig;
+    const legacyTunnelGraceMinutes = Option.getOrUndefined(
+      yield* RelayConfiguration.legacyTunnelGraceMinutesConfig,
+    );
     // Keys are endpoint keys or hashes over them, which already differ per
     // stage, so stages sharing an account cannot collide in these namespaces.
     const hookRateLimit = yield* Cloudflare.RateLimit("HOOK_RATE_LIMIT", {
@@ -202,9 +202,6 @@ export const layer = Api.make(
     });
     const hookInboxes = yield* HookInboxObject.HookInboxObject;
 
-    //
-    // 3. Runtime layers and app construction
-    //
     const alchemyRuntimeContext: Alchemy.BaseRuntimeContext = yield* Cloudflare.Worker;
 
     const loadSettings = Effect.gen(function* () {
@@ -221,18 +218,11 @@ export const layer = Api.make(
         managedEndpointBaseDomain: yield* managedEndpointZoneName,
         managedEndpointNamespace: stage,
         managedEndpointCleanupMode,
+        legacyManagedEndpointCleanupMode,
+        ...(legacyTunnelGraceMinutes === undefined ? {} : { legacyTunnelGraceMinutes }),
       });
     });
 
-    const layerRelayTrace = Layer.unwrap(
-      Effect.all({
-        tracesDatasetName: axiomDatasetName,
-        tracesEndpoint: axiomTracesEndpoint,
-        ingestToken: axiomIngestToken,
-      }).pipe(Effect.map(Observability.layer)),
-    );
-
-    // Each managed endpoint's held webhook requests live in its own Durable Object.
     const inboxCall =
       <A>(operation: HookInbox.HookInboxError["operation"], endpointKey: string) =>
       (effect: Effect.Effect<A, never, Alchemy.RuntimeContext>) =>
@@ -306,6 +296,7 @@ export const layer = Api.make(
       Layer.provideMerge(EnvironmentCredentials.layer),
       Layer.provideMerge(
         Layer.mergeAll(
+          CloudflareApiPause.layer,
           EnvironmentLinks.layer,
           ManagedEndpointAllocations.layer,
           ManagedTunnelLimits.layer,
@@ -332,7 +323,6 @@ export const layer = Api.make(
           Effect.provideService(Alchemy.RuntimeContext, alchemyRuntimeContext),
           Effect.catch((error) =>
             Effect.logWarning("Hook rate limiter unavailable", { error: error.message }).pipe(
-              // Visible on the forward span, so an outage that disables limits shows up.
               Effect.andThen(
                 Effect.annotateCurrentSpan({ "relay.hook.rate_limiter_failed_open": true }),
               ),
@@ -402,7 +392,6 @@ export const layer = Api.make(
         [
           DpopProofs.DpopProofReplay.pipe(
             Effect.flatMap((dpopProofs) => dpopProofs.pruneExpired),
-            // Keep completed thread rows long enough to show their final state.
             Effect.andThen(
               Effect.all([AgentActivityRows.AgentActivityRows, DateTime.now]).pipe(
                 Effect.flatMap(([activityRows, now]) =>
@@ -431,12 +420,20 @@ export const layer = Api.make(
                 : Effect.logWarning("Failed to clean up inactive managed tunnels", { cause }),
             ),
           ),
+          AgentActivityPublisher.AgentActivityPublisher.pipe(
+            Effect.flatMap((publisher) => publisher.endIdleLiveActivities),
+            Effect.catchCause((cause) =>
+              Cause.hasInterrupts(cause)
+                ? Effect.interrupt
+                : Effect.logWarning("Failed to end idle Live Activities", { cause }),
+            ),
+          ),
         ],
-        { concurrency: 2, discard: true },
+        { concurrency: 3, discard: true },
       ).pipe(
         Effect.withSpan("relay.cron.prune_expired_state"),
-        // Export cron spans to Axiom like HTTP spans; the scope flushes them before the run ends.
-        Effect.provide(Layer.merge(layerRuntime, layerRelayTrace)),
+        Observability.withSchemaErrorSpanAttributes,
+        Effect.provide(layerRuntime),
       ),
     );
 
@@ -455,7 +452,11 @@ export const layer = Api.make(
       HttpRouter.toHttpEffect,
       Effect.provideService(HttpRouter.RouterConfig, RELAY_HTTP_ROUTER_CONFIG),
       withoutCapturedParentSpan,
-      Effect.flatMap((httpEffect) => traceRelayHttpRequestWith(httpEffect, layerRelayTrace)),
+      Effect.map((httpEffect) =>
+        traceRelayHttpRequestWith(httpEffect, Layer.empty).pipe(
+          Observability.withSchemaErrorSpanAttributes,
+        ),
+      ),
     );
 
     return { fetch };
@@ -470,20 +471,13 @@ export const layer = Api.make(
         Layer.provideMerge(Cloudflare.DNS.ReadWriteDnsHttp),
         Layer.provideMerge(Cloudflare.Workers.RateLimitBinding),
         Layer.provideMerge(HookInboxObject.layer),
-        // The worker runtime opens its own HTTP span around ours. For webhook
-        // paths it would record the raw URL, token included, and adopt the
-        // sender's traceparent, so only our redacted span covers those.
-        // Registered as telemetry: request-time context is assembled per
-        // event, and only these layers are built into it.
+        // The worker runtime opens its own HTTP span around ours. Ours carries
+        // the route, header redaction and webhook URL redaction, and drops a
+        // webhook sender's traceparent, so the runtime's span is off for every
+        // request rather than duplicating it.
         Layer.provideMerge(
-          Alchemy.Telemetry.layer(
-            Layer.succeed(HttpMiddleware.TracerDisabledWhen)((request) =>
-              HookForwarder.isRelayHookPath(request.url),
-            ),
-          ),
+          Alchemy.Telemetry.layer(Layer.succeed(HttpMiddleware.TracerDisabledWhen)(() => true)),
         ),
-        // Exports spans from events the HTTP tracer does not wrap, notably
-        // HookInboxObject calls and alarms, to the same Axiom dataset.
         Layer.provideMerge(
           Layer.unwrap(
             Effect.map(RelayObservability, (observability) =>

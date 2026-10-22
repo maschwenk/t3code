@@ -1,3 +1,4 @@
+// @effect-diagnostics nodeBuiltinImport:off - Host-side dev tool; hashes the home path to name its token file.
 // Drives the running dev app's computer-use tools from a shell, for agents
 // whose own process lacks the macOS Accessibility and Screen Recording grants.
 // See docs/operations/development.md#computer-use.
@@ -178,28 +179,29 @@ const makeHarness = Effect.fn("computerUseDev.makeHarness")(function* (
       Effect.mapError(() => new DevHarnessError({ message: `Could not reach ${runtime.origin}.` })),
     );
 
-  const readRpc = (response: HttpClientResponse.HttpClientResponse) =>
-    Effect.gen(function* () {
-      const text = yield* response.text.pipe(
-        Effect.mapError(() => new DevHarnessError({ message: "Could not read the MCP response." })),
-      );
-      if (response.status < 200 || response.status >= 300)
-        return yield* fail(`MCP request failed (${response.status}): ${text}`);
-      // Streamable HTTP may answer as a one-event SSE stream.
-      const payload = text.startsWith("{")
-        ? text
-        : text
-            .split("\n")
-            .filter((line) => line.startsWith("data:"))
-            .map((line) => line.slice("data:".length))
-            .join("");
-      const decoded = yield* decodeJson(payload).pipe(
-        Effect.flatMap(Schema.decodeUnknownEffect(RpcResponse)),
-        Effect.mapError(() => new DevHarnessError({ message: `Unexpected MCP response: ${text}` })),
-      );
-      if (decoded.error) return yield* fail(decoded.error.message);
-      return decoded.result;
-    });
+  const readRpc = Effect.fn("ComputerUseDev.readRpc")(function* (
+    response: HttpClientResponse.HttpClientResponse,
+  ) {
+    const text = yield* response.text.pipe(
+      Effect.mapError(() => new DevHarnessError({ message: "Could not read the MCP response." })),
+    );
+    if (response.status < 200 || response.status >= 300)
+      return yield* fail(`MCP request failed (${response.status}): ${text}`);
+    // Streamable HTTP may answer as a one-event SSE stream.
+    const payload = text.startsWith("{")
+      ? text
+      : text
+          .split("\n")
+          .filter((line) => line.startsWith("data:"))
+          .map((line) => line.slice("data:".length))
+          .join("");
+    const decoded = yield* decodeJson(payload).pipe(
+      Effect.flatMap(Schema.decodeUnknownEffect(RpcResponse)),
+      Effect.mapError(() => new DevHarnessError({ message: `Unexpected MCP response: ${text}` })),
+    );
+    if (decoded.error) return yield* fail(decoded.error.message);
+    return decoded.result;
+  });
 
   const initialize = (token: string) =>
     post(token, {

@@ -16,7 +16,7 @@ import * as Layer from "effect/Layer";
 
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import type { McpInvocationScope } from "./McpInvocationContext.ts";
-import { assertTargetWithinLimits } from "./threadAccess.ts";
+import { threadNotFound } from "./OrchestratorMcpService.ts";
 
 export class ThreadMetadataMcpService extends Context.Service<
   ThreadMetadataMcpService,
@@ -112,7 +112,10 @@ function resultFromThread(input: {
   readonly action: ThreadMetadataMcpAction;
   readonly commandId: CommandId;
   readonly sequence: number;
-  readonly thread: OrchestrationV2AppThread;
+  readonly thread: Pick<
+    OrchestrationV2AppThread,
+    "id" | "title" | "titleRegeneration" | "linkedPullRequest" | "updatedAt"
+  >;
 }): ThreadMetadataMcpUpdateResult {
   return {
     threadId: input.thread.id,
@@ -165,50 +168,14 @@ const make = Effect.gen(function* () {
         ),
       );
     if (shell === null || shell.deletedAt !== null) {
-      return yield* failure("thread_not_found", `Thread ${threadId} was not found.`);
-    }
-    // Another thread may only be changed if it runs within the caller's own modes.
-    if (threadId !== scope.thread?.threadId) {
-      const limits =
-        scope.thread === undefined
-          ? {
-              runtimeMode: scope.client?.runtimeModeCeiling ?? ("approval-required" as const),
-              interactionMode: "default" as const,
-            }
-          : yield* threadManagement.getThreadShell(scope.thread.threadId).pipe(
-              Effect.mapError((error) =>
-                failure(
-                  "orchestration_error",
-                  `Unable to locate calling thread: ${errorMessage(error)}`,
-                ),
-              ),
-              Effect.flatMap((caller) =>
-                caller === null
-                  ? Effect.fail(failure("thread_not_found", "The calling thread was not found."))
-                  : // Like every other cross-thread write, a thread caller needs its live run.
-                    caller.archivedAt !== null ||
-                      caller.activeRunId === null ||
-                      caller.providerInstanceId !== scope.thread?.providerInstanceId
-                    ? Effect.fail(
-                        failure(
-                          "parent_not_active",
-                          "The calling provider no longer owns an active thread run.",
-                        ),
-                      )
-                    : Effect.succeed({
-                        runtimeMode: caller.runtimeMode,
-                        interactionMode: caller.interactionMode,
-                      }),
-              ),
-            );
-      yield* assertTargetWithinLimits(limits, shell);
+      return yield* threadNotFound(threadManagement, threadId, `Thread ${threadId} was not found.`);
     }
     const target = yield* threadManagement
       .getProjectThreadRecords({ projectId: shell.projectId, threadId }, [])
       .pipe(Effect.mapError(threadLookupFailure));
     const requestKey =
       input.clientRequestId === undefined
-        ? yield* crypto.randomUUIDv4.pipe(Effect.orDie)
+        ? yield* crypto.randomUUIDv4().pipe(Effect.orDie)
         : input.clientRequestId;
     const updateCommandId = commandId({
       scope,
@@ -236,7 +203,15 @@ const make = Effect.gen(function* () {
     const metadataEvent = dispatched.storedEvents.find(
       (stored) => stored.event.type === "thread.metadata-updated",
     );
-    if (metadataEvent === undefined || metadataEvent.event.type !== "thread.metadata-updated") {
+    // A retried commandId replays the stored events of the first dispatch;
+    // compaction may have deleted them by then, so answer from the projection.
+    const thread =
+      metadataEvent?.event.type === "thread.metadata-updated"
+        ? metadataEvent.event.payload
+        : yield* threadManagement
+            .getThreadShell(threadId)
+            .pipe(Effect.mapError((error) => failure("orchestration_error", errorMessage(error))));
+    if (thread === null) {
       return yield* failure(
         "orchestration_error",
         `Thread ${threadId} metadata update completed without a resultant state.`,
@@ -246,7 +221,7 @@ const make = Effect.gen(function* () {
       action: input.action,
       commandId: updateCommandId,
       sequence: dispatched.sequence,
-      thread: metadataEvent.event.payload,
+      thread,
     });
   });
 

@@ -1,6 +1,6 @@
 {
   "name": "@t3tools/contracts",
-  "version": "0.0.45",
+  "version": "0.1.1",
   "private": true,
   "files": [
     "dist"
@@ -21,9 +21,8 @@
     }
   },
   "scripts": {
-    "typecheck": "tsrs --noEmit",
-    "test": "vp test run --config ../../vite.config.ts --dir .",
-    "lint:effect": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vp test run --config ../../vite.config.ts --dir ."
   },
   "dependencies": {
     "effect": "catalog:"

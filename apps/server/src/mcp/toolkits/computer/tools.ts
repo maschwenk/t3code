@@ -1,3 +1,4 @@
+import { OrchestratorMcpFailure } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import { Tool, Toolkit } from "effect/ai";
 import * as ComputerUse from "../../../computerUse/ComputerUse.ts";
@@ -5,10 +6,12 @@ import { ComputerAction, ComputerUseError } from "../../../computerUse/protocol.
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 
 const dependencies = [ComputerUse.ComputerUse, McpInvocationContext.McpInvocationContext];
+// McpToolAccess refuses a caller without a thread credential before the handler runs.
+const failure = Schema.Union([ComputerUseError, OrchestratorMcpFailure]);
 const AppName = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(200));
 const Status = Tool.make("computer_status", {
   description:
-    'Check native computer use on the machine running this T3 environment. When allowAllApps is true, any app is permitted, including apps absent from allowedApps. Otherwise only the exact names in allowedApps are permitted. Also returns whether computer use and screen capture are enabled. Works when the user connects remotely. Browser tasks inside T3 should prefer preview_* tools; when they cannot drive a page (it blocks injected scripts or needs trusted input), computer tools on the T3 app itself (its app name starts with "T3 Code") reach the preview page the user can see: snapshot with roles ["web_area"], then pass the page\'s ref as root. Never change access settings yourself.',
+    'Check native computer use on the machine running this T3 environment. When allowAllApps is true, any app is permitted, including apps absent from allowedApps. Otherwise only the exact names in allowedApps are permitted. Also returns whether computer use and screen capture are enabled. Works when the user connects remotely. Browser tasks inside T3 should prefer preview_* tools; when they cannot drive a page (it blocks injected scripts or needs trusted input) and the tab runs in the desktop app on this machine rather than on the environment server, computer tools on the T3 app itself (its app name starts with "T3 Code") reach the preview page the user can see: snapshot with roles ["web_area"], then pass the page\'s ref as root. Never change access settings yourself.',
   parameters: Schema.Struct({ refresh: Schema.optionalKey(Schema.Boolean) }),
   success: Schema.Struct({
     enabled: Schema.Boolean,
@@ -16,7 +19,7 @@ const Status = Tool.make("computer_status", {
     allowedApps: Schema.Array(Schema.String),
     screenCaptureEnabled: Schema.Boolean,
   }),
-  failure: ComputerUseError,
+  failure,
   dependencies,
 })
   .annotate(Tool.Title, "Check computer access")
@@ -44,7 +47,7 @@ export const ComputerSnapshotTool = Tool.make("computer_snapshot", {
     includeOffscreen: Schema.optionalKey(Schema.Boolean),
   }),
   success: Schema.Unknown,
-  failure: ComputerUseError,
+  failure,
   dependencies,
 })
   .annotate(Tool.Title, "Inspect computer app")
@@ -75,7 +78,7 @@ export const ComputerActionTool = Tool.make("computer_action", {
     includeImage: Schema.optionalKey(Schema.Boolean),
   }),
   success: Schema.Unknown,
-  failure: ComputerUseError,
+  failure,
   dependencies,
 })
   .annotate(Tool.Title, "Control computer app")
@@ -88,7 +91,7 @@ export const ComputerOpenTool = Tool.make("computer_open", {
     "Launch an allowed macOS app on the environment machine, or reopen its window if it is running, without bringing it in front of the user's work, then return its snapshot. Some apps still bring themselves forward when they first launch. activate=true brings the app to the front and takes focus from the user for good; every step, pointer steps included, already runs in the background, so only use activate when the user asks or is not working on that machine.",
   parameters: Schema.Struct({ app: AppName, activate: Schema.optionalKey(Schema.Boolean) }),
   success: Schema.Unknown,
-  failure: ComputerUseError,
+  failure,
   dependencies,
 })
   .annotate(Tool.Title, "Open computer app")
@@ -97,3 +100,9 @@ export const ComputerOpenTool = Tool.make("computer_open", {
   .annotate(Tool.OpenWorld, true);
 
 export const ComputerToolkit = Toolkit.make(Status);
+/** Tools whose results McpHttpServer renders as text and window images rather than JSON. */
+export const ComputerContentToolkit = Toolkit.make(
+  ComputerSnapshotTool,
+  ComputerActionTool,
+  ComputerOpenTool,
+);

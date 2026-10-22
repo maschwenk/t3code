@@ -1,4 +1,4 @@
-import { useLayoutEffect, useMemo, useState, type ReactNode, type RefObject } from "react";
+import { useLayoutEffect, useState, type ReactNode, type RefObject } from "react";
 import type { ScopedThreadRef } from "@t3tools/contracts";
 import { ScrollArea } from "../ui/scroll-area";
 import { cn } from "../../lib/utils";
@@ -7,11 +7,12 @@ import { selectThreadPanelOpen, useRightPanelStore } from "../../rightPanelStore
 import type { ThreadPanelPresentation } from "../../rightPanelLayout";
 import { useChatCanvas } from "./ChatCanvasContext";
 import {
+  THREAD_DETAILS_CARD_GAP,
   resolveThreadDetailsCardDensity,
   resolveThreadDetailsCardLayout,
 } from "./threadDetailsCardLayout";
+import { observeResize } from "../../lib/observeResize";
 
-/** One card owns its placement and folds content only when that content cannot fit. */
 export function ThreadDetailsCard({
   threadRef,
   anchor,
@@ -31,6 +32,7 @@ export function ThreadDetailsCard({
         container: canvas.container,
         lane: canvas.lane,
         frame: null,
+        topInset: canvas.detailsCardTopInset,
       })
     : null;
   const placement = canvas
@@ -39,9 +41,11 @@ export function ThreadDetailsCard({
         lane: canvas.lane,
         frame: canvas.layout.frame,
         overlapsDetailsCard: canvas.layout.overlapsDetailsCard,
+        topInset: canvas.detailsCardTopInset,
       })
     : null;
   const mode = placement ? "inline" : "popover";
+  const topInset = canvas?.detailsCardTopInset ?? 0;
   const inlineOpen = useRightPanelStore((state) =>
     selectThreadPanelOpen(state.threadPanelVisibilityByThreadKey, threadRef, "inline"),
   );
@@ -53,22 +57,20 @@ export function ThreadDetailsCard({
   const [measurements, setMeasurements] = useState({
     key: measurementKey,
     heights: { full: 0, compact: 0 },
+    fullContentHeight: 0,
   });
   const contentHeights =
     measurements.key === measurementKey ? measurements.heights : { full: 0, compact: 0 };
   const height = placement?.height ?? Math.max(0, (canvas?.container.height ?? 0) - 52);
   const density = resolveThreadDetailsCardDensity(height, contentHeights);
-  // The card re-renders whenever the canvas resizes; its content only needs
-  // to when the density or the caller's render function changes.
-  const content = useMemo(() => children(density), [children, density]);
   const reportDetailsCard = canvas?.reportDetailsCard;
   const cardLeft = preferredPlacement?.x;
   const cardRight = preferredPlacement
     ? preferredPlacement.x + preferredPlacement.width
     : undefined;
   const cardBottom =
-    preferredPlacement && contentHeights.full > 0
-      ? preferredPlacement.y + Math.min(contentHeights.full, preferredPlacement.height)
+    preferredPlacement && measurements.key === measurementKey && measurements.fullContentHeight > 0
+      ? preferredPlacement.y + Math.min(measurements.fullContentHeight, preferredPlacement.height)
       : undefined;
   useLayoutEffect(() => {
     reportDetailsCard?.(
@@ -86,22 +88,37 @@ export function ThreadDetailsCard({
   useLayoutEffect(() => {
     const element = contentElement;
     if (!element || density === "essential") return;
-    // Measure the single content tree before the scroll viewport clips it. Retain each
-    // observed height so increasing available space restores the detail it can hold.
     const measure = () => {
       const frame = element.closest<HTMLElement>("[data-thread-details-card]");
       const next = element.offsetHeight + (frame ? frame.offsetHeight - frame.clientHeight : 0);
+      // PR lists and lineage scroll as they expand. Counting them toward density would hide
+      // the section and workspace controls when the user asks to see more rows.
+      const lists = element.querySelectorAll<HTMLElement>(
+        "[data-thread-relationships-panel], [data-thread-details-pr-list]",
+      );
+      const fittingHeight =
+        next - Array.from(lists).reduce((sum, list) => sum + list.offsetHeight, 0);
       setMeasurements((current) => {
         const heights = current.key === measurementKey ? current.heights : { full: 0, compact: 0 };
-        return current.key === measurementKey && heights[density] === next
+        const fullContentHeight =
+          density === "full"
+            ? next
+            : current.key === measurementKey
+              ? current.fullContentHeight
+              : 0;
+        return current.key === measurementKey &&
+          heights[density] === fittingHeight &&
+          current.fullContentHeight === fullContentHeight
           ? current
-          : { key: measurementKey, heights: { ...heights, [density]: next } };
+          : {
+              key: measurementKey,
+              heights: { ...heights, [density]: fittingHeight },
+              fullContentHeight,
+            };
       });
     };
     measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(element);
-    return () => observer.disconnect();
+    return observeResize(element, measure);
   }, [contentElement, density, measurementKey]);
   const card = (
     <div
@@ -114,7 +131,7 @@ export function ThreadDetailsCard({
       data-thread-details-card
     >
       <ScrollArea scrollFade className="min-h-0">
-        <div ref={setContentElement}>{content}</div>
+        <div ref={setContentElement}>{children(density)}</div>
       </ScrollArea>
     </div>
   );
@@ -122,17 +139,34 @@ export function ThreadDetailsCard({
     <Popover
       handle={handle}
       open={mode === "popover" && popoverOpen}
-      onOpenChange={(open) =>
-        useRightPanelStore.getState().setThreadPanelOpen(threadRef, "popover", open)
-      }
+      onOpenChange={(open, details) => {
+        const target =
+          details.reason === "focus-out"
+            ? (details.event as FocusEvent).relatedTarget
+            : details.reason === "outside-press"
+              ? details.event.target
+              : null;
+        if (!open && target instanceof Element && target.closest("[data-thread-find-bar]")) {
+          details.cancel();
+          return;
+        }
+        useRightPanelStore.getState().setThreadPanelOpen(threadRef, "popover", open);
+      }}
     >
       {placement ? (
         inlineOpen ? (
           <aside
             aria-label="Thread details"
-            className="absolute z-20"
+            // Slides down to make room for the find bar, but returns in the same frame
+            // the bar closes: a floating preview below moves up at once and would
+            // otherwise overlap the card mid-slide.
+            className={cn(
+              "absolute z-20",
+              topInset > 0 &&
+                "transition-[top] duration-150 ease-out motion-reduce:transition-none",
+            )}
             style={{
-              left: placement.x,
+              right: placement.right,
               top: placement.y,
               width: placement.width,
               maxHeight: height,
@@ -147,10 +181,11 @@ export function ThreadDetailsCard({
         <PopoverPopup
           anchor={anchor}
           align="end"
-          alignOffset={0}
+          // Lines the card up with the find bar: the panel pads its card by 8px.
+          alignOffset={THREAD_DETAILS_CARD_GAP - 8}
           collisionAvoidance={{ side: "shift", align: "shift", fallbackAxisSide: "none" }}
           side="bottom"
-          sideOffset={0}
+          sideOffset={topInset}
           variant="panel"
           padding="none"
         >
