@@ -8,8 +8,20 @@
  * build-desktop-artifact.ts) and no update feed, so it coexists with a stable
  * install and nothing can replace it with an upstream release.
  *
- *   node scripts/install-fork-desktop.ts [--no-launch] [--skip-build]
+ *   node scripts/install-fork-desktop.ts [--no-launch] [--skip-build | --build-only]
  *                                        [--identity <codesign name>|none]
+ *                                        [--allow-no-connect]
+ *
+ * `--build-only` then `--skip-build` splits this in two, so an agent running
+ * inside the fork can build while the app is still open and install from a
+ * detached script.
+ *
+ * T3 Connect's public identifiers are compiled into the bundle. When neither
+ * the shell nor `.env`/`.env.local` sets them, the build takes them from
+ * `.env.example` (the values official releases ship), and the install refuses
+ * a bundle without them unless `--allow-no-connect` is passed. Otherwise a
+ * fresh checkout silently builds an app with no Connect settings and no relay
+ * route for other devices.
  *
  * macOS only (it relies on ditto, codesign, open, and security). When an
  * "Apple Development" identity is in the keychain the app
@@ -20,15 +32,29 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import * as NodeUtil from "node:util";
+
+import { loadRepoEnv } from "./lib/public-config.ts";
 
 const PRODUCT_NAME = "T3 Code (Fork)";
 const BUNDLE_ID = "com.t3tools.t3code.fork";
 const APPLICATIONS_DIR = "/Applications";
+const CONNECT_ENV_KEYS = [
+  "T3CODE_CLERK_PUBLISHABLE_KEY",
+  "T3CODE_CLERK_JWT_TEMPLATE",
+  "T3CODE_CLERK_CLI_OAUTH_CLIENT_ID",
+  "T3CODE_RELAY_URL",
+] as const;
 
 const repoRoot = NodePath.dirname(import.meta.dirname);
 const args = process.argv.slice(2);
 const launch = !args.includes("--no-launch");
 const skipBuild = args.includes("--skip-build");
+const buildOnly = args.includes("--build-only");
+const allowNoConnect = args.includes("--allow-no-connect");
+if (skipBuild && buildOnly) {
+  throw new Error("--skip-build and --build-only together would do nothing.");
+}
 const identityIndex = args.indexOf("--identity");
 const identityArg = identityIndex === -1 ? undefined : args[identityIndex + 1];
 if (identityIndex !== -1 && !identityArg) {
@@ -101,6 +127,34 @@ for (const key of Object.keys(env)) {
   }
 }
 
+const repoEnv = loadRepoEnv({ baseEnv: env, repoRoot });
+if (!repoEnv.T3CODE_CLERK_PUBLISHABLE_KEY?.trim() && !repoEnv.T3CODE_RELAY_URL?.trim()) {
+  const exampleEnv = NodeUtil.parseEnv(
+    NodeFS.readFileSync(NodePath.join(repoRoot, ".env.example"), "utf8"),
+  );
+  for (const key of CONNECT_ENV_KEYS) {
+    const value = exampleEnv[key]?.trim();
+    if (value) env[key] = value;
+  }
+  console.log("[fork-install] No T3 Connect config in the env or .env; using .env.example");
+}
+const connectMarkers = ["T3CODE_RELAY_URL", "T3CODE_CLERK_PUBLISHABLE_KEY"].map(
+  (key) => env[key]?.trim() || repoEnv[key]?.trim(),
+);
+
+// Clerk keys and the relay URL are compiled into the server and web bundles as
+// plain strings, so their absence from app.asar means Connect is off.
+function assertConnectCompiledIn(builtApp: string) {
+  if (allowNoConnect) return;
+  const asar = NodeFS.readFileSync(NodePath.join(builtApp, "Contents/Resources/app.asar"));
+  if (connectMarkers.every((marker) => marker && asar.includes(marker))) return;
+  throw new Error(
+    "This build has T3 Connect compiled out, so other devices could only reach it on the " +
+      "local network. Build it with this script instead of build-desktop-artifact.ts, or pass " +
+      "--allow-no-connect.",
+  );
+}
+
 if (!skipBuild) {
   const version = resolveForkVersion();
   NodeFS.rmSync(outputDir, { recursive: true, force: true });
@@ -129,18 +183,7 @@ if (!zipName) {
   throw new Error(`No .zip artifact in ${outputDir}. Run without --skip-build.`);
 }
 
-const extractDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3code-fork-install-"));
-try {
-  run("ditto", ["-x", "-k", NodePath.join(outputDir, zipName), extractDir]);
-  const appName = NodeFS.readdirSync(extractDir).find((entry) => entry.endsWith(".app"));
-  if (!appName) throw new Error(`${zipName} did not contain an .app bundle.`);
-  if (appName !== `${PRODUCT_NAME}.app`) {
-    throw new Error(
-      `Built ${appName}, expected ${PRODUCT_NAME}.app. Is the version a -fork. version?`,
-    );
-  }
-  const builtApp = NodePath.join(extractDir, appName);
-
+function installBuiltApp(builtApp: string) {
   const identity = resolveSigningIdentity();
   if (identity) {
     console.log(`[fork-install] Signing with "${identity}"`);
@@ -149,7 +192,7 @@ try {
     console.log("[fork-install] No signing identity; keeping the ad-hoc signature.");
   }
 
-  const installedApp = NodePath.join(APPLICATIONS_DIR, appName);
+  const installedApp = NodePath.join(APPLICATIONS_DIR, NodePath.basename(builtApp));
   if (NodeFS.existsSync(installedApp)) {
     console.log(`[fork-install] Quitting the running ${PRODUCT_NAME}`);
     run("osascript", [
@@ -170,6 +213,25 @@ try {
 
   if (launch) {
     run("open", ["-a", installedApp], { env });
+  }
+}
+
+const extractDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3code-fork-install-"));
+try {
+  run("ditto", ["-x", "-k", NodePath.join(outputDir, zipName), extractDir]);
+  const appName = NodeFS.readdirSync(extractDir).find((entry) => entry.endsWith(".app"));
+  if (!appName) throw new Error(`${zipName} did not contain an .app bundle.`);
+  if (appName !== `${PRODUCT_NAME}.app`) {
+    throw new Error(
+      `Built ${appName}, expected ${PRODUCT_NAME}.app. Is the version a -fork. version?`,
+    );
+  }
+  const builtApp = NodePath.join(extractDir, appName);
+  assertConnectCompiledIn(builtApp);
+  if (buildOnly) {
+    console.log(`[fork-install] Built ${NodePath.join(outputDir, zipName)}; not installing`);
+  } else {
+    installBuiltApp(builtApp);
   }
 } finally {
   NodeFS.rmSync(extractDir, { recursive: true, force: true });

@@ -662,7 +662,14 @@ export function CloudLinkRow({
   readonly canReadRelay: boolean;
   readonly canManageRelay: boolean;
 }) {
-  if (!hasCloudPublicConfig()) return null;
+  if (!hasCloudPublicConfig()) {
+    return (
+      <SettingsRow
+        title="T3 Connect"
+        description="Not available in this build. It was built without the T3 Connect config from .env.example, so other devices can only reach it over the local network or Tailscale."
+      />
+    );
+  }
   if (!canReadRelay) {
     return (
       <SettingsRow
