@@ -5,7 +5,16 @@ import {
   type CDPSession,
   type Page,
 } from "playwright-core";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vite-plus/test";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vite-plus/test";
 
 import * as ServerBrowserPage from "./ServerBrowserPage.ts";
 
@@ -30,11 +39,12 @@ describe("server browser element refs", () => {
     await context.close();
   });
 
-  const takeSnapshot = () =>
+  const takeSnapshot = (includeImage = false, renderScale: number | "display" = 1) =>
     ServerBrowserPage.snapshot({
       page,
       cdp,
-      renderScale: 1,
+      includeImage,
+      renderScale,
       consoleEntries: [],
       networkEntries: [],
       actionTimeline: [],
@@ -55,6 +65,29 @@ describe("server browser element refs", () => {
     return locator!;
   };
   const repeatedRows = `<ul>${Array.from({ length: 5 }, (_, i) => `<li>row ${i + 1}<button data-testid="delete-row" onclick="this.parentElement.remove()">delete</button></li>`).join("")}</ul>`;
+
+  it.each([1, "display"] as const)(
+    "captures PNGs only on request and keeps text-only refs usable (renderScale=%s)",
+    async (renderScale) => {
+      await page.setContent("<button onclick=\"this.textContent='saved'\">save</button>");
+      using send = vi.spyOn(cdp, "send");
+      const text = await takeSnapshot(false, renderScale);
+      expect(text).not.toHaveProperty("screenshot");
+      expect(send.mock.calls.map(([method]) => method)).not.toContain("Page.captureScreenshot");
+      expect(send.mock.calls.map(([method]) => method)).not.toContain("Page.getLayoutMetrics");
+      await ServerBrowserPage.click(page, {
+        locator: buttonLocator(text.accessibilityTree, "save"),
+      });
+      expect(await page.locator("button").textContent()).toBe("saved");
+
+      const image = await takeSnapshot(true, renderScale);
+      expect(image.screenshot).toMatchObject({ mimeType: "image/png", width: 1280, height: 720 });
+      expect(Buffer.from(image.screenshot!.data, "base64").subarray(0, 8)).toEqual(
+        Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+      );
+      expect(image.accessibilityTree).toContain('button "saved"');
+    },
+  );
 
   it("clicks the fifth repeated delete control without touching row one", async () => {
     await page.setContent(repeatedRows);
