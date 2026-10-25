@@ -30,6 +30,7 @@ import {
   type PreviewAutomationSelectInput,
   type PreviewAutomationSetColorSchemeInput,
   type PreviewAutomationSnapshotInput,
+  type PreviewAutomationObserveInput,
   type PreviewAutomationStatus,
   type PreviewAutomationTypeInput,
   type PreviewAutomationUploadInput,
@@ -341,6 +342,7 @@ interface ServerDownload {
 const READ_OPERATIONS: ReadonlySet<PreviewAutomationRequest["operation"]> = new Set([
   "status",
   "snapshot",
+  "observe",
   "waitFor",
 ]);
 
@@ -1968,6 +1970,18 @@ const make = Effect.gen(function* () {
         await applyRendering(tab, snapshot);
         return { tabId: tab.tabId, colorScheme };
       }
+      case "observe":
+        return withCaptureLock(tab, () =>
+          ServerBrowserPage.observe(
+            {
+              ...tab,
+              includeImage: false,
+              renderScale: tab.desktop ? "display" : RENDER_SCALE,
+            },
+            request.agentSessionId,
+            (input as PreviewAutomationObserveInput).baselineId,
+          ),
+        );
       case "snapshot": {
         const includeImage = (input as PreviewAutomationSnapshotInput).includeImage === true;
         const snapshot = () =>

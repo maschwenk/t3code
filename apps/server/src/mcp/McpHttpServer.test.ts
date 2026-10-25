@@ -7,6 +7,7 @@ import {
   EnvironmentId,
   OrchestratorMcpFailure,
   PreviewTabId,
+  PREVIEW_AUTOMATION_SERVER_OPERATIONS,
   ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
@@ -115,7 +116,11 @@ const serveSnapshots = (clientId: string, result: unknown) =>
     const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
     const connected = yield* Deferred.make<void>();
     const inputs: Array<unknown> = [];
-    const events = yield* broker.connect({ clientId, environmentId });
+    const events = yield* broker.connect({
+      clientId,
+      environmentId,
+      supportedOperations: [...PREVIEW_AUTOMATION_SERVER_OPERATIONS],
+    });
     yield* Stream.runForEach(events, (event) => {
       if (event.type === "connected") return Deferred.succeed(connected, undefined);
       inputs.push(event.request.input);
@@ -179,6 +184,31 @@ const layerRecordingTools = (calls: Array<unknown>) => {
     ),
   );
 };
+
+it.effect("preserves compact observation revisions and patches through the MCP transport", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const observation = {
+        mode: "delta",
+        revision: "new",
+        baselineId: "known",
+        refPrefix: "t3-new-",
+        url: "https://example.test/",
+        title: "Example",
+        loading: false,
+        readiness: "dom_quiet",
+        truncated: false,
+        patch: { startLine: 2, deleteCount: 1, lines: ['- button "saved" [ref=e3]'] },
+      };
+      const inputs = yield* serveSnapshots("mcp-observation", observation);
+      const result = yield* callTool("preview_observe", { baselineId: "known" });
+      expect(result.isError).toBe(false);
+      expect(result.structuredContent).toEqual(observation);
+      expect(result.content).toHaveLength(1);
+      expect(inputs).toEqual([{ baselineId: "known" }]);
+    }),
+  ).pipe(Effect.provide(layerTest)),
+);
 
 it.effect.each([{}, { includeImage: false }])(
   "returns bounded structural preview snapshot failures %#",
