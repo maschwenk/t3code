@@ -21,6 +21,8 @@ import {
   PreviewAutomationSetColorSchemeResult,
   PreviewAutomationSnapshot,
   PreviewAutomationSnapshotInput,
+  PreviewAutomationObserveInput,
+  PreviewAutomationObservation,
   PreviewAutomationStatus,
   PreviewAutomationTabTargetInput,
   PreviewAutomationTypeInput,
@@ -134,6 +136,17 @@ const PreviewSetAppearanceTool = safeBrowserTool(
   })
     .annotate(Tool.Title, "Set preview appearance")
     .annotate(Tool.Idempotent, true),
+);
+
+const PreviewObserveTool = readonlyBrowserTool(
+  Tool.make("preview_observe", {
+    description:
+      "Read a compact, text-only page view. Starts with a full tree; pass baselineId=revision only while you retain that tree to receive a zero-based line splice patch. Apply patch by deleting deleteCount lines at startLine and inserting lines. Every response has a fresh refPrefix: use locator=aria-ref=<refPrefix><ref> for refs in the reconstructed tree. Old locators expire. Omit baselineId after compaction or uncertainty. Navigation, takeover or an expired baseline returns a full view. Waits up to 750ms for 100ms of main-document DOM quiet; budget_exhausted means still changing, and dom_quiet is not proof the task finished. Use preview_wait_for for a specific outcome. Use preview_snapshot for screenshots or diagnostics.",
+    parameters: PreviewAutomationObserveInput,
+    success: PreviewAutomationObservation,
+    failure: PreviewToolFailure,
+    dependencies,
+  }).annotate(Tool.Title, "Observe browser changes"),
 );
 
 // Not read-only: save=true writes the screenshot to disk.
@@ -306,6 +319,7 @@ const PreviewRecordingStopTool = safeBrowserTool(
 export const PreviewToolkit = Toolkit.make(
   PreviewDialogTool,
   PreviewStatusTool,
+  PreviewObserveTool,
   PreviewOpenTool,
   PreviewNavigateTool,
   PreviewResizeTool,
@@ -328,6 +342,7 @@ export const PreviewToolkit = Toolkit.make(
 export const PreviewStandardToolkit = Toolkit.make(
   PreviewDialogTool,
   PreviewStatusTool,
+  PreviewObserveTool,
   PreviewOpenTool,
   PreviewNavigateTool,
   PreviewResizeTool,

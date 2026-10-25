@@ -3,6 +3,7 @@
 import {
   PROVIDER_SEND_TURN_MAX_FILE_BYTES,
   type PreviewAutomationClickInput,
+  type PreviewAutomationObservation,
   type PreviewAutomationConsoleEntry,
   type PreviewAutomationDragInput,
   type PreviewAutomationEvaluateInput,
@@ -65,7 +66,10 @@ export const toOperationError = (cause: unknown): ServerBrowserOperationError =>
 
 const DEFAULT_TIMEOUT_MS = 15_000;
 
-const pageRefs = new WeakMap<Page, { generation: string; refs: Map<string, string> }>();
+const pageRefs = new WeakMap<
+  Page,
+  { generation: string; epoch: string; refs: Map<string, string> }
+>();
 // A compact runtime namespace prevents old refs from aliasing after a server restart.
 const refNamespace = NodeCrypto.randomUUID().slice(0, 8);
 let snapshotSequence = 0;
@@ -75,7 +79,7 @@ const nextRefGeneration = () => `${refNamespace}-${(++snapshotSequence).toString
 export const invalidateRefs = (page: Page) => {
   const state = pageRefs.get(page);
   if (state) {
-    state.generation = nextRefGeneration();
+    state.epoch = state.generation = nextRefGeneration();
     state.refs.clear();
   }
 };
@@ -83,7 +87,11 @@ export const invalidateRefs = (page: Page) => {
 const refsFor = (page: Page) => {
   let state = pageRefs.get(page);
   if (!state) {
-    state = { generation: nextRefGeneration(), refs: new Map<string, string>() };
+    state = {
+      generation: nextRefGeneration(),
+      epoch: nextRefGeneration(),
+      refs: new Map<string, string>(),
+    };
     pageRefs.set(page, state);
     page.on("framenavigated", () => invalidateRefs(page));
     page.on("framedetached", () => invalidateRefs(page));
@@ -508,6 +516,7 @@ type SnapshotInput = {
   readonly page: Page;
   readonly cdp: CDPSession;
   readonly includeImage: boolean;
+  readonly settle?: boolean;
   /** Headless pages render at the scale the server set; a desktop page at its display's. */
   readonly renderScale: number | "display";
   readonly consoleEntries: ReadonlyArray<PreviewAutomationConsoleEntry>;
@@ -541,8 +550,11 @@ const capture = async (
   // A late metrics reply must not begin a capture after viewers have resumed.
   if (Date.now() >= deadline) throw tooBusy();
   const state = refsFor(input.page);
-  invalidateRefs(input.page);
+  state.generation = nextRefGeneration();
+  state.refs.clear();
   const generation = state.generation;
+  const epoch = state.epoch;
+  const readiness = input.settle ? await waitForQuiet(input.cdp) : "dom_quiet";
   const { readers, read } = await openReaders(input.page, input.cdp);
   const before = await read();
   // Taken between the reads, so a value that changes during either fails the comparison.
@@ -595,14 +607,15 @@ const capture = async (
   // Redacted before the cut, so a payload crossing it can't leave its start showing, and before
   // masking, which could hide the `data:` scheme behind a password value's dots.
   const redacted = withoutTreeDataPayloads(tree);
-  const accessibilityTree = (dotted ? maskTree(redacted, dotted) : redacted)
+  const maskedTree = dotted ? maskTree(redacted, dotted) : redacted;
+  const accessibilityTree = maskedTree
     .slice(0, MAX_VISIBLE_TEXT_LENGTH)
     .replace(/\[ref=((?:f\d+)?e\d+)\]/g, (_match, nativeRef: string) => {
       const ref = `t3-${generation}-${nativeRef}`;
       state.refs.set(ref, nativeRef);
       return `[ref=${ref}]`;
     });
-  return {
+  const result = {
     ...page,
     // Text that holds a value would otherwise show where the tree masked it. Masked before
     // the cut, so a value crossing it can't leave its start showing.
@@ -613,8 +626,139 @@ const capture = async (
     actionTimeline: [...input.actionTimeline],
     ...(data === undefined
       ? {}
-      : { screenshot: { mimeType: "image/png", data, ...pngSize(data) } }),
+      : { screenshot: { mimeType: "image/png" as const, data, ...pngSize(data) } }),
   };
+  captureRevisions.set(result, {
+    generation,
+    epoch,
+    readiness,
+    truncated: maskedTree.length > MAX_VISIBLE_TEXT_LENGTH,
+  });
+  return result;
+};
+
+const captureRevisions = new WeakMap<
+  PreviewAutomationSnapshot,
+  {
+    generation: string;
+    epoch: string;
+    truncated: boolean;
+    readiness: PreviewAutomationObservation["readiness"];
+  }
+>();
+
+// Isolated-world timers and observers cannot be replaced by page scripts. This
+// bounds main-document mutation quiet, not network completion or app readiness.
+const waitForQuiet = async (
+  cdp: CDPSession,
+): Promise<PreviewAutomationObservation["readiness"]> => {
+  const { frameTree } = await cdp.send("Page.getFrameTree");
+  const { executionContextId } = await cdp.send("Page.createIsolatedWorld", {
+    frameId: frameTree.frame.id,
+    worldName: "t3-observation-readiness",
+  });
+  const { result, exceptionDetails } = await cdp.send("Runtime.evaluate", {
+    contextId: executionContextId,
+    awaitPromise: true,
+    returnByValue: true,
+    expression: `new Promise(resolve => {
+      let quiet;
+      const finish = value => {
+        clearTimeout(quiet); clearTimeout(limit); observer.disconnect();
+        document.removeEventListener('DOMContentLoaded', changed);
+        resolve(value);
+      };
+      const changed = () => {
+        clearTimeout(quiet);
+        if (document.readyState !== 'loading') quiet = setTimeout(() => finish('dom_quiet'), 100);
+      };
+      const observer = new MutationObserver(changed);
+      observer.observe(document, {subtree: true, childList: true, attributes: true, characterData: true});
+      document.addEventListener('DOMContentLoaded', changed);
+      const limit = setTimeout(() => finish('budget_exhausted'), 750);
+      changed();
+    })`,
+  });
+  if (exceptionDetails || (result.value !== "dom_quiet" && result.value !== "budget_exhausted"))
+    throw pageChanged();
+  return result.value;
+};
+
+type Baseline = { revision: string; epoch: string; tree: string; at: number };
+const observations = new WeakMap<Page, Map<string, Baseline>>();
+const OBSERVATION_BYTES = 16_000;
+
+/** Baselines store exactly the bounded, redacted tree the caller received. */
+export const observe = async (
+  input: SnapshotInput,
+  caller: string | undefined,
+  baselineId?: string,
+): Promise<PreviewAutomationObservation> => {
+  const captured = await snapshot({ ...input, includeImage: false, settle: true });
+  const revision = captureRevisions.get(captured)!;
+  if (refsFor(input.page).generation !== revision.generation) throw pageChanged();
+  const refPrefix = `t3-${revision.generation}-`;
+  const normalized = String(captured.accessibilityTree || captured.visibleText).replace(
+    /\[ref=t3-[a-z0-9-]+-((?:f\d+)?e\d+)\]/g,
+    "[ref=$1]",
+  );
+  let tree = "";
+  let bytes = 0;
+  for (const line of normalized.split("\n")) {
+    const size = Buffer.byteLength(line) + (tree ? 1 : 0);
+    if (bytes + size > OBSERVATION_BYTES) break;
+    tree += (tree ? "\n" : "") + line;
+    bytes += size;
+  }
+  const current = {
+    revision: revision.generation,
+    refPrefix,
+    url: withoutDataPayload(captured.url).slice(0, 2048),
+    title: captured.title.slice(0, 512),
+    loading: captured.loading,
+    readiness: revision.readiness,
+    truncated: revision.truncated || tree.length < normalized.length,
+  };
+  let history = observations.get(input.page);
+  if (!history) {
+    history = new Map();
+    observations.set(input.page, history);
+  }
+  const now = Date.now();
+  for (const [key, value] of history) if (now - value.at > 5 * 60_000) history.delete(key);
+  const previous = caller === undefined ? undefined : history.get(caller);
+  if (caller !== undefined) {
+    history.delete(caller);
+    const oldest = history.keys().next().value;
+    if (history.size >= 8 && oldest !== undefined) history.delete(oldest);
+    history.set(caller, { revision: current.revision, epoch: revision.epoch, tree, at: now });
+  }
+  if (previous && previous.revision === baselineId && previous.epoch === revision.epoch) {
+    const before = previous.tree.split("\n");
+    const after = tree.split("\n");
+    let startLine = 0;
+    while (
+      startLine < before.length &&
+      startLine < after.length &&
+      before[startLine] === after[startLine]
+    )
+      startLine++;
+    let suffix = 0;
+    while (
+      suffix < before.length - startLine &&
+      suffix < after.length - startLine &&
+      before[before.length - 1 - suffix] === after[after.length - 1 - suffix]
+    )
+      suffix++;
+    const patch = {
+      startLine,
+      deleteCount: before.length - startLine - suffix,
+      lines: after.slice(startLine, after.length - suffix),
+    };
+    if (Buffer.byteLength(JSON.stringify(patch)) < Buffer.byteLength(JSON.stringify(tree)))
+      return { ...current, mode: "delta", baselineId, patch };
+  }
+  return { ...current, mode: "full", tree };
 };
 
 /** Snapshots begun per page; observers' snapshots aren't queued, so two can overlap. */

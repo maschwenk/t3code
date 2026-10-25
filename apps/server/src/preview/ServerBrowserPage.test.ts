@@ -89,6 +89,87 @@ describe("server browser element refs", () => {
     },
   );
 
+  const observe = (baselineId?: string, caller = "agent-a") =>
+    ServerBrowserPage.observe(
+      {
+        page,
+        cdp,
+        includeImage: false,
+        renderScale: 1,
+        consoleEntries: [],
+        networkEntries: [],
+        actionTimeline: [],
+      },
+      caller,
+      baselineId,
+    );
+
+  it("returns reconstructable changes with fresh refs and a full view after takeover", async () => {
+    await page.setContent(repeatedRows);
+    const first = await observe();
+    expect(first.mode).toBe("full");
+    if (first.mode !== "full") throw new Error("Expected initial full observation");
+    await page
+      .locator("li")
+      .last()
+      .evaluate((element) => {
+        element.firstChild!.textContent = "changed";
+      });
+    const next = await observe(first.revision);
+    expect(next.mode).toBe("delta");
+    if (next.mode !== "delta") throw new Error("Expected delta");
+    const lines = first.tree.split("\n");
+    lines.splice(next.patch.startLine, next.patch.deleteCount, ...next.patch.lines);
+    expect(lines.join("\n")).toContain("changed");
+    const ref = /\[ref=([^\]]+)\]/.exec(first.tree)![1];
+    await expect(
+      ServerBrowserPage.click(page, { locator: `aria-ref=${first.refPrefix}${ref}` }),
+    ).rejects.toThrow("stale");
+    const buttonRef = /button "delete" \[ref=([^\]]+)\]/.exec(lines.join("\n"))![1];
+    await ServerBrowserPage.click(page, { locator: `aria-ref=${next.refPrefix}${buttonRef}` });
+    expect(await page.locator("li").count()).toBe(4);
+    ServerBrowserPage.invalidateRefs(page);
+    expect((await observe(next.revision)).mode).toBe("full");
+  });
+
+  it("requires the caller's explicit current baseline and resets across navigation", async () => {
+    await page.setContent(repeatedRows);
+    const first = await observe();
+    expect((await observe(first.revision, "agent-b")).mode).toBe("full");
+    expect((await observe()).mode).toBe("full");
+    expect((await observe(first.revision)).mode).toBe("full");
+    const current = await observe();
+    await page.goto("data:text/html,<button>new document</button>");
+    expect((await observe(current.revision)).mode).toBe("full");
+  });
+
+  it("bounds readiness on a changing page and reports quiet after mutations stop", async () => {
+    await page.setContent(`<p>loading</p><script>
+      let count = 0;
+      window.changes = setInterval(() => document.querySelector('p').textContent = String(++count), 20);
+    </script>`);
+    const busy = await observe();
+    expect(busy.readiness).toBe("budget_exhausted");
+    await page.evaluate(
+      "clearInterval(window.changes); document.querySelector('p').textContent = 'ready'",
+    );
+    const ready = await observe();
+    expect(ready.readiness).toBe("dom_quiet");
+    expect(ready.mode === "full" && ready.tree).toContain("ready");
+  });
+
+  it("bounds the emitted baseline without leaking password values", async () => {
+    await page.setContent(
+      `<input type="password" value="private-value"><p>${"😀".repeat(6000)}</p><button>save</button>`,
+    );
+    const first = await observe();
+    expect(first.mode).toBe("full");
+    if (first.mode !== "full") throw new Error("Expected full observation");
+    expect(Buffer.byteLength(first.tree)).toBeLessThanOrEqual(16_000);
+    expect(first.truncated).toBe(true);
+    expect(JSON.stringify(first)).not.toContain("private-value");
+  });
+
   it("clicks the fifth repeated delete control without touching row one", async () => {
     await page.setContent(repeatedRows);
     const result = await takeSnapshot();

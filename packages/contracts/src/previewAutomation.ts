@@ -49,6 +49,7 @@ const PREVIEW_AUTOMATION_OPERATIONS = [
 export const PREVIEW_AUTOMATION_SERVER_OPERATIONS = [
   ...PREVIEW_AUTOMATION_OPERATIONS,
   "dialog",
+  "observe",
   "close",
   "upload",
   "hover",
@@ -83,6 +84,41 @@ export const PreviewAutomationSnapshotInput = Schema.Struct({
   ),
 });
 export type PreviewAutomationSnapshotInput = typeof PreviewAutomationSnapshotInput.Type;
+
+export const PreviewAutomationObserveInput = Schema.Struct({
+  ...PreviewAutomationTabTargetFields,
+  baselineId: Schema.optional(
+    Schema.String.check(Schema.isMaxLength(128)).annotate({
+      description:
+        "Revision of a previous observation whose full tree you still have. Omit after compaction or to request a full view.",
+    }),
+  ),
+});
+export type PreviewAutomationObserveInput = typeof PreviewAutomationObserveInput.Type;
+
+const ObservationFields = {
+  revision: Schema.String,
+  refPrefix: Schema.String,
+  url: Schema.String,
+  title: Schema.String,
+  loading: Schema.Boolean,
+  readiness: Schema.Literals(["dom_quiet", "budget_exhausted"]),
+  truncated: Schema.Boolean,
+};
+export const PreviewAutomationObservation = Schema.Union([
+  Schema.Struct({ ...ObservationFields, mode: Schema.Literal("full"), tree: Schema.String }),
+  Schema.Struct({
+    ...ObservationFields,
+    mode: Schema.Literal("delta"),
+    baselineId: Schema.String,
+    patch: Schema.Struct({
+      startLine: Schema.Int,
+      deleteCount: Schema.Int,
+      lines: Schema.Array(Schema.String),
+    }),
+  }),
+]);
+export type PreviewAutomationObservation = typeof PreviewAutomationObservation.Type;
 
 export const PreviewAutomationTabOwner = Schema.Literals(["agent", "human", "unclaimed"]);
 
