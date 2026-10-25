@@ -21,7 +21,9 @@
  * `.env.example` (the values official releases ship), and the install refuses
  * a bundle without them unless `--allow-no-connect` is passed. Otherwise a
  * fresh checkout silently builds an app with no Connect settings and no relay
- * route for other devices.
+ * route for other devices. After launching, it also waits for the relaunched
+ * app to report T3 Connect reachable, and fails with a macOS alert if it does
+ * not.
  *
  * macOS only (it relies on ditto, codesign, open, and security). When an
  * "Apple Development" identity is in the keychain the app
@@ -183,6 +185,84 @@ if (!zipName) {
   throw new Error(`No .zip artifact in ${outputDir}. Run without --skip-build.`);
 }
 
+interface ConnectStatus {
+  readonly desired: boolean;
+  readonly linkMode: string | null;
+  readonly reachability:
+    | { readonly status: "reachable"; readonly readyConnections: number | null }
+    | { readonly status: "unreachable"; readonly reason: string; readonly fix: string }
+    | null;
+}
+
+function readConnectStatus(installedApp: string): ConnectStatus | null {
+  const result = NodeChildProcess.spawnSync(
+    NodePath.join(installedApp, "Contents/MacOS", PRODUCT_NAME),
+    [
+      NodePath.join(installedApp, "Contents/Resources/app.asar/apps/server/dist/bin.mjs"),
+      "connect",
+      "status",
+      "--json",
+    ],
+    { encoding: "utf8", env: { ...env, ELECTRON_RUN_AS_NODE: "1" }, timeout: 30_000 },
+  );
+  if (result.status !== 0) return null;
+  try {
+    return JSON.parse(result.stdout) as ConnectStatus;
+  } catch {
+    return null;
+  }
+}
+
+// An install usually runs from a detached script after the agent that started
+// it quit with the app, so a thrown error alone lands in a log nobody reads.
+function alertConnectDown(message: string) {
+  NodeChildProcess.spawn(
+    "osascript",
+    [
+      "-e",
+      "on run argv",
+      "-e",
+      'display alert "T3 Connect is not running" message (item 1 of argv) as critical',
+      "-e",
+      "end run",
+      message,
+    ],
+    { detached: true, stdio: "ignore" },
+  ).unref();
+}
+
+// The bundle check proves Connect was compiled in, not that the relaunched app
+// brought the saved link back. Wait for the tunnel to answer, as other devices
+// would see it. A restart takes about a minute: the old server releases the
+// tunnel on quit and the new one re-provisions it.
+function assertConnectReachable(installedApp: string) {
+  console.log("[fork-install] Waiting for T3 Connect to come back up");
+  const deadline = Date.now() + 180_000;
+  let status: ConnectStatus | null = null;
+  while (Date.now() < deadline) {
+    status = readConnectStatus(installedApp);
+    if (status?.reachability?.status === "reachable") {
+      console.log(
+        `[fork-install] T3 Connect is reachable (${status.reachability.readyConnections ?? "?"} connections)`,
+      );
+      return;
+    }
+    if (status && (!status.desired || status.linkMode !== "managed")) break;
+    NodeChildProcess.spawnSync("sleep", ["5"]);
+  }
+  const detail =
+    status === null
+      ? "`t3 connect status` did not answer."
+      : !status.desired || status.linkMode !== "managed"
+        ? "T3 Connect is turned off on this machine. Turn it on in Settings → Connections."
+        : status.reachability?.status === "unreachable"
+          ? `${status.reachability.reason} Fix: ${status.reachability.fix}`
+          : "The tunnel did not report reachable within 3 minutes.";
+  const message = `${PRODUCT_NAME} is installed and running, but other devices cannot reach it. ${detail}`;
+  alertConnectDown(message);
+  throw new Error(`${message} Pass --allow-no-connect to skip this check.`);
+}
+
 function installBuiltApp(builtApp: string) {
   const identity = resolveSigningIdentity();
   if (identity) {
@@ -213,6 +293,7 @@ function installBuiltApp(builtApp: string) {
 
   if (launch) {
     run("open", ["-a", installedApp], { env });
+    if (!allowNoConnect) assertConnectReachable(installedApp);
   }
 }
 
