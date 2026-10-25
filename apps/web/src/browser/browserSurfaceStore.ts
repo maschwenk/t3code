@@ -1,3 +1,4 @@
+import { DESKTOP_PREVIEW_RENDERING_LEASE } from "@t3tools/contracts";
 import { create } from "zustand";
 
 export interface BrowserSurfaceRect {
@@ -206,6 +207,46 @@ export const useBrowserSurfaceStore = create<BrowserSurfaceStoreState>()((set) =
 
 export const acquireBrowserSurfaceActivity = (tabId: string): (() => void) =>
   useBrowserSurfaceStore.getState().acquireActivity(tabId);
+
+// Released by the desktop app after its capture; this only bounds a lease it never released.
+const RENDERING_LEASE_MAX_MS = 30_000;
+// A hidden or minimized window runs no animation frames.
+const RENDERING_LEASE_PAINT_WAIT_MS = 250;
+const renderingLeases = new Map<number, () => void>();
+let nextRenderingLeaseId = 0;
+
+// Electron draws no frames for a webview parked outside the window, so a screenshot of an
+// inactive tab never returns. The desktop app holds a lease around each capture.
+Object.defineProperty(globalThis, DESKTOP_PREVIEW_RENDERING_LEASE, {
+  configurable: true,
+  value: {
+    acquire: (tabId: unknown): Promise<number> | null => {
+      if (typeof tabId !== "string") return null;
+      const leaseId = ++nextRenderingLeaseId;
+      const releaseActivity = acquireBrowserSurfaceActivity(tabId);
+      const release = () => {
+        if (!renderingLeases.delete(leaseId)) return;
+        window.clearTimeout(expiry);
+        releaseActivity();
+      };
+      const expiry = window.setTimeout(release, RENDERING_LEASE_MAX_MS);
+      renderingLeases.set(leaseId, release);
+      // Resolves once the moved webview has had a frame to paint in.
+      return new Promise((resolve) => {
+        const fallback = window.setTimeout(() => resolve(leaseId), RENDERING_LEASE_PAINT_WAIT_MS);
+        window.requestAnimationFrame(() =>
+          window.requestAnimationFrame(() => {
+            window.clearTimeout(fallback);
+            resolve(leaseId);
+          }),
+        );
+      });
+    },
+    release: (leaseId: unknown) => {
+      if (typeof leaseId === "number") renderingLeases.get(leaseId)?.();
+    },
+  },
+});
 
 export function acquireBrowserSurface(
   tabId: string,

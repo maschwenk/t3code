@@ -9,6 +9,7 @@ import * as NodeZlib from "node:zlib";
 import {
   DesktopPreviewRecordingInputSchema,
   DESKTOP_PREVIEW_RECORDING_CAPTURE_TRIGGER,
+  DESKTOP_PREVIEW_RENDERING_LEASE,
 } from "@t3tools/contracts";
 import type {
   DesktopPreviewAnnotationTheme,
@@ -138,6 +139,28 @@ const PICTURE_IN_PICTURE_ASPECT_RATIO_EPSILON = 0.002;
 const MAX_ARTIFACT_SITE_SLUG_LENGTH = 80;
 const requestRecordingCaptureExpression = (tabId: string): string =>
   `globalThis[${JSON.stringify(DESKTOP_PREVIEW_RECORDING_CAPTURE_TRIGGER)}]?.(${JSON.stringify(tabId)}) === true`;
+const RENDERING_LEASE = `globalThis[${JSON.stringify(DESKTOP_PREVIEW_RENDERING_LEASE)}]`;
+const RENDERING_LEASE_ACQUIRE_TIMEOUT_MS = 1_000;
+const acquireRenderingLeaseExpression = (tabId: string): string =>
+  `${RENDERING_LEASE}?.acquire(${JSON.stringify(tabId)}) ?? null`;
+/** Without a lease, such as from a busy or closed window, the capture runs as it would have. */
+const holdGuestRendering =
+  (wc: Electron.WebContents, tabId: string) => async (): Promise<() => void> => {
+    const host = wc.hostWebContents;
+    if (!host || host.isDestroyed()) return () => {};
+    const leaseId: unknown = await Effect.runPromise(
+      Effect.tryPromise(() => host.executeJavaScript(acquireRenderingLeaseExpression(tabId))).pipe(
+        Effect.timeoutOption(RENDERING_LEASE_ACQUIRE_TIMEOUT_MS),
+        Effect.map(Option.getOrNull),
+        Effect.orElseSucceed(() => null),
+      ),
+    );
+    if (typeof leaseId !== "number") return () => {};
+    return () => {
+      if (host.isDestroyed()) return;
+      host.executeJavaScript(`${RENDERING_LEASE}?.release(${leaseId})`).catch(() => {});
+    };
+  };
 const DEFAULT_ANNOTATION_THEME: DesktopPreviewAnnotationTheme = {
   colorScheme: "light",
   radius: "0.625rem",
@@ -2387,7 +2410,11 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       }
       if (afterAttach.serverTab) {
         yield* listenForAgentPointers;
-        browserHost.attach(afterAttach.serverTab, { webContents: wc, debugger: control.debugger });
+        browserHost.attach(afterAttach.serverTab, {
+          webContents: wc,
+          debugger: control.debugger,
+          holdRendering: holdGuestRendering(wc, tabId),
+        });
       }
       if (afterAttach.colorScheme !== "system") {
         yield* attemptPromise({ operation: "applyColorScheme", tabId, webContentsId: wc.id }, () =>
