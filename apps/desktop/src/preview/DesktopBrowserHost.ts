@@ -35,6 +35,12 @@ export interface DesktopBrowserTabKey {
 export interface DesktopBrowserTabDebugger {
   readonly webContents: Electron.WebContents;
   readonly debugger: Electron.Debugger;
+  /**
+   * Keeps the guest compositing until the returned release runs. Electron draws
+   * no frames for a webview parked outside the window, so a screenshot of an
+   * inactive tab would never return.
+   */
+  readonly holdRendering?: () => Promise<() => void>;
 }
 
 const keyOf = ({ threadId, tabId }: DesktopBrowserTabKey) => `${threadId}\u0000${tabId}`;
@@ -86,13 +92,21 @@ export const make = Effect.gen(function* () {
 
   const relayFor = (tab: AttachedTab) => {
     if (tab.relay) return tab.relay;
-    const { webContents, debugger: debuggee } = tab.debuggee;
+    const { webContents, debugger: debuggee, holdRendering } = tab.debuggee;
     const relay: CdpRelayConnection = createCdpRelayConnection(
       {
-        send: (method, params, sessionId) =>
-          sessionId === undefined
-            ? sendPageCommand(webContents, debuggee, method, params)
-            : debuggee.sendCommand(method, params, sessionId),
+        send: async (method, params, sessionId) => {
+          if (sessionId !== undefined) return debuggee.sendCommand(method, params, sessionId);
+          if (method !== "Page.captureScreenshot" || !holdRendering) {
+            return sendPageCommand(webContents, debuggee, method, params);
+          }
+          const release = await holdRendering();
+          try {
+            return await sendPageCommand(webContents, debuggee, method, params);
+          } finally {
+            release();
+          }
+        },
         targetId: () =>
           debuggee
             .sendCommand("Target.getTargetInfo")

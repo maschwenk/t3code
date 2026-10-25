@@ -16,7 +16,9 @@ const decodeCdpReply = Schema.decodeUnknownSync(
 );
 const key = { threadId: "thread-1", tabId: "tab-1" };
 
-const makeDebuggee = () => {
+const makeDebuggee = (
+  options: { readonly sent?: Array<string>; readonly autoReply?: boolean } = {},
+) => {
   const emitter = new NodeEvents.EventEmitter();
   const pending: Array<() => void> = [];
   const debuggee = Object.assign(emitter, {
@@ -26,7 +28,9 @@ const makeDebuggee = () => {
           resolve({ targetInfo: { targetId: "GUEST" } });
           return;
         }
-        pending.push(() => resolve({ method }));
+        options.sent?.push(method);
+        if (options.autoReply) resolve({ method });
+        else pending.push(() => resolve({ method }));
       }),
   });
   const webContents = {
@@ -86,6 +90,45 @@ describe("DesktopBrowserHost", () => {
 
       expect(reply).toMatchObject({ type: "cdp" });
       expect(decodeCdpReply((reply as { message: string }).message).id).toBe(2);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("keeps the guest rendering while it captures a screenshot, and only then", () =>
+    Effect.gen(function* () {
+      const host = yield* DesktopBrowserHost.make;
+      const log: Array<string> = [];
+      const debuggee = makeDebuggee({ sent: log, autoReply: true });
+      host.attach(key, {
+        ...debuggee.tab,
+        holdRendering: async () => {
+          log.push("hold");
+          return () => void log.push("release");
+        },
+      });
+      const reader = yield* takeEvents(host, 3).pipe(Effect.forkScoped);
+
+      yield* Effect.yieldNow;
+      for (const [id, method] of [
+        [1, "Page.captureScreenshot"],
+        [2, "DOM.getDocument"],
+      ] as const) {
+        yield* host.handleCommandLine(
+          encodeJson({
+            type: "cdp",
+            ...key,
+            message: encodeJson({ id, method, sessionId: "t3-preview-page" }),
+          }),
+        );
+      }
+      yield* Fiber.join(reader);
+
+      // A parked webview draws no frames, so a screenshot sent outside the lease never returns.
+      expect(log.filter((entry) => entry !== "DOM.getDocument")).toEqual([
+        "hold",
+        "Page.captureScreenshot",
+        "release",
+      ]);
+      expect(log).toContain("DOM.getDocument");
     }).pipe(Effect.scoped),
   );
 
