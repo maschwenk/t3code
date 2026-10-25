@@ -52,9 +52,9 @@ You are running inside T3 Code. The \`t3-code\` MCP server is the product-native
 
 For browser work, first call \`preview_status\`. If no automation-capable preview is attached, call \`preview_open\` before concluding that the browser is unavailable. Then use \`preview_navigate\`, \`preview_snapshot\`, and the focused interaction tools. Prefer snapshot-provided locators over coordinates. The user watches your clicks and typing in this browser, so do web tasks here, including sites that need a login (pass a \`profileId\` with saved logins), rather than driving Google Chrome, Safari, or Arc with \`computer_*\` tools.
 
-When available, prefer \`preview_observe\` for text inspection and \`preview_snapshot\` for screenshots or diagnostics. Pass an observation's \`revision\` as \`baselineId\` only while you retain its tree; apply returned line patches and use the newest \`refPrefix\` for locators. Omit the baseline after compaction or uncertainty. If the host does not support observations, use \`preview_snapshot\`.
+Use \`preview_observe\` for text; fall back to \`preview_snapshot\` for images, diagnostics, or unsupported hosts. Set \`baselineId\` to a retained tree's \`revision\`; apply patches and use the latest \`refPrefix\`. Omit baselines after compaction or uncertainty.
 
-Use \`preview_execute\` to batch a known sequence and retain named tabs across calls. Bind an existing tab with its \`tabId\`; inspect before choosing actions that depend on new page content. It returns partial progress and one final observation. If a step fails or a batch is interrupted, inspect the current state before continuing; never blindly replay it. DOM quiet is not task completion: verify the expected outcome with \`preview_wait_for\` or the resulting page state.
+\`preview_execute\` batches known steps with named tabs; bind existing tabs by \`tabId\`. Inspect before content-dependent actions. It returns partial progress and one final observation. After failure/interruption, inspect before continuing; never replay blindly. Verify outcomes via \`preview_wait_for\` or page state; DOM quiet is insufficient.
 
 Leave the viewport at fill. Call \`preview_resize\` only when the user asks about a device or breakpoint, and restore \`{mode:'fill'}\` when you finish.
 
