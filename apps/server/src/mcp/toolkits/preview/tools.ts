@@ -1,5 +1,7 @@
 import {
   OrchestratorMcpFailure,
+  BrowserExecutorInput,
+  BrowserExecutorResult,
   ToolActivityIcon,
   PreviewAutomationClickInput,
   PreviewAutomationDialogInput,
@@ -35,6 +37,7 @@ import { Tool, Toolkit } from "effect/ai";
 
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as PreviewAutomationBroker from "../../PreviewAutomationBroker.ts";
+import * as BrowserExecutor from "../../../preview/BrowserExecutor.ts";
 import * as ServerConfig from "../../../config.ts";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
 
@@ -147,6 +150,21 @@ const PreviewObserveTool = readonlyBrowserTool(
     failure: PreviewToolFailure,
     dependencies,
   }).annotate(Tool.Title, "Observe browser changes"),
+);
+
+const PreviewExecuteTool = browserTool(
+  Tool.make("preview_execute", {
+    description:
+      "Run up to 20 browser steps with persistent named tabs, stopping at the first failure and returning one final compact observation. Omit sessionId to create a session; reuse the returned id later. Each step is {op,tab,input}; input uses the matching preview tool's fields, except tabId: open creates a new named tab; bind uses {tabId} to attach an existing tab; close takes {}. Other ops: navigate, click, type, press, scroll, hover, select, dialog, waitFor. Example steps: [{op:'open',tab:'app',input:{url:'https://example.com'}},{op:'type',tab:'app',input:{locator:'#name',text:'Ada'}}]. Known locators only; inspect before planning actions that depend on new page content. Final observation targets observeTab or the last tab used. Pass baselineId only if you retain that tab's previous tree; otherwise it returns a full view. Error reports completed count and whether the failed action may have run: inspect before continuing and never replay a batch blindly. Empty steps refresh the view. reset=true with sessionId and empty steps forgets the session but leaves tabs open. Sessions expire after 30 minutes idle. Each run has a 60-second execution budget. Use individual tools for screenshots, diagnostics, evaluate, uploads or recording.",
+    parameters: BrowserExecutorInput,
+    success: BrowserExecutorResult,
+    failure: PreviewToolFailure,
+    dependencies: [
+      McpInvocationContext.McpInvocationContext,
+      ThreadManagementService.ThreadManagementService,
+      BrowserExecutor.BrowserExecutor,
+    ],
+  }).annotate(Tool.Title, "Execute browser steps"),
 );
 
 // Not read-only: save=true writes the screenshot to disk.
@@ -320,6 +338,7 @@ export const PreviewToolkit = Toolkit.make(
   PreviewDialogTool,
   PreviewStatusTool,
   PreviewObserveTool,
+  PreviewExecuteTool,
   PreviewOpenTool,
   PreviewNavigateTool,
   PreviewResizeTool,
@@ -343,6 +362,7 @@ export const PreviewStandardToolkit = Toolkit.make(
   PreviewDialogTool,
   PreviewStatusTool,
   PreviewObserveTool,
+  PreviewExecuteTool,
   PreviewOpenTool,
   PreviewNavigateTool,
   PreviewResizeTool,

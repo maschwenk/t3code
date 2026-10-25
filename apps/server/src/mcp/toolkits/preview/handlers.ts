@@ -1,3 +1,4 @@
+import * as BrowserExecutor from "../../../preview/BrowserExecutor.ts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Schema from "effect/Schema";
@@ -201,6 +202,12 @@ const handlers = {
   ),
   preview_set_appearance: McpToolAccess.actsAsCaller((input) =>
     invokeTargeted<PreviewAutomationSetColorSchemeResult>("setColorScheme", input),
+  ),
+  preview_execute: McpToolAccess.actsAsCaller((input) =>
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.requireThreadMcpCapability("preview");
+      return yield* (yield* BrowserExecutor.BrowserExecutor).execute(scope, input);
+    }),
   ),
   preview_observe: McpToolAccess.readsAsCaller((input) =>
     invoke<PreviewAutomationObservation>("observe", input, undefined, input.tabId).pipe(
