@@ -913,6 +913,8 @@ async function openApp(
   return { ok: false, code: "app_not_running" };
 }
 
+let nativeLibrary: Promise<MacNative> | undefined;
+
 async function execute(
   request: WorkerRequest,
   stage: (value: FailureStage) => void,
@@ -928,7 +930,7 @@ async function execute(
     stage("app_lookup");
     return openApp(App, request);
   }
-  const native = await loadMacNative();
+  const native = await (nativeLibrary ??= loadMacNative());
   stage("app_lookup");
   const app =
     request.kind === "snapshot"
@@ -1018,20 +1020,42 @@ export function nativeFailure(cause: unknown, stage?: FailureStage): WorkerRespo
   };
 }
 
-export async function runComputerUseWorker(): Promise<void> {
-  let response: WorkerResponse;
-  let stage: FailureStage = "request";
-  try {
-    let raw = "";
-    for await (const chunk of process.stdin) {
-      raw += String(chunk);
-      if (raw.length > 65_536) throw new Error("Request too large");
+export async function runComputerUseWorker(session = false): Promise<void> {
+  let previousWasAction = false;
+  const respond = async (raw: string) => {
+    let response: WorkerResponse;
+    let stage: FailureStage = "request";
+    try {
+      const request = decodeRequest(raw);
+      // AX writes can return before the app handles its events. Yield before the
+      // final observation instead of depending on another process starting up.
+      if (previousWasAction && request.kind === "snapshot") await NodeTimersPromises.setTimeout(75);
+      previousWasAction = request.kind === "action";
+      response = await execute(request, (value) => {
+        stage = value;
+      });
+    } catch (cause) {
+      response = nativeFailure(cause, stage);
     }
-    response = await execute(decodeRequest(raw), (value) => {
-      stage = value;
-    });
-  } catch (cause) {
-    response = nativeFailure(cause, stage);
+    process.stdout.write(JSON.stringify(response) + (session ? "\n" : ""));
+  };
+  process.stdin.setEncoding("utf8");
+  let raw = "";
+  let requests = 0;
+  for await (const chunk of process.stdin) {
+    raw += String(chunk);
+    if (session) {
+      let newline: number;
+      while ((newline = raw.indexOf("\n")) !== -1) {
+        if (Buffer.byteLength(raw.slice(0, newline)) > 65_536 || ++requests > 64) return;
+        await respond(raw.slice(0, newline));
+        raw = raw.slice(newline + 1);
+      }
+    }
+    if (Buffer.byteLength(raw) > 65_536) {
+      await respond("");
+      return;
+    }
   }
-  process.stdout.write(JSON.stringify(response));
+  if (!session) await respond(raw);
 }

@@ -19,7 +19,7 @@ if (
   ignoreMacosTypeOfServiceEinval();
   if (command === "__computer-use") {
     const { runComputerUseWorker } = await import("./computerUse/nativeWorker.ts");
-    await runComputerUseWorker();
+    await runComputerUseWorker(process.argv[3] === "--session");
   } else if (command === "acp-mcp-bridge" || command === "acp-mcp-call") {
     const { runAcpMcpCliFastPath } = await import("./mcp/AcpMcpStdioBridge.ts");
     await runAcpMcpCliFastPath(command, process.argv.slice(3));
