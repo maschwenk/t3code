@@ -321,83 +321,83 @@ const make = Effect.gen(function* () {
         return yield* authorized(
           app,
           input.includeImage ?? false,
-          Effect.gen(function* () {
-            // A failed/uncertain write is never replayed. An action also invalidates
-            // other threads' observations of the same desktop.
-            receipts.clear();
-            const completed: ActResult["completed"][number][] = [];
-            let error: ComputerUseError | undefined;
-            for (const step of steps) {
-              const { action, target } = step;
-              // Turning computer use off, or removing the app, stops the rest of a batch.
-              const allowed = yield* Effect.result(check(app, false));
-              if (Result.isFailure(allowed)) {
-                error = allowed.failure;
-                break;
+          driver.withSession(
+            Effect.gen(function* () {
+              // A failed/uncertain write is never replayed. An action also invalidates
+              // other threads' observations of the same desktop.
+              receipts.clear();
+              const completed: ActResult["completed"][number][] = [];
+              let error: ComputerUseError | undefined;
+              for (const step of steps) {
+                const { action, target } = step;
+                // Turning computer use off, or removing the app, stops the rest of a batch.
+                const allowed = yield* Effect.result(check(app, false));
+                if (Result.isFailure(allowed)) {
+                  error = allowed.failure;
+                  break;
+                }
+                if (action.kind === "wait") {
+                  yield* Effect.sleep(action.ms);
+                  completed.push("wait");
+                  continue;
+                }
+                const from = target ?? step.screen?.from ?? step.screen?.to;
+                if (from) yield* cursor.point(caller, action, from);
+                // Each step re-finds its element, so a step that changes the
+                // app cannot redirect a later step to a different element.
+                const outcome = yield* Effect.result(
+                  execute({
+                    kind: "action",
+                    app,
+                    pid,
+                    ...step,
+                    takeover: allowed.success.enableComputerPointerTakeover,
+                    ...(pointerInputAt !== undefined ? { ownInputAt: pointerInputAt } : {}),
+                  }),
+                );
+                if (Result.isFailure(outcome)) {
+                  error = outcome.failure;
+                  break;
+                }
+                if (outcome.success.inputAt !== undefined) pointerInputAt = outcome.success.inputAt;
+                // A drag ends where it dropped.
+                const dropped = step.drop ?? (action.kind === "drag" ? step.screen?.to : undefined);
+                if (dropped) yield* cursor.point(caller, { kind: "move" }, dropped);
+                completed.push(outcome.success.via ?? "accessibility");
               }
-              if (action.kind === "wait") {
-                yield* Effect.sleep(action.ms);
-                completed.push("wait");
-                continue;
-              }
-              const from = target ?? step.screen?.from ?? step.screen?.to;
-              if (from) yield* cursor.point(caller, action, from);
-              // Each step re-finds its element, so a step that changes the
-              // app cannot redirect a later step to a different element.
-              const outcome = yield* Effect.result(
-                execute({
-                  kind: "action",
-                  app,
-                  pid,
-                  ...step,
-                  takeover: allowed.success.enableComputerPointerTakeover,
-                  ...(pointerInputAt !== undefined ? { ownInputAt: pointerInputAt } : {}),
-                }),
-              );
-              if (Result.isFailure(outcome)) {
-                error = outcome.failure;
-                break;
-              }
-              if (outcome.success.inputAt !== undefined) pointerInputAt = outcome.success.inputAt;
-              // A drag ends where it dropped.
-              const dropped = step.drop ?? (action.kind === "drag" ? step.screen?.to : undefined);
-              if (dropped) yield* cursor.point(caller, { kind: "move" }, dropped);
-              completed.push(outcome.success.via ?? "accessibility");
-            }
-            // Starting the snapshot worker takes longer than most apps need to
-            // finish reacting, so the view is taken without an extra delay.
-            const options = { ...receipt.options, offset: 0 };
-            const includeImage = input.includeImage ?? false;
-            let after = yield* Effect.result(
-              authorized(
-                app,
-                includeImage,
-                observe(caller, app, includeImage, options, receipt.capture),
-              ),
-            );
-            if (
-              Result.isFailure(after) &&
-              after.failure.code === "target_changed" &&
-              options.root
-            ) {
-              const { root: _root, ...whole } = options;
-              after = yield* Effect.result(
+              const options = { ...receipt.options, offset: 0 };
+              const includeImage = input.includeImage ?? false;
+              let after = yield* Effect.result(
                 authorized(
                   app,
                   includeImage,
-                  observe(caller, app, includeImage, whole, receipt.capture),
+                  observe(caller, app, includeImage, options, receipt.capture),
                 ),
               );
-            }
-            return {
-              total: steps.length,
-              completed,
-              ...(error ? { error } : {}),
-              ...(Result.isSuccess(after)
-                ? { snapshot: after.success }
-                : { snapshotError: after.failure }),
-            };
-          }),
+              if (
+                Result.isFailure(after) &&
+                after.failure.code === "target_changed" &&
+                options.root
+              ) {
+                const { root: _root, ...whole } = options;
+                after = yield* Effect.result(
+                  authorized(
+                    app,
+                    includeImage,
+                    observe(caller, app, includeImage, whole, receipt.capture),
+                  ),
+                );
+              }
+              return {
+                total: steps.length,
+                completed,
+                ...(error ? { error } : {}),
+                ...(Result.isSuccess(after)
+                  ? { snapshot: after.success }
+                  : { snapshotError: after.failure }),
+              };
+            }),
+          ),
         );
       }),
     );

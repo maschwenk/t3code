@@ -95,6 +95,7 @@ const setup = (calls: WorkerRequest[], enabled = true, failAction = false) =>
   ComputerUse.layer.pipe(
     Layer.provide(
       Layer.succeed(Driver.Driver, {
+        withSession: (effect) => effect,
         execute: (request) =>
           Effect.sync(() => {
             calls.push(request);
@@ -124,6 +125,7 @@ it.effect("aims coordinate steps at the latest capture, even after text-only sna
   const layer = ComputerUse.layer.pipe(
     Layer.provide(
       Layer.succeed(Driver.Driver, {
+        withSession: (effect) => effect,
         execute: (request) =>
           Effect.sync(() => {
             calls.push(request);
@@ -333,6 +335,7 @@ it.effect("stops a batch when computer use is turned off while it runs", () => {
         Effect.gen(function* () {
           const settings = yield* ServerSettings.ServerSettingsService;
           return {
+            withSession: <A, E, R>(effect: Effect.Effect<A, E, R>) => effect,
             execute: (request: WorkerRequest) =>
               Effect.gen(function* () {
                 calls.push(request);

@@ -46,6 +46,7 @@ const layerTest = (calls: WorkerRequest[]) =>
       ComputerUse.layer.pipe(
         Layer.provide(
           Layer.succeed(Driver.Driver, {
+            withSession: (effect) => effect,
             execute: (request) =>
               Effect.sync(() => {
                 calls.push(request);

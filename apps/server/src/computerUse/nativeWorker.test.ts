@@ -187,6 +187,31 @@ it.each([
   expect(result.stderr).not.toContain("private-invalid-input");
 });
 
+it("answers each framed request in a reusable worker without exposing malformed input", () => {
+  const result = NodeChildProcess.spawnSync(
+    process.execPath,
+    [NodeURL.fileURLToPath(new URL("../bin.ts", import.meta.url)), "__computer-use", "--session"],
+    {
+      input: '{}\n{"private":"invalid-input"}\n',
+      encoding: "utf8",
+      timeout: 12_000,
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+    },
+  );
+  expect(result.error).toBeUndefined();
+  expect(result.status).toBe(0);
+  expect(
+    result.stdout
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line)),
+  ).toEqual([
+    { ok: false, code: "failed", detail: { stage: "request", reason: "unknown" } },
+    { ok: false, code: "failed", detail: { stage: "request", reason: "unknown" } },
+  ]);
+  expect(result.stderr).not.toContain("invalid-input");
+});
+
 const field: ElementTarget = {
   ref: 3,
   role: "text_field",
