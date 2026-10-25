@@ -29,6 +29,7 @@ import {
   type PreviewAutomationScrollInput,
   type PreviewAutomationSelectInput,
   type PreviewAutomationSetColorSchemeInput,
+  type PreviewAutomationSnapshotInput,
   type PreviewAutomationStatus,
   type PreviewAutomationTypeInput,
   type PreviewAutomationUploadInput,
@@ -1968,12 +1969,14 @@ const make = Effect.gen(function* () {
         return { tabId: tab.tabId, colorScheme };
       }
       case "snapshot": {
-        return withScreencastsPaused(tab, () =>
+        const includeImage = (input as PreviewAutomationSnapshotInput).includeImage === true;
+        const snapshot = () =>
           ServerBrowserPage.snapshot({
             ...tab,
+            includeImage,
             renderScale: tab.desktop ? "display" : RENDER_SCALE,
-          }),
-        );
+          });
+        return includeImage ? withScreencastsPaused(tab, snapshot) : withCaptureLock(tab, snapshot);
       }
       case "click": {
         const clickInput = input as PreviewAutomationClickInput;

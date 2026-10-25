@@ -333,6 +333,79 @@ beforeEach(() => {
   desktopConnections.length = 0;
 });
 
+it.live.each([{}, { includeImage: false }])(
+  "text-only snapshots keep refs and live viewers working when PNG capture fails (%j)",
+  (input) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { browser, broker, tabId } = yield* ready;
+        yield* browser.attachViewer(viewerInput(tabId, false));
+        const { sessions } = contexts[0]!;
+        for (const session of sessions) {
+          const send = session.send.getMockImplementation()!;
+          session.send.mockClear();
+          session.send.mockImplementation(async (method, params) => {
+            if (
+              method === "Page.captureScreenshot" &&
+              (params as { format: string }).format === "png"
+            ) {
+              throw new Error("PNG capture unavailable");
+            }
+            return send(method, params);
+          });
+        }
+
+        const snapshot = yield* broker.invoke<PreviewAutomationSnapshot>({
+          scope,
+          tabId,
+          operation: "snapshot",
+          input,
+        });
+
+        expect(snapshot.visibleText).toBe("delete");
+        expect(snapshot.accessibilityTree).toMatch(/button "delete" \[ref=t3-/);
+        expect(snapshot).not.toHaveProperty("screenshot");
+        const commands = sessions.flatMap((session) =>
+          session.send.mock.calls.map(([method]) => method),
+        );
+        expect(commands).not.toContain("Page.captureScreenshot");
+        expect(commands).not.toContain("Page.stopScreencast");
+        expect(commands).not.toContain("Page.startScreencast");
+      }),
+    ).pipe(Effect.provide(layer)),
+);
+
+it.live("image snapshots still pause live viewers and resume them after PNG capture", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { browser, broker, tabId } = yield* ready;
+      yield* browser.attachViewer(viewerInput(tabId, false));
+      const { sessions } = contexts[0]!;
+      for (const session of sessions) session.send.mockClear();
+
+      const snapshot = yield* broker.invoke<PreviewAutomationSnapshot>({
+        scope,
+        tabId,
+        operation: "snapshot",
+        input: { includeImage: true },
+      });
+
+      expect(snapshot.screenshot).toEqual({
+        mimeType: "image/png",
+        data: PNG_HEADER,
+        width: 1280,
+        height: 800,
+      });
+      const commands = sessions.flatMap((session) =>
+        session.send.mock.calls.map(([method]) => method),
+      );
+      expect(commands).toContain("Page.captureScreenshot");
+      expect(commands).toContain("Page.stopScreencast");
+      expect(commands).toContain("Page.startScreencast");
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
 it.live.each(["desktop" as const, undefined])(
   "explicit desktop targets ($0 runtime) fail without creating a server tab",
   (runtime) =>
