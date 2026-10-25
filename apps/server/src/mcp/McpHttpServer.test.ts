@@ -5,6 +5,7 @@ import { NodeHttpServer } from "@effect/platform-node";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   EnvironmentId,
+  BrowserExecutorResult,
   OrchestratorMcpFailure,
   PreviewTabId,
   PREVIEW_AUTOMATION_SERVER_OPERATIONS,
@@ -38,6 +39,7 @@ import { ProjectToolkit } from "./toolkits/project/tools.ts";
 const environmentId = EnvironmentId.make("environment-mcp-test");
 const threadId = ThreadId.make("thread-mcp-test");
 const alternateTabId = PreviewTabId.make("tab-mcp-alternate");
+const decodeExecutorResult = Schema.decodeUnknownSync(BrowserExecutorResult);
 const decodeJsonText = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 const decodeSavedSnapshot = Schema.decodeUnknownEffect(
   Schema.Struct({ url: Schema.String, screenshotPath: Schema.String }),
@@ -184,6 +186,62 @@ const layerRecordingTools = (calls: Array<unknown>) => {
     ),
   );
 };
+
+it.effect("keeps executor tab handles across MCP calls and emits only final observations", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
+      const connected = yield* Deferred.make<void>();
+      const operations: string[] = [];
+      const events = yield* broker.connect({
+        clientId: "mcp-executor",
+        environmentId,
+        supportedOperations: [...PREVIEW_AUTOMATION_SERVER_OPERATIONS],
+      });
+      yield* Stream.runForEach(events, (event) => {
+        if (event.type === "connected") return Deferred.succeed(connected, undefined);
+        operations.push(event.request.operation);
+        return broker.respond({
+          clientId: "mcp-executor",
+          connectionId: event.connectionId,
+          requestId: event.request.requestId,
+          ok: true,
+          result:
+            event.request.operation === "observe"
+              ? {
+                  mode: "full",
+                  revision: "r1",
+                  refPrefix: "t3-r1-",
+                  url: "https://example.test",
+                  title: "Fixture",
+                  loading: false,
+                  readiness: "dom_quiet",
+                  truncated: false,
+                  tree: "saved",
+                }
+              : { tabId: alternateTabId },
+        });
+      }).pipe(Effect.forkScoped);
+      yield* Deferred.await(connected);
+      const opened = yield* callTool("preview_execute", {
+        steps: [{ op: "open", tab: "app", input: {} }],
+      });
+      expect(opened.isError).toBe(false);
+      const session = decodeExecutorResult(opened.structuredContent);
+      const result = yield* callTool("preview_execute", {
+        sessionId: session.sessionId,
+        steps: [
+          { op: "type", tab: "app", input: { locator: "#name", text: "Ada" } },
+          { op: "click", tab: "app", input: { locator: "#save" } },
+        ],
+      });
+      expect(result.isError).toBe(false);
+      expect(decodeExecutorResult(result.structuredContent).completed).toBe(2);
+      expect(result.content).toHaveLength(1);
+      expect(operations).toEqual(["open", "observe", "type", "click", "observe"]);
+    }),
+  ).pipe(Effect.provide(layerTest)),
+);
 
 it.effect("preserves compact observation revisions and patches through the MCP transport", () =>
   Effect.scoped(
