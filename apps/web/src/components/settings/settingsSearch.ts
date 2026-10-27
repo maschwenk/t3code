@@ -373,6 +373,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["notification sound alert completion input approval desktop"],
   },
   {
+    id: "notification-triage",
+    title: "Only alert on news",
+    to: "/settings/general",
+    searchTerms: ["notification triage quiet routine scheduled check-in push phone haiku"],
+  },
+  {
     id: "in-app-notifications",
     title: "In-app notifications",
     to: "/settings/general",

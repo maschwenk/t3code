@@ -9,6 +9,7 @@ import type { ProviderTextGeneration } from "./textGeneration.ts";
 import {
   buildBranchNamePrompt,
   buildCommitMessagePrompt,
+  buildCompletionTriagePrompt,
   buildPrContentPrompt,
   buildReviewGuidePrompt,
   buildThreadTitlePrompt,
@@ -169,11 +170,23 @@ export function fromRunner(name: string, run: Runner): ProviderTextGeneration {
     });
   });
 
+  const triageCompletion: ProviderTextGeneration["triageCompletion"] = Effect.fn(
+    `${name}.triageCompletion`,
+  )(function* (input) {
+    return yield* run({
+      operation: "triageCompletion",
+      cwd: input.cwd,
+      modelSelection: input.modelSelection,
+      ...buildCompletionTriagePrompt(input),
+    });
+  });
+
   return {
     generateCommitMessage,
     generatePrContent,
     generateBranchName,
     generateThreadTitle,
     generateReviewGuide,
+    triageCompletion,
   } satisfies ProviderTextGeneration;
 }

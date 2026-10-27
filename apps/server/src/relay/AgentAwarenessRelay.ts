@@ -1,4 +1,5 @@
 import type {
+  CompletionNotificationTriageInput,
   EnvironmentId,
   OrchestrationV2DomainEvent,
   OrchestrationV2ThreadShell,
@@ -47,6 +48,7 @@ import {
 } from "../cloud/config.ts";
 import { getOrCreateEnvironmentKeyPairFromSecretStore } from "../cloud/environmentKeys.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import * as CompletionNotificationTriage from "../orchestration-v2/CompletionNotificationTriage.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import { forkParked } from "../serverActivation.ts";
@@ -365,6 +367,7 @@ export const make = Effect.gen(function* () {
   const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
   const threads = yield* ThreadManagement.ThreadManagementService;
   const projects = yield* ProjectService.ProjectService;
+  const completionTriage = yield* CompletionNotificationTriage.CompletionNotificationTriage;
   const crypto = yield* Crypto.Crypto;
   const scope = yield* Effect.scope;
   const cloudLinkKeyPair = yield* getOrCreateEnvironmentKeyPairFromSecretStore(secrets);
@@ -414,6 +417,9 @@ export const make = Effect.gen(function* () {
   // live update; a recovered state clears the deadline.
   const publishConfirmDeadlines = new Map<ThreadId, number>();
   let schedulePublishConfirm: (threadId: ThreadId) => Effect.Effect<void> = () => Effect.void;
+  let republishAfterTriage: (
+    input: CompletionNotificationTriageInput,
+  ) => Effect.Effect<void> = () => Effect.void;
   const publishRetries = new Map<
     ThreadId,
     { readonly attempts: number; timer: Fiber.Fiber<void> | undefined }
@@ -531,20 +537,37 @@ export const make = Effect.gen(function* () {
     const project = Option.isSome(thread)
       ? yield* projects.getById(thread.value.projectId)
       : Option.none<Project>();
-    const snapshot = resolveAgentAwarenessRelayPublishSnapshot({
+    const projected = resolveAgentAwarenessRelayPublishSnapshot({
       environmentId,
       threadId,
       thread,
       project,
     });
-    const publishIdentity = agentAwarenessPublishIdentity(snapshot.state);
     const publishedStateByThread = yield* Ref.get(publishedStateByThreadRef);
     if (
-      (snapshot.state?.phase === "completed" || snapshot.state?.phase === "failed") &&
+      (projected.state?.phase === "completed" || projected.state?.phase === "failed") &&
       !publishedStateByThread.has(threadId)
     ) {
       if (Option.isNone(thread) || !terminalWorkSinceStart(thread.value, startedAt)) return;
     }
+    let snapshot = projected;
+    if (
+      projected.state?.phase === "completed" &&
+      threadShell?.latestRunId != null &&
+      publishedStateByThread.get(threadId) !== agentAwarenessPublishIdentity(projected.state)
+    ) {
+      const triage = { threadId, runId: threadShell.latestRunId };
+      const notify = yield* completionTriage.peek(triage);
+      if (Option.isNone(notify)) {
+        // Keeping the last published state means the relay still sees the
+        // completion as a transition, and alerts, once the verdict lands.
+        yield* republishAfterTriage(triage);
+        return;
+      }
+      // A quiet completion leaves the relay the same way a stopped run does.
+      if (!notify.value) snapshot = { ...projected, state: null };
+    }
+    const publishIdentity = agentAwarenessPublishIdentity(snapshot.state);
     if (publishedStateByThread.get(threadId) === publishIdentity) {
       // The projection is back at (or never left) the last published state, so
       // any pending deferred confirmation is moot. Leaving the deadline in
@@ -756,6 +779,11 @@ export const make = Effect.gen(function* () {
       }
     }
   });
+
+  republishAfterTriage = (input) =>
+    completionTriage
+      .shouldNotify(input)
+      .pipe(Effect.andThen(worker.enqueue(input.threadId)), Effect.forkIn(scope), Effect.asVoid);
 
   schedulePublishConfirm = (threadId) =>
     Effect.forkIn(

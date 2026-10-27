@@ -458,6 +458,9 @@ export function useSettingsRestore(onRestored?: () => void) {
     ...(settings.autoRenameRecentThreads !== DEFAULT_UNIFIED_SETTINGS.autoRenameRecentThreads
       ? ["Auto-rename recent threads"]
       : []),
+    ...(settings.notificationTriage !== DEFAULT_UNIFIED_SETTINGS.notificationTriage
+      ? ["Only alert on news"]
+      : []),
     ...(settings.wordWrap !== DEFAULT_UNIFIED_SETTINGS.wordWrap ? ["Word wrap"] : []),
     ...(settings.persistComposerContextStrip !==
     DEFAULT_UNIFIED_SETTINGS.persistComposerContextStrip
@@ -618,6 +621,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       autoResumeLimitedThreads: DEFAULT_UNIFIED_SETTINGS.autoResumeLimitedThreads,
       snoozeLimitedThreads: DEFAULT_UNIFIED_SETTINGS.snoozeLimitedThreads,
       autoRenameRecentThreads: DEFAULT_UNIFIED_SETTINGS.autoRenameRecentThreads,
+      notificationTriage: DEFAULT_UNIFIED_SETTINGS.notificationTriage,
       responseStreamingMode: DEFAULT_UNIFIED_SETTINGS.responseStreamingMode,
       enableProviderUpdateChecks: DEFAULT_UNIFIED_SETTINGS.enableProviderUpdateChecks,
       continueThreadsAfterServerUpdate: DEFAULT_UNIFIED_SETTINGS.continueThreadsAfterServerUpdate,
@@ -1181,6 +1185,22 @@ export function GeneralSettingsPanel() {
               checked={settings.inAppNotificationsEnabled}
               onCheckedChange={(checked) => updateSettings({ inAppNotificationsEnabled: checked })}
               aria-label="In-app notifications"
+            />
+          }
+        />
+        <SettingsRow
+          serverScoped
+          {...searchableSetting("notification-triage")}
+          description="When an agent finishes a turn you didn't start, like a scheduled check-in, the text generation model reads the reply and only alerts if there's news. Applies to desktop, in-app, and phone alerts. Turns you start always alert."
+          settingKeys={["notificationTriage"]}
+          control={
+            <ScopedSwitch
+              settingKeys={["notificationTriage"]}
+              checked={settings.notificationTriage}
+              onCheckedChange={(checked) =>
+                updateSettings({ notificationTriage: Boolean(checked) })
+              }
+              aria-label="Only alert on news"
             />
           }
         />

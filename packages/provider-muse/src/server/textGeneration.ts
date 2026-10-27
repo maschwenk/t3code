@@ -21,6 +21,7 @@ import { investigationUnsupported } from "@t3tools/provider-core/server/textGene
 import {
   buildBranchNamePrompt,
   buildCommitMessagePrompt,
+  buildCompletionTriagePrompt,
   buildPrContentPrompt,
   buildThreadTitlePrompt,
 } from "@t3tools/provider-core/server/textGenerationPrompts";
@@ -342,11 +343,21 @@ export const makeMuseTextGeneration = Effect.fn("makeMuseTextGeneration")(functi
   });
   const generateReviewGuide: ProviderTextGeneration["generateReviewGuide"] = () =>
     Effect.fail(investigationUnsupported("generateReviewGuide", "Muse Code"));
+  const triageCompletion: ProviderTextGeneration["triageCompletion"] = Effect.fn(
+    "MuseTextGeneration.triageCompletion",
+  )(function* (input) {
+    return yield* runMuseJson({
+      operation: "triageCompletion",
+      ...buildCompletionTriagePrompt(input),
+      modelSelection: input.modelSelection,
+    });
+  });
   return {
     generateCommitMessage,
     generatePrContent,
     generateBranchName,
     generateThreadTitle,
     generateReviewGuide,
+    triageCompletion,
   } satisfies ProviderTextGeneration;
 });

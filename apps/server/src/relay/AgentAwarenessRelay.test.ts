@@ -35,6 +35,7 @@ import {
   RELAY_URL_SECRET,
 } from "../cloud/config.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import * as CompletionNotificationTriage from "../orchestration-v2/CompletionNotificationTriage.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
@@ -142,6 +143,7 @@ const makeTestRelay = Effect.fnUntraced(function* (
     readonly linked?: boolean;
     readonly readShell?: (threadId: ThreadId) => Effect.Effect<OrchestrationV2ThreadShell | null>;
     readonly domainEvents?: Stream.Stream<OrchestrationV2DomainEvent>;
+    readonly triage?: (runId: RunId) => Effect.Effect<boolean>;
   } = {},
 ) {
   const values = new Map<string, Uint8Array>(
@@ -250,7 +252,22 @@ const makeTestRelay = Effect.fnUntraced(function* (
     },
     { preconnect: () => {} },
   );
+  const verdicts = new Map<RunId, boolean>();
+  const triage = CompletionNotificationTriage.CompletionNotificationTriage.of({
+    shouldNotify: ({ runId }) =>
+      (options.triage?.(runId) ?? Effect.succeed(true)).pipe(
+        Effect.tap((notify) => Effect.sync(() => verdicts.set(runId, notify))),
+      ),
+    // Without a triage verdict to wait on, behave like the setting being off.
+    peek: ({ runId }) =>
+      Effect.sync(() =>
+        options.triage === undefined
+          ? Option.some(true)
+          : Option.fromUndefinedOr(verdicts.get(runId)),
+      ),
+  });
   const relay = yield* AgentAwarenessRelay.make.pipe(
+    Effect.provideService(CompletionNotificationTriage.CompletionNotificationTriage, triage),
     Effect.provideService(ServerSecretStore.ServerSecretStore, secrets),
     Effect.provideService(ThreadManagementService.ThreadManagementService, threads),
     Effect.provideService(ServerEnvironment.ServerEnvironment, {
@@ -415,6 +432,48 @@ describe("AgentAwarenessRelay", () => {
         assert.equal(publications.length, 3);
         assert.equal(publications[2]?.state, null);
       }).pipe(Effect.scoped),
+  );
+
+  it.effect("holds a completion for triage and clears the relay quietly when it is routine", () =>
+    Effect.gen(function* () {
+      const runId = RunId.make("run:routine-check");
+      const { relay, currentShell, publications } = yield* makeTestRelay({
+        triage: () => Effect.sleep("1 second").pipe(Effect.as(false)),
+      });
+      yield* relay.publishThread(THREAD_ID);
+      yield* Ref.set(currentShell, shell({ status: "completed", latestRunId: runId }));
+      yield* relay.publishThread(THREAD_ID);
+      assert.equal(publications.length, 1);
+
+      yield* TestClock.adjust("1 second");
+      yield* relay.drain;
+      yield* TestClock.adjust("5 seconds");
+      yield* relay.drain;
+      assert.deepStrictEqual(
+        publications.map((publication) => publication.state?.phase ?? null),
+        ["running", null],
+      );
+    }),
+  );
+
+  it.effect("publishes a completion once triage finds news in it", () =>
+    Effect.gen(function* () {
+      const runId = RunId.make("run:ci-failed");
+      const { relay, currentShell, publications } = yield* makeTestRelay({
+        triage: () => Effect.sleep("1 second").pipe(Effect.as(true)),
+      });
+      yield* relay.publishThread(THREAD_ID);
+      yield* Ref.set(currentShell, shell({ status: "completed", latestRunId: runId }));
+      yield* relay.publishThread(THREAD_ID);
+      assert.equal(publications.length, 1);
+
+      yield* TestClock.adjust("1 second");
+      yield* relay.drain;
+      assert.deepStrictEqual(
+        publications.map((publication) => publication.state?.phase ?? null),
+        ["running", "completed"],
+      );
+    }),
   );
 
   it.effect("keeps settled live work until its monitor finishes", () =>

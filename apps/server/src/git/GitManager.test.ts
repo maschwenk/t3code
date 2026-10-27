@@ -361,6 +361,7 @@ function createTextGeneration(
         title: "Update workflow",
       }),
     generateReviewGuide: () => Effect.succeed({ stops: [] }),
+    triageCompletion: () => Effect.succeed({ notify: true }),
     ...overrides,
   };
 
@@ -410,6 +411,7 @@ function createTextGeneration(
         ),
       ),
     generateReviewGuide: (input) => implementation.generateReviewGuide(input),
+    triageCompletion: (input) => implementation.triageCompletion(input),
   };
 }
 

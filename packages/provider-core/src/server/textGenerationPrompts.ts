@@ -463,3 +463,38 @@ export function buildThreadTitlePrompt(input: ThreadTitlePromptInput) {
 
   return { prompt, outputSchema };
 }
+
+export interface CompletionTriagePromptInput {
+  request: string;
+  reply: string;
+}
+
+export function buildCompletionTriagePrompt(input: CompletionTriagePromptInput) {
+  // The verdict usually sits in the closing summary, so a long reply keeps its end.
+  const reply =
+    input.reply.length <= 12_000
+      ? input.reply
+      : `${EARLIER_CONTENT_TRUNCATION_MARKER}${input.reply.slice(-12_000)}`;
+  const prompt = [
+    "A coding agent just finished a turn the user did not start themselves, such as a scheduled check-in or a wake-up after CI or a pull request changed.",
+    "Decide whether the result deserves an alert on the user's phone and desktop. Every alert interrupts them.",
+    "Return a JSON object with key: notify (boolean).",
+    "Notify when the reply has news the user would act on or want to know now:",
+    "- the work finished, or something the user was waiting for happened (merged, deployed, CI passed after failing)",
+    "- a new failure, regression, error, or anything surprising",
+    "- the agent needs a decision, an answer, or access from the user",
+    "- the agent stopped watching or gave up",
+    "Stay quiet when the reply only reports that nothing changed:",
+    "- a periodic check found the same state as last time (still running, still pending, no new failures)",
+    "- the agent is still waiting and will check again later",
+    "When unsure, notify.",
+    "",
+    "Message that started the turn:",
+    limitSection(input.request, 4_000),
+    "",
+    "Agent's final reply:",
+    reply,
+  ].join("\n");
+
+  return { prompt, outputSchema: Schema.Struct({ notify: Schema.Boolean }) };
+}
