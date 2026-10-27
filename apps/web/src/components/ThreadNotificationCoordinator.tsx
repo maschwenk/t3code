@@ -3,7 +3,7 @@ import {
   presentThreadShell,
 } from "@t3tools/client-runtime/state/models";
 import { pendingSubagentRequestsByThread } from "@t3tools/client-runtime/state/threads";
-import { useAtomValue } from "@effect/atom-react";
+import { RegistryContext, useAtomValue } from "@effect/atom-react";
 import { useNavigate, useParams } from "@tanstack/react-router";
 import type { EnvironmentId, OrchestrationV2ThreadShell, ThreadId } from "@t3tools/contracts";
 import * as Option from "effect/Option";
@@ -13,10 +13,13 @@ import {
   MessageCircleQuestionIcon,
   ShieldQuestionIcon,
 } from "lucide-react";
-import { useEffect, useRef } from "react";
+import { runAtomCommand } from "@t3tools/client-runtime/state/runtime";
+import { useContext, useEffect, useRef } from "react";
 
 import { getClientSettings, useClientSettings } from "../hooks/useSettings";
+import { readEnvironmentSupportsNotificationTriage } from "../state/entities";
 import { useEnvironmentIds } from "../state/environments";
+import { completionNotificationTriage } from "../state/notificationTriage";
 import { environmentShell } from "../state/shell";
 import {
   hasDesktopNotifications,
@@ -115,6 +118,7 @@ function EnvironmentNotifications({
     (settings) => settings.inAppNotificationsEnabled,
   );
   const navigate = useNavigate();
+  const registry = useContext(RegistryContext);
   const { environmentId: activeEnvironmentId, threadId: activeThreadId } = useParams({
     strict: false,
   });
@@ -170,73 +174,94 @@ function EnvironmentNotifications({
               : status === "failed"
                 ? "Thread failed"
                 : "Input needed";
-      if (hasNotificationSound(mode)) {
-        void playNotificationSound(kind, () =>
-          hasNotificationSound(getClientSettings().notificationMode),
-        );
-      }
-      if (
-        inAppNotificationsEnabled &&
-        document.visibilityState === "visible" &&
-        document.hasFocus() &&
-        (activeEnvironmentId !== environmentId || activeThreadId !== thread.id)
-      ) {
-        const toastId = toastManager.add({
-          type: kind === "completion" ? "success" : status === "failed" ? "error" : "warning",
-          title,
-          description: thread.title,
-          data: {
-            hideCopyButton: true,
-            leadingIcon:
-              kind === "completion" ? (
-                <CircleCheckIcon aria-hidden className="size-4 text-success-foreground" />
-              ) : status === "approval" ? (
-                <ShieldQuestionIcon aria-hidden className="size-4 text-warning-foreground" />
-              ) : status === "failed" ? (
-                <CircleAlertIcon aria-hidden className="size-4 text-destructive-foreground" />
-              ) : (
-                <MessageCircleQuestionIcon aria-hidden className="size-4 text-info-foreground" />
-              ),
-          },
-          actionProps: {
-            children: "Open thread",
-            onClick: () => {
-              toastManager.close(toastId);
-              void navigate({
-                to: "/$environmentId/$threadId",
-                params: { environmentId, threadId: thread.id },
-              });
+      const present = () => {
+        if (hasNotificationSound(mode)) {
+          void playNotificationSound(kind, () =>
+            hasNotificationSound(getClientSettings().notificationMode),
+          );
+        }
+        if (
+          inAppNotificationsEnabled &&
+          document.visibilityState === "visible" &&
+          document.hasFocus() &&
+          (activeEnvironmentId !== environmentId || activeThreadId !== thread.id)
+        ) {
+          const toastId = toastManager.add({
+            type: kind === "completion" ? "success" : status === "failed" ? "error" : "warning",
+            title,
+            description: thread.title,
+            data: {
+              hideCopyButton: true,
+              leadingIcon:
+                kind === "completion" ? (
+                  <CircleCheckIcon aria-hidden className="size-4 text-success-foreground" />
+                ) : status === "approval" ? (
+                  <ShieldQuestionIcon aria-hidden className="size-4 text-warning-foreground" />
+                ) : status === "failed" ? (
+                  <CircleAlertIcon aria-hidden className="size-4 text-destructive-foreground" />
+                ) : (
+                  <MessageCircleQuestionIcon aria-hidden className="size-4 text-info-foreground" />
+                ),
             },
-          },
-        });
-        continue;
-      }
-      if (
-        !hasDesktopNotifications(mode) ||
-        (document.visibilityState === "visible" && document.hasFocus()) ||
-        typeof Notification === "undefined" ||
-        Notification.permission !== "granted"
-      )
-        continue;
-      try {
-        const notification = new Notification(title, {
-          body: thread.title,
-          tag: threadNotificationTag(environmentId, thread.id),
-          silent: true,
-        });
-        onNotification(environmentId, notification);
-        notification.addEventListener("click", () => {
-          notification.close();
-          window.focus();
-          void window.desktopBridge?.revealWindow?.().catch(() => undefined);
-          void navigate({
-            to: "/$environmentId/$threadId",
-            params: { environmentId, threadId: thread.id },
+            actionProps: {
+              children: "Open thread",
+              onClick: () => {
+                toastManager.close(toastId);
+                void navigate({
+                  to: "/$environmentId/$threadId",
+                  params: { environmentId, threadId: thread.id },
+                });
+              },
+            },
           });
+          return;
+        }
+        if (
+          !hasDesktopNotifications(mode) ||
+          (document.visibilityState === "visible" && document.hasFocus()) ||
+          typeof Notification === "undefined" ||
+          Notification.permission !== "granted"
+        )
+          return;
+        try {
+          const notification = new Notification(title, {
+            body: thread.title,
+            tag: threadNotificationTag(environmentId, thread.id),
+            silent: true,
+          });
+          onNotification(environmentId, notification);
+          notification.addEventListener("click", () => {
+            notification.close();
+            window.focus();
+            void window.desktopBridge?.revealWindow?.().catch(() => undefined);
+            void navigate({
+              to: "/$environmentId/$threadId",
+              params: { environmentId, threadId: thread.id },
+            });
+          });
+        } catch {
+          // Some browsers expose Notification but reject desktop presentation.
+        }
+      };
+      const runId = thread.latestRun?.runId;
+      if (
+        kind === "completion" &&
+        runId !== undefined &&
+        readEnvironmentSupportsNotificationTriage(environmentId)
+      ) {
+        // The server judges whether a turn the user did not start brought news,
+        // so a routine check-in stays as quiet here as it does on the phone.
+        void runAtomCommand(
+          registry,
+          completionNotificationTriage,
+          { environmentId, input: { threadId: thread.id, runId } },
+          { reportFailure: false, reportDefect: false },
+        ).then((result) => {
+          if (result._tag !== "Success" || result.value.notify) present();
         });
-      } catch {
-        // Some browsers expose Notification but reject desktop presentation.
+        continue;
       }
+      present();
     }
     previous.current = next;
   }, [
@@ -247,6 +272,7 @@ function EnvironmentNotifications({
     mode,
     navigate,
     onNotification,
+    registry,
     threads,
   ]);
 

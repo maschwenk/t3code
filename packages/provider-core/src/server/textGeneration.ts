@@ -69,6 +69,19 @@ export interface ThreadTitleGenerationResult {
   needsRefinement?: boolean | undefined;
 }
 
+export interface CompletionTriageInput {
+  cwd: string;
+  /** The message that started the turn. */
+  request: string;
+  /** The agent's last reply in the turn. */
+  reply: string;
+  modelSelection: ModelSelection;
+}
+
+export interface CompletionTriageResult {
+  notify: boolean;
+}
+
 export interface ReviewGuideStackLayer {
   readonly number: number;
   readonly title: string | null;
@@ -114,4 +127,8 @@ export interface ProviderTextGeneration {
   readonly generateReviewGuide: (
     input: ReviewGuideGenerationInput,
   ) => Effect.Effect<ReviewGuideGenerationResult, TextGenerationError>;
+
+  readonly triageCompletion: (
+    input: CompletionTriageInput,
+  ) => Effect.Effect<CompletionTriageResult, TextGenerationError>;
 }

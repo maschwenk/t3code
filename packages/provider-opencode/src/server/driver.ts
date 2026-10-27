@@ -159,6 +159,11 @@ function selectOpenCodeRuntimeTextGeneration(
         v1: v1.generateReviewGuide(input),
         v2: v2.generateReviewGuide(input),
       }),
+    triageCompletion: (input) =>
+      byOpenCodeRuntime(probe.get, {
+        v1: v1.triageCompletion(input),
+        v2: v2.triageCompletion(input),
+      }),
   };
 }
 
