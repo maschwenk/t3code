@@ -279,11 +279,16 @@ function installBuiltApp(builtApp: string) {
       "-e",
       `if application id "${BUNDLE_ID}" is running then tell application id "${BUNDLE_ID}" to quit`,
     ]);
+    // pgrep reads its pattern as a regex, where "(Fork)" never matches the
+    // literal path, so the app looked gone while it was still quitting. -a
+    // keeps the app's processes visible when an agent inside it runs this.
+    const runningPattern = `${installedApp}/Contents/MacOS/`.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const appIsRunning = () => capture("pgrep", ["-a", "-f", runningPattern]) !== "";
     const deadline = Date.now() + 15_000;
-    while (Date.now() < deadline && capture("pgrep", ["-f", installedApp]) !== "") {
+    while (Date.now() < deadline && appIsRunning()) {
       NodeChildProcess.spawnSync("sleep", ["0.5"]);
     }
-    if (capture("pgrep", ["-f", installedApp]) !== "") {
+    if (appIsRunning()) {
       throw new Error(`${PRODUCT_NAME} did not quit; leaving the installed app in place.`);
     }
     NodeFS.rmSync(installedApp, { recursive: true, force: true });
