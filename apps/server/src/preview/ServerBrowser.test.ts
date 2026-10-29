@@ -1167,6 +1167,59 @@ it.live("a session's own tab stays its default while other sessions' tabs are li
   ).pipe(Effect.provide(layer)),
 );
 
+it.live("a full server closes the longest-idle desktop agent tab to open a new one", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* Broker.PreviewAutomationBroker;
+      const manager = yield* Manager.PreviewManager;
+      yield* ServerBrowser.ServerBrowser;
+      yield* Effect.yieldNow;
+      const openDesktopTab = (providerSessionId: string) => {
+        desktopRendersNext = true;
+        return broker.invoke<PreviewAutomationStatus>({
+          scope: asSession(providerSessionId),
+          operation: "open",
+          input: { reuseExistingTab: false, show: false },
+        });
+      };
+      const opened: Array<string> = [];
+      for (let index = 0; index < 32; index++) {
+        const tab = yield* openDesktopTab(`agent-${Math.floor(index / 8)}`);
+        opened.push(tab.tabId!);
+      }
+
+      const refused = yield* openDesktopTab("agent-new").pipe(Effect.flip);
+      expect(refused).toMatchObject({
+        _tag: "PreviewAutomationControlInterruptedError",
+        reason: "tabLimit",
+      });
+
+      const realNow = Date.now.bind(Date);
+      yield* Effect.acquireRelease(
+        Effect.sync(() =>
+          vi.spyOn(Date, "now").mockImplementation(() => realNow() + 31 * 60 * 1000),
+        ),
+        (clock) => Effect.sync(() => clock.mockRestore()),
+      );
+      yield* broker.invoke<PreviewAutomationStatus>({
+        scope: asSession("agent-0"),
+        tabId: PreviewTabId.make(opened[0]!),
+        operation: "status",
+        input: {},
+      });
+      const admitted = yield* openDesktopTab("agent-new");
+
+      const { sessions } = yield* manager.list({ threadId: scope.thread.threadId });
+      const open = sessions.map((session) => session.tabId);
+      expect(open).toHaveLength(32);
+      expect(open).toContain(admitted.tabId);
+      expect(open).toContain(opened[0]);
+      expect(open).not.toContain(opened[8]);
+      expect(releasedDesktopTabs).toEqual([opened[8]]);
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
 it.live(
   "preview_open picks a reported profile by id or name and defaults to the reported one",
   () =>

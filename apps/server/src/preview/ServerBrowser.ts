@@ -1190,6 +1190,7 @@ const make = Effect.gen(function* () {
 
   const adoptPopup = async (opener: ServerTab, popup: Page) => {
     const agentId = opener.control.agentId;
+    if (agentId !== null) evictIdleAgentTab();
     if (opener.closing || (agentId !== null && atTabLimit(agentId))) {
       await popup.close().catch(constVoid);
       return;
@@ -1263,8 +1264,10 @@ const make = Effect.gen(function* () {
     });
   });
 
+  const serverFull = () => tabs.size + pendingTabs.size >= SERVER_TAB_LIMIT;
+
   const atTabLimit = (agentSessionId: string) =>
-    tabs.size + pendingTabs.size >= SERVER_TAB_LIMIT ||
+    serverFull() ||
     [...tabs.values()].filter((tab) => tab.control.agentId === agentSessionId).length >=
       AGENT_TAB_LIMIT;
 
@@ -1276,19 +1279,28 @@ const make = Effect.gen(function* () {
       );
   };
 
+  const isIdleAgentTab = (tab: ServerTab, cutoff: number) =>
+    tab.control.agentId !== null && tab.viewers.size === 0 && tab.usedAt < cutoff;
+
   // Desktop browsing bypasses streamed viewers and server input tracking,
   // so these idle signals only apply to headless tabs.
   const closeIdleAgentTabs = () => {
     const cutoff = Date.now() - AGENT_TAB_IDLE_MS;
     for (const tab of tabs.values()) {
-      if (
-        tab.control.agentId !== null &&
-        tab.desktop === null &&
-        tab.viewers.size === 0 &&
-        tab.usedAt < cutoff
-      )
-        dropTab(tab, true);
+      if (tab.desktop === null && isIdleAgentTab(tab, cutoff)) dropTab(tab, true);
     }
+  };
+
+  // Desktop agent tabs never idle out, so abandoned ones from every thread
+  // accumulate until the server is full. Then the agent tab unused longest
+  // gives way, even though a human may still have it on screen.
+  const evictIdleAgentTab = () => {
+    if (!serverFull()) return;
+    const cutoff = Date.now() - AGENT_TAB_IDLE_MS;
+    const [stalest] = [...tabs.values()]
+      .filter((tab) => isIdleAgentTab(tab, cutoff))
+      .sort((left, right) => left.usedAt - right.usedAt);
+    if (stalest) dropTab(stalest, true);
   };
 
   const latestThreadTab = (threadId: string, agentSessionId?: string) => {
@@ -1784,6 +1796,7 @@ const make = Effect.gen(function* () {
         const profileId = existing ? undefined : resolveOpenProfile(open.profileId);
         if (!existing) {
           closeIdleAgentTabs();
+          evictIdleAgentTab();
           assertTabCapacity(request.agentSessionId);
         }
         const tab =
