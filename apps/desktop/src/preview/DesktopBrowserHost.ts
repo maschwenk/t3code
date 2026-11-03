@@ -96,9 +96,8 @@ export const make = Effect.gen(function* () {
     const relay: CdpRelayConnection = createCdpRelayConnection(
       {
         send: async (method, params, sessionId) => {
-          if (sessionId !== undefined) return debuggee.sendCommand(method, params, sessionId);
-          if (method !== "Page.captureScreenshot" || !holdRendering) {
-            return sendPageCommand(webContents, debuggee, method, params);
+          if (sessionId !== undefined || method !== "Page.captureScreenshot" || !holdRendering) {
+            return sendPageCommand(webContents, debuggee, method, params, sessionId);
           }
           const release = await holdRendering();
           try {
