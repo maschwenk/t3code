@@ -24,6 +24,9 @@ concurrency:
 jobs:
   fingerprint:
     name: Native fingerprint diff
+    # Blacksmith runners exist only upstream; elsewhere this job queues until GitHub cancels it
+    # a day later, and PR watches wait on it.
+    if: github.repository_owner == 'pingdotgg'
     runs-on: blacksmith-8vcpu-ubuntu-2404
     permissions:
       contents: read
