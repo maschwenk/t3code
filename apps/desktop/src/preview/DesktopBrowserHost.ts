@@ -52,6 +52,8 @@ interface AttachedTab {
   downloadDirectory: string | null;
   pendingDownloadGuid: string | null;
   agentInputAt: number;
+  /** Child sessions by target id; an out-of-process frame's target id is its frame id. */
+  readonly frameSessions: Map<string, string>;
   readonly onMessage: (
     event: Electron.Event,
     method: string,
@@ -97,7 +99,14 @@ export const make = Effect.gen(function* () {
       {
         send: async (method, params, sessionId) => {
           if (sessionId !== undefined || method !== "Page.captureScreenshot" || !holdRendering) {
-            return sendPageCommand(webContents, debuggee, method, params, sessionId);
+            return sendPageCommand(
+              webContents,
+              debuggee,
+              method,
+              params,
+              sessionId,
+              tab.frameSessions,
+            );
           }
           const release = await holdRendering();
           try {
@@ -161,10 +170,20 @@ export const make = Effect.gen(function* () {
       downloadDirectory: null,
       pendingDownloadGuid: null,
       agentInputAt: Number.NEGATIVE_INFINITY,
+      frameSessions: new Map(),
       onMessage: (_event, method, params, sessionId) => {
         if (method === "Browser.downloadWillBegin") {
           const guid = (params as { guid?: unknown } | undefined)?.guid;
           tab.pendingDownloadGuid = typeof guid === "string" ? guid : null;
+        }
+        if (method === "Target.attachedToTarget") {
+          const attached = params as { sessionId: string; targetInfo: { targetId: string } };
+          tab.frameSessions.set(attached.targetInfo.targetId, attached.sessionId);
+        }
+        if (method === "Target.detachedFromTarget") {
+          const detached = (params as { sessionId?: unknown }).sessionId;
+          for (const [targetId, child] of tab.frameSessions)
+            if (child === detached) tab.frameSessions.delete(targetId);
         }
         tab.relay?.event(method, params, sessionId);
       },

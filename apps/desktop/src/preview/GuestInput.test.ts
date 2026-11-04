@@ -241,6 +241,150 @@ describe("preview guest input", () => {
     },
   );
 
+  /**
+   * A page with 1Password's inline menu: an out-of-process extension frame at
+   * (20, 60), inside a closed shadow root. The lookup scripts run against it.
+   */
+  const pageWithExtensionMenu = () => {
+    const item = { backendNodeId: 5, nodeName: "DIV" };
+    const list = { backendNodeId: 6, nodeName: "UL" };
+    const menuFrame = {
+      backendNodeId: 3,
+      nodeName: "IFRAME",
+      frameId: "menu-frame",
+      clientLeft: 0,
+      clientTop: 0,
+      style: { paddingLeft: "0px", paddingTop: "0px" },
+      getBoundingClientRect: () => ({ left: 20, top: 60 }),
+    };
+    const inMenu = (x: number, y: number) => x >= 20 && x < 220 && y >= 60 && y < 160;
+    const shadowRoot = {
+      backendNodeId: 2,
+      nodeName: "#document-fragment",
+      activeElement: menuFrame,
+      elementFromPoint: (x: number, y: number) => (inMenu(x, y) ? menuFrame : menuHost),
+    };
+    const menuHost = {
+      backendNodeId: 1,
+      nodeName: "COM-1PASSWORD-MENU",
+      shadowRoots: [shadowRoot],
+    };
+    const field = { backendNodeId: 4, nodeName: "INPUT" };
+    const documents = {
+      page: {
+        activeElement: menuHost,
+        elementFromPoint: (x: number, y: number) => (inMenu(x, y) ? menuHost : field),
+      },
+      menu: { activeElement: list, elementFromPoint: () => item },
+    };
+    const realm = NodeVM.createContext({
+      getComputedStyle: (node: typeof menuFrame) => node.style,
+    });
+    const objects = new Map<string, object>();
+    const handle = (value: object) => {
+      const objectId = `object-${objects.size}`;
+      objects.set(objectId, value);
+      return objectId;
+    };
+    const delivered: Array<{ method: string; params: Record<string, unknown>; session?: string }> =
+      [];
+    const sendCommand = async (
+      method: string,
+      params: {
+        readonly objectId?: string;
+        readonly functionDeclaration?: string;
+        readonly arguments?: ReadonlyArray<{ readonly value: unknown }>;
+        readonly returnByValue?: boolean;
+      } & Record<string, unknown>,
+      session?: string,
+    ): Promise<unknown> => {
+      switch (method) {
+        case "Page.getFrameTree":
+          return { frameTree: { frame: { id: session === undefined ? "page" : "menu-frame" } } };
+        case "Page.createIsolatedWorld":
+          return { executionContextId: 1 };
+        case "Runtime.callFunctionOn": {
+          const self = params.objectId
+            ? objects.get(params.objectId)
+            : { document: session === undefined ? documents.page : documents.menu };
+          const lookup = NodeVM.runInContext(`(${params.functionDeclaration})`, realm) as (
+            ...args: ReadonlyArray<unknown>
+          ) => object | null;
+          const value = lookup.apply(
+            self,
+            (params.arguments ?? []).map((argument) => argument.value),
+          );
+          if (params.returnByValue) return { result: { value } };
+          return { result: value ? { objectId: handle(value) } : {} };
+        }
+        case "DOM.describeNode":
+          return { node: objects.get(params.objectId ?? "") };
+        case "DOM.resolveNode":
+          return { object: { objectId: handle(shadowRoot) } };
+        case "Runtime.releaseObjectGroup":
+          return {};
+        default:
+          delivered.push({ method, params, ...(session ? { session } : {}) });
+          return {};
+      }
+    };
+    const webContents = {
+      id: 7,
+      focusedFrame: null,
+      hostWebContents: null,
+      sendInputEvent: vi.fn(),
+    };
+    const send = (method: string, params: Record<string, unknown>) =>
+      sendPageCommand(
+        webContents as unknown as Electron.WebContents,
+        { sendCommand } as unknown as Electron.Debugger,
+        method,
+        params,
+        undefined,
+        new Map([["menu-frame", "menu-session"]]),
+      );
+    return { delivered, send, webContents };
+  };
+
+  it("clicks an extension menu through its own frame, in the frame's coordinates", async () => {
+    const page = pageWithExtensionMenu();
+    for (const type of ["mouseMoved", "mousePressed", "mouseReleased"]) {
+      await page.send("Input.dispatchMouseEvent", { type, x: 120, y: 110, button: "left" });
+    }
+    await page.send("Input.dispatchMouseEvent", { type: "mousePressed", x: 300, y: 20 });
+    expect(
+      page.delivered.map(({ params, session }) => [
+        params["type"],
+        params["x"],
+        params["y"],
+        session,
+      ]),
+    ).toEqual([
+      ["mouseMoved", 100, 50, "menu-session"],
+      ["mousePressed", 100, 50, "menu-session"],
+      ["mouseReleased", 100, 50, "menu-session"],
+      ["mousePressed", 300, 20, undefined],
+    ]);
+  });
+
+  it("sends keys to the extension frame holding the unfocused page's focus", async () => {
+    const page = pageWithExtensionMenu();
+    await page.send("Input.dispatchKeyEvent", {
+      type: "keyDown",
+      key: "Enter",
+      text: "\r",
+      commands: ["selectAll", "paste"],
+    });
+    expect(page.delivered).toEqual([
+      {
+        method: "Input.dispatchKeyEvent",
+        params: { type: "keyDown", key: "Enter", text: "\r", commands: ["selectAll"] },
+        session: "menu-session",
+      },
+    ]);
+    expect(page.webContents.sendInputEvent).not.toHaveBeenCalled();
+  });
+
   it("refuses input when a cross-site frame holds the unfocused page's focus", async () => {
     const guest = makeGuest({ focused: false, focusedDocument: false });
     await expect(guest.send("Input.insertText", { text: "secret" })).rejects.toThrow(
