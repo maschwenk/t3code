@@ -195,6 +195,46 @@ it.effect("aims coordinate steps at the latest capture, even after text-only sna
   }).pipe(Effect.provide(layer));
 });
 
+it.effect("tells the agent when the app was sent back, in that operation's result only", () => {
+  const layer = ComputerUse.layer.pipe(
+    Layer.provide(
+      Layer.succeed(Driver.Driver, {
+        withSession: (effect) => effect,
+        execute: (request) =>
+          Effect.sync(() =>
+            request.kind === "snapshot"
+              ? { ok: true as const, snapshot }
+              : request.kind === "open"
+                ? { ok: true as const, sentBack: true as const }
+                : // The app came forward and the step still failed.
+                  { ok: false as const, code: "failed" as const, sentBack: true as const },
+          ),
+      }),
+    ),
+    Layer.provide(DesktopTelemetryReceiver.layerTest()),
+    Layer.provideMerge(
+      ServerSettings.layerTest({
+        enableAgentComputerAccess: true,
+        computerUseAllowedApps: ["Calculator"],
+      }),
+    ),
+    Layer.provide(NodeServices.layer),
+  );
+  return Effect.gen(function* () {
+    const computer = yield* ComputerUse.ComputerUse;
+    const opened = yield* computer.open("a", { app: "Calculator", activate: false });
+    expect(opened.sentBack).toBe(true);
+    const later = yield* computer.snapshot("a", { app: "Calculator", includeImage: false });
+    expect(later.sentBack).toBeUndefined();
+    const result = yield* computer.act("a", {
+      snapshotId: later.snapshotId,
+      steps: [{ ref: 1, action: { kind: "press" } }],
+    });
+    expect(result).toMatchObject({ completed: [], error: { code: "failed" }, sentBack: true });
+    expect(result.snapshot?.sentBack).toBeUndefined();
+  }).pipe(Effect.provide(layer));
+});
+
 it.effect("blocks native work until enabled, including screen capture's separate grant", () => {
   const calls: WorkerRequest[] = [];
   return Effect.gen(function* () {

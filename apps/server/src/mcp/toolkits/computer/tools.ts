@@ -88,7 +88,7 @@ export const ComputerActionTool = Tool.make("computer_action", {
 
 export const ComputerOpenTool = Tool.make("computer_open", {
   description:
-    "Launch an allowed macOS app on the environment machine, or reopen its window if it is running, without bringing it in front of the user's work, then return its snapshot. Some apps still bring themselves forward when they first launch. activate=true brings the app to the front and takes focus from the user for good; every step, pointer steps included, already runs in the background, so only use activate when the user asks or is not working on that machine.",
+    "Launch an allowed macOS app on the environment machine, or reopen its window if it is running, without bringing it in front of the user's work, then return its snapshot. An app that brings itself forward anyway is sent back behind the user's app, and the result says so. activate=true brings the app to the front and takes focus from the user for good; every step, pointer steps included, already runs in the background, so only use activate when the user asks or is not working on that machine.",
   parameters: Schema.Struct({ app: AppName, activate: Schema.optionalKey(Schema.Boolean) }),
   success: Schema.Unknown,
   failure,
