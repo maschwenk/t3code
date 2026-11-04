@@ -22,7 +22,14 @@ type Ffi = typeof import("ffi-rs");
 type FfiParams = Parameters<Ffi["load"]>[0];
 type Rect = { x: number; y: number; width: number; height: number };
 
-export type NativeWindow = { readonly id: number; readonly layer: number; readonly bounds: Rect };
+export type NativeWindow = {
+  readonly id: number;
+  readonly pid: number;
+  readonly layer: number;
+  readonly bounds: Rect;
+};
+/** The window server's front app: its pid, and its process serial number to bring it back. */
+export type FrontProcess = { readonly pid: number; readonly psn: bigint };
 export type MenuItem = {
   readonly title: string | null;
   readonly enabled: boolean;
@@ -58,6 +65,13 @@ const MOUSE_TYPE = {
   right: { move: 5, down: 3, up: 4, drag: 7 },
 } as const;
 const UTF8 = 0x0800_0100;
+/** kCGEventSourceStateHIDSystemState: hardware input only, never events posted to a process. */
+const HID_SYSTEM_STATE = 1;
+/** Left, right and other mouse-down event types. */
+const MOUSE_DOWN_TYPES = [1, 3, 25] as const;
+/** _SLPSSetFrontProcessWithOptions modes: as if the user chose the app, and leave hidden apps hidden. */
+const CPS_CAUSED_BY_USER = 0x200;
+const CPS_DONT_UNHIDE = 0x800;
 
 export async function loadMacNative() {
   const ffi: Ffi = await import("ffi-rs");
@@ -269,45 +283,94 @@ export async function loadMacNative() {
     };
   };
 
+  const int = () => ffi.createPointer({ paramsType: [T.I32], paramsValue: [0] });
+  const readInt = (pointer: ReturnType<typeof int>) =>
+    ffi.restorePointer({ retType: [T.I32], paramsValue: pointer })[0] as unknown as number;
+  const psnCell = out();
+  const connectionCell = int();
+  const pidCell = int();
+  let connection: number | undefined;
+  // Never the Process Manager (GetProcessForPID, GetProcessPID) for this:
+  // calling it registers the worker as an app that macOS can bring forward.
+  const frontProcess = (): FrontProcess | undefined => {
+    connection ??= call<number>("sl", "SLSMainConnectionID", T.I32, [], []);
+    if (
+      call<number>("sl", "_SLPSGetFrontProcess", T.I32, [T.External], [psnCell[0]]) !== 0 ||
+      call<number>(
+        "sl",
+        "SLSGetConnectionIDForPSN",
+        T.I32,
+        [T.I32, T.External, T.External],
+        [connection, psnCell[0], connectionCell[0]],
+      ) !== 0 ||
+      call<number>(
+        "sl",
+        "SLSConnectionGetPID",
+        T.I32,
+        [T.I32, T.External],
+        [readInt(connectionCell), pidCell[0]],
+      ) !== 0
+    )
+      return undefined;
+    return { pid: readInt(pidCell), psn: read(psnCell) };
+  };
+  /** Asks `pid` to become the active app. True when the request was accepted. */
+  const activate = (pid: number) =>
+    call<number>(
+      "ax",
+      "AXUIElementSetAttributeValue",
+      T.I32,
+      [Ref, Ref, Ref],
+      [application(pid), cfString("AXFrontmost"), cfTrue()],
+    ) === 0;
+  const secondsSince = (type: number) =>
+    call<number>(
+      "cg",
+      "CGEventSourceSecondsSinceLastEventType",
+      T.Double,
+      [T.I32, T.U32],
+      [HID_SYSTEM_STATE, type],
+    );
+  /** On-screen windows front to back from the window server, of one app or all of them. */
+  const onScreenWindows = (only?: number): NativeWindow[] => {
+    // kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements
+    const list = call<bigint>("cg", "CGWindowListCopyWindowInfo", Ref, [T.U32, T.U32], [1 | 16, 0]);
+    const windows: NativeWindow[] = [];
+    for (const entry of toArray(list)) {
+      const pid = toNumber(field(entry, "kCGWindowOwnerPID"));
+      if (pid === null || (only !== undefined && pid !== only)) continue;
+      const bounds = field(entry, "kCGWindowBounds");
+      const id = toNumber(field(entry, "kCGWindowNumber"));
+      const rect = {
+        x: toNumber(field(bounds, "X")),
+        y: toNumber(field(bounds, "Y")),
+        width: toNumber(field(bounds, "Width")),
+        height: toNumber(field(bounds, "Height")),
+      };
+      if (
+        id === null ||
+        rect.x === null ||
+        rect.y === null ||
+        rect.width === null ||
+        rect.height === null
+      )
+        continue;
+      windows.push({
+        id,
+        pid,
+        layer: toNumber(field(entry, "kCGWindowLayer")) ?? 0,
+        bounds: rect as Rect,
+      });
+    }
+    release(list);
+    return windows;
+  };
+
   return {
-    /** On-screen windows of `pid`, front to back, from the window server. */
-    windows(pid: number): NativeWindow[] {
-      // kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements
-      const list = call<bigint>(
-        "cg",
-        "CGWindowListCopyWindowInfo",
-        Ref,
-        [T.U32, T.U32],
-        [1 | 16, 0],
-      );
-      const windows: NativeWindow[] = [];
-      for (const entry of toArray(list)) {
-        if (toNumber(field(entry, "kCGWindowOwnerPID")) !== pid) continue;
-        const bounds = field(entry, "kCGWindowBounds");
-        const id = toNumber(field(entry, "kCGWindowNumber"));
-        const rect = {
-          x: toNumber(field(bounds, "X")),
-          y: toNumber(field(bounds, "Y")),
-          width: toNumber(field(bounds, "Width")),
-          height: toNumber(field(bounds, "Height")),
-        };
-        if (
-          id === null ||
-          rect.x === null ||
-          rect.y === null ||
-          rect.width === null ||
-          rect.height === null
-        )
-          continue;
-        windows.push({
-          id,
-          layer: toNumber(field(entry, "kCGWindowLayer")) ?? 0,
-          bounds: rect as Rect,
-        });
-      }
-      release(list);
-      return windows;
-    },
+    /** On-screen windows of `pid`, front to back. */
+    windows: (pid: number) => onScreenWindows(pid),
+    /** Every app's normal on-screen windows, front to back. */
+    stack: () => onScreenWindows().filter((window) => window.layer === 0),
     /**
      * Posts one pointer transition to `pid` only, addressed to `window` so the
      * app handles it where `point` lies. The app need not be in front and the
@@ -549,19 +612,39 @@ export async function loadMacNative() {
       call("cg", "CGWarpMouseCursorPosition", T.I32, [CGPoint], [{ x: point.x, y: point.y }]);
       call("cg", "CGAssociateMouseAndMouseCursorPosition", T.I32, [T.I32], [1]);
     },
-    /** Asks `pid` to become the active app. True when the request was accepted. */
-    activate: (pid: number) =>
-      call<number>(
-        "ax",
-        "AXUIElementSetAttributeValue",
-        T.I32,
-        [Ref, Ref, Ref],
-        [
-          call<bigint>("ax", "AXUIElementCreateApplication", Ref, [T.I32], [pid]),
-          cfString("AXFrontmost"),
-          cfTrue(),
-        ],
-      ) === 0,
+    activate,
+    frontProcess,
+    frontmostPid: () => frontProcess()?.pid,
+    /**
+     * Puts `app` back in front with `window` on top, the way the window server
+     * does when the user picks it, falling back to the app's own choice of
+     * window and then to asking it through accessibility. AXFrontmost alone
+     * waits on the app, which can block for the whole accessibility timeout,
+     * and brings every one of its windows forward.
+     */
+    bringToFront(app: FrontProcess, window: number): boolean {
+      const psn = ffi.createPointer({ paramsType: [Ref], paramsValue: [app.psn] });
+      const front = (id: number) =>
+        call<number>(
+          "sl",
+          "_SLPSSetFrontProcessWithOptions",
+          T.I32,
+          [T.External, T.U32, T.U32],
+          [psn[0], id, CPS_CAUSED_BY_USER | CPS_DONT_UNHIDE],
+        ) === 0;
+      return front(window) || (window !== 0 && front(0)) || activate(app.pid);
+    },
+    /** Seconds since the user last pressed a mouse button; posted events do not count. */
+    secondsSinceUserClick: () => Math.min(...MOUSE_DOWN_TYPES.map(secondsSince)),
+    /** Whether the user holds the key with this virtual key code down. */
+    keyHeld: (keyCode: number) =>
+      call<boolean>(
+        "cg",
+        "CGEventSourceKeyState",
+        T.Boolean,
+        [T.I32, T.I16],
+        [HID_SYSTEM_STATE, keyCode],
+      ),
     /** Top-level menu bar items of `pid`. xa11y's tree omits the menu bar. */
     menuBar(pid: number): MenuItem[] {
       const app = call<bigint>("ax", "AXUIElementCreateApplication", Ref, [T.I32], [pid]);

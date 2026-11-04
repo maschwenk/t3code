@@ -123,9 +123,15 @@ export function planStep(
       : {}),
   };
 }
-export type Observation = NativeSnapshot & { readonly snapshotId: string };
+export type Observation = NativeSnapshot & {
+  readonly snapshotId: string;
+  /** The app came forward on its own and was sent back behind the user's app. */
+  readonly sentBack?: true;
+};
 export type ActResult = {
   readonly total: number;
+  /** The app came forward on its own during the batch and was sent back behind the user's app. */
+  readonly sentBack?: true;
   /** How each completed step was delivered, in order. */
   readonly completed: ReadonlyArray<
     NonNullable<Extract<WorkerResponse, { ok: true }>["via"]> | "wait"
@@ -179,9 +185,17 @@ const make = Effect.gen(function* () {
   const receipts = new Map<string, Receipt>();
   // When the last agent pointer gesture ended; see deliverPointer's ownInputAt.
   let pointerInputAt: number | undefined;
+  // Whether the worker sent the app back since the running operation started.
+  // The mutex runs one operation at a time.
+  let sentBack = false;
   const fail = (code: ComputerUseError["code"]) => new ComputerUseError({ code });
   const execute = (request: WorkerRequest) =>
     driver.execute(request).pipe(
+      Effect.tap((result) =>
+        Effect.sync(() => {
+          if (result.sentBack) sentBack = true;
+        }),
+      ),
       Effect.flatMap((result) =>
         result.ok
           ? Effect.succeed(result)
@@ -230,6 +244,16 @@ const make = Effect.gen(function* () {
     includeImage: boolean,
     work: Effect.Effect<A, ComputerUseError>,
   ) => check(app, includeImage).pipe(Effect.andThen(work));
+  /** Marks an operation's result when the worker sent the app back while it ran. */
+  const reportingSentBack = <A extends object, E>(work: Effect.Effect<A, E>) =>
+    Effect.suspend(() => {
+      sentBack = false;
+      return work;
+    }).pipe(
+      Effect.map((value): A & { readonly sentBack?: true } =>
+        sentBack ? { ...value, sentBack: true } : value,
+      ),
+    );
 
   /**
    * Takes a snapshot and issues its receipt. Callers hold the mutex and
@@ -297,7 +321,7 @@ const make = Effect.gen(function* () {
           });
           yield* cursor.look(caller, observation);
           return observation;
-        }),
+        }).pipe(reportingSentBack),
       ),
     );
 
@@ -399,7 +423,7 @@ const make = Effect.gen(function* () {
             }),
           ),
         );
-      }),
+      }).pipe(reportingSentBack),
     );
 
   const open: ComputerUse["Service"]["open"] = (caller, input) =>
@@ -416,7 +440,7 @@ const make = Effect.gen(function* () {
           });
           yield* cursor.look(caller, observation);
           return observation;
-        }),
+        }).pipe(reportingSentBack),
       ),
     );
   return ComputerUse.of({ status, snapshot, act, open });

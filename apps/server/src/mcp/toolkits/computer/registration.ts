@@ -19,8 +19,16 @@ const imageContent = (observation: ComputerUse.Observation): Content[] =>
         },
       ]
     : [];
+const SENT_BACK = "The app came forward on its own and was sent back; the user's app is in front.";
+
 const observationContent = (observation: ComputerUse.Observation): Content[] => [
-  { type: "text", text: formatSnapshot(observation, observation.snapshotId) },
+  {
+    type: "text",
+    text: [
+      ...(observation.sentBack ? [SENT_BACK] : []),
+      formatSnapshot(observation, observation.snapshotId),
+    ].join("\n"),
+  },
   ...imageContent(observation),
 ];
 
@@ -30,6 +38,7 @@ function actionContent(result: ComputerUse.ActResult): Content[] {
     `Completed ${result.completed.length} of ${result.total} steps${
       result.completed.length ? ` (${result.completed.join(", ")})` : ""
     }.`,
+    ...(result.sentBack ? [SENT_BACK] : []),
   ];
   if (result.error)
     lines.push(`Step ${result.completed.length + 1} stopped the batch: ${result.error.message}`);

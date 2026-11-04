@@ -230,9 +230,12 @@ export const FailureDetail = Schema.Struct({
   output: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(160))),
 });
 
+/** Set when the target app came forward on its own and was sent back behind the user's app. */
+const SentBack = { sentBack: Schema.optionalKey(Schema.Literal(true)) };
 export const WorkerResponse = Schema.Union([
   Schema.Struct({
     ok: Schema.Literal(true),
+    ...SentBack,
     snapshot: Schema.optionalKey(NativeSnapshot),
     /** How an action was delivered. */
     via: Schema.optionalKey(
@@ -251,6 +254,7 @@ export const WorkerResponse = Schema.Union([
   }),
   Schema.Struct({
     ok: Schema.Literal(false),
+    ...SentBack,
     code: Schema.Literals([
       "unavailable",
       "permissions",

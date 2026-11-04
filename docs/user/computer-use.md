@@ -19,7 +19,8 @@ background: the app stays behind your windows, your mouse does not move, and the
 stays where you left it.
 
 - **Open apps.** An agent can launch an allowed app or reopen its window without bringing it
-  forward. Some apps still bring themselves to the front the first time they launch.
+  forward. If an app brings itself to the front anyway, T3 puts the app you were using back in
+  front.
 - **Read apps.** Snapshots list the app's controls, its menu bar, and which app is in front. Large
   apps such as browsers, Slack and Finder skip unnamed layout containers and anything scrolled out
   of view, and agents can search by text or role, focus on one part of a window, or page through
