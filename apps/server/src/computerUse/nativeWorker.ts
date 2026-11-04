@@ -7,6 +7,7 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeTimersPromises from "node:timers/promises";
 import * as NodeUtil from "node:util";
+import { bringsAppForward, type FocusGuard, makeFocusGuard, OPEN_SETTLE_MS } from "./focusGuard.ts";
 import { isShortcut, menuModifierMask, modifierKeyCode, parseKeyChord } from "./keys.ts";
 import { loadMacNative, type MacNative, type MenuItem, type PointerWindow } from "./macNative.ts";
 import {
@@ -170,13 +171,6 @@ async function appByName(App: Xa11y["App"], name: string): Promise<App | undefin
     first ??= app;
   }
   return first;
-}
-
-async function frontmostPid(): Promise<number | undefined> {
-  const asn = (await lsappinfo(["front"])).trim();
-  if (!asn.startsWith("ASN:")) return undefined;
-  const pid = /"pid"=(\d+)/.exec(await lsappinfo(["info", "-only", "pid", asn]))?.[1];
-  return pid === undefined ? undefined : Number(pid);
 }
 
 type Resolved = { readonly element: Element; readonly window: Element | undefined };
@@ -380,7 +374,7 @@ async function takeSnapshot(
   const menus = options.root
     ? undefined
     : agentMenuBar(native.menuBar(app.pid)).flatMap((item) => (item.title ? [item.title] : []));
-  const frontmost = (await frontmostPid()) === app.pid;
+  const frontmost = native.frontmostPid() === app.pid;
   let image: NativeSnapshot["image"];
   if (request.includeImage) {
     stage("capture");
@@ -549,7 +543,7 @@ async function pressKey(
     // Background AppKit apps ignore posted command shortcuts, but their menu
     // items still run through accessibility. Shortcuts with no menu item fall
     // through to key events, which web and Electron content does handle.
-    if ((await frontmostPid()) !== pid) {
+    if (native.frontmostPid() !== pid) {
       const item = findShortcut(agentMenuBar(bar), chord.character, mask);
       if (item) {
         for (let index = 0; index < (action.repeat ?? 1); index++)
@@ -600,12 +594,12 @@ async function postTransitions(
   transitions: readonly Transition[],
 ): Promise<void> {
   const pressing = transitions.some((transition) => transition.kind === "down");
-  const activate = pressing && (await frontmostPid()) !== pid;
-  if (activate) {
-    native.postActivation(pid, window, true);
-    await NodeTimersPromises.setTimeout(ACTIVATION_SETTLE_MS);
-  }
+  const activate = pressing && native.frontmostPid() !== pid;
   try {
+    if (activate) {
+      native.postActivation(pid, window, true);
+      await NodeTimersPromises.setTimeout(ACTIVATION_SETTLE_MS);
+    }
     for (const [index, transition] of transitions.entries()) {
       if (index > 0) await NodeTimersPromises.setTimeout(transition.kind === "drag" ? 16 : 40);
       native.postMouse(pid, window, transition.point, transition);
@@ -674,7 +668,7 @@ async function runPointer(
 ): Promise<WorkerResponse> {
   const input = xa11y.inputSim();
   const desktop: Desktop = {
-    frontmost: frontmostPid,
+    frontmost: async () => native.frontmostPid(),
     activate: native.activate,
     raise: async () => {
       if (window?.actions.includes("raise"))
@@ -888,12 +882,21 @@ async function act(
   );
 }
 
+async function watchByName(focus: FocusGuard, name: string): Promise<void> {
+  const [pid] = launchServicesPids(await lsappinfo(["list"]), name);
+  if (pid !== undefined) focus.watch(pid);
+}
+
 async function openApp(
   App: Xa11y["App"],
   request: Extract<WorkerRequest, { kind: "open" }>,
+  focus: FocusGuard,
 ): Promise<WorkerResponse> {
+  // A running app may come forward as soon as it gets the reopen event.
+  if (!request.activate) await watchByName(focus, request.app);
   // -g asks LaunchServices not to bring the app forward. Some apps still
-  // activate themselves when they finish launching.
+  // activate themselves when they finish launching; the focus guard sends
+  // them back.
   const launched = await execFile(
     "/usr/bin/open",
     request.activate ? ["-a", request.app] : ["-g", "-a", request.app],
@@ -903,11 +906,15 @@ async function openApp(
     () => false,
   );
   if (!launched) return { ok: false, code: "app_not_running" };
+  if (!request.activate) await watchByName(focus, request.app);
   for (let attempt = 0; attempt < 40; attempt++) {
     const app = await appByName(App, request.app);
+    if (app && app.pid !== null) focus.watch(app.pid);
     // A launching app is listed before its first window exists.
-    if (app && (attempt >= 16 || (await app.children()).length > 0))
+    if (app && (attempt >= 16 || (await app.children()).length > 0)) {
+      await focus.settle(OPEN_SETTLE_MS);
       return { ok: true, via: "launch_services" };
+    }
     await NodeTimersPromises.setTimeout(250);
   }
   return { ok: false, code: "app_not_running" };
@@ -918,6 +925,7 @@ let nativeLibrary: Promise<MacNative> | undefined;
 async function execute(
   request: WorkerRequest,
   stage: (value: FailureStage) => void,
+  focusGuard: (native: MacNative) => FocusGuard,
 ): Promise<WorkerResponse> {
   // oxlint-disable-next-line t3code/no-global-process-runtime -- This isolated CLI worker runs before an Effect runtime exists.
   if (process.platform !== "darwin") return { ok: false, code: "unavailable" };
@@ -926,25 +934,30 @@ async function execute(
   // named exports, so `inputSim` and `screenshot` exist only on the default export.
   const xa11y = (await import("@crowecawcaw/xa11y")).default;
   const { App } = xa11y;
-  if (request.kind === "open") {
-    stage("app_lookup");
-    return openApp(App, request);
-  }
   const native = await (nativeLibrary ??= loadMacNative());
-  stage("app_lookup");
-  const app =
-    request.kind === "snapshot"
-      ? await appByName(App, request.app)
-      : await App.byPid(request.pid, { timeout: 0 });
-  if (!app) return { ok: false, code: "app_not_running" };
-  if (app.name !== request.app || app.pid === null) return { ok: false, code: "target_changed" };
-  const attached = app as App & { pid: number };
-  if (request.kind === "action") {
-    stage("action");
-    return act(xa11y, native, attached, request);
+  const focus = focusGuard(native);
+  if (bringsAppForward(request)) focus.disarm();
+  else focus.arm();
+  try {
+    stage("app_lookup");
+    if (request.kind === "open") return await openApp(App, request, focus);
+    const app =
+      request.kind === "snapshot"
+        ? await appByName(App, request.app)
+        : await App.byPid(request.pid, { timeout: 0 });
+    if (!app) return { ok: false, code: "app_not_running" };
+    if (app.name !== request.app || app.pid === null) return { ok: false, code: "target_changed" };
+    const attached = app as App & { pid: number };
+    focus.watch(attached.pid);
+    if (request.kind === "action") {
+      stage("action");
+      return await act(xa11y, native, attached, request);
+    }
+    stage("element_tree");
+    return await takeSnapshot(native, attached, request, stage);
+  } finally {
+    focus.finish();
   }
-  stage("element_tree");
-  return takeSnapshot(native, attached, request, stage);
 }
 
 /**
@@ -1022,6 +1035,9 @@ export function nativeFailure(cause: unknown, stage?: FailureStage): WorkerRespo
 
 export async function runComputerUseWorker(session = false): Promise<void> {
   let previousWasAction = false;
+  // One guard per session, so it keeps watching between the steps of a batch.
+  let guard: FocusGuard | undefined;
+  const focusGuard = (native: MacNative) => (guard ??= makeFocusGuard(native));
   const respond = async (raw: string) => {
     let response: WorkerResponse;
     let stage: FailureStage = "request";
@@ -1031,31 +1047,40 @@ export async function runComputerUseWorker(session = false): Promise<void> {
       // final observation instead of depending on another process starting up.
       if (previousWasAction && request.kind === "snapshot") await NodeTimersPromises.setTimeout(75);
       previousWasAction = request.kind === "action";
-      response = await execute(request, (value) => {
-        stage = value;
-      });
+      response = await execute(
+        request,
+        (value) => {
+          stage = value;
+        },
+        focusGuard,
+      );
     } catch (cause) {
       response = nativeFailure(cause, stage);
     }
+    if (guard?.takeSentBack()) response = { ...response, sentBack: true };
     process.stdout.write(JSON.stringify(response) + (session ? "\n" : ""));
   };
   process.stdin.setEncoding("utf8");
-  let raw = "";
-  let requests = 0;
-  for await (const chunk of process.stdin) {
-    raw += String(chunk);
-    if (session) {
-      let newline: number;
-      while ((newline = raw.indexOf("\n")) !== -1) {
-        if (Buffer.byteLength(raw.slice(0, newline)) > 65_536 || ++requests > 64) return;
-        await respond(raw.slice(0, newline));
-        raw = raw.slice(newline + 1);
+  try {
+    let raw = "";
+    let requests = 0;
+    for await (const chunk of process.stdin) {
+      raw += String(chunk);
+      if (session) {
+        let newline: number;
+        while ((newline = raw.indexOf("\n")) !== -1) {
+          if (Buffer.byteLength(raw.slice(0, newline)) > 65_536 || ++requests > 64) return;
+          await respond(raw.slice(0, newline));
+          raw = raw.slice(newline + 1);
+        }
+      }
+      if (Buffer.byteLength(raw) > 65_536) {
+        await respond("");
+        return;
       }
     }
-    if (Buffer.byteLength(raw) > 65_536) {
-      await respond("");
-      return;
-    }
+    if (!session) await respond(raw);
+  } finally {
+    guard?.disarm();
   }
-  if (!session) await respond(raw);
 }
