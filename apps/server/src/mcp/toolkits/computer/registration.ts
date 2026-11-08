@@ -1,6 +1,7 @@
 import type { McpSchema } from "effect/ai";
 import type * as ComputerUse from "../../../computerUse/ComputerUse.ts";
-import { formatSnapshot } from "../../../computerUse/snapshotTree.ts";
+import type { NativeSnapshot } from "../../../computerUse/protocol.ts";
+import { formatChanges, formatSnapshot } from "../../../computerUse/snapshotTree.ts";
 
 type Content = McpSchema.CallToolResult["content"][number];
 
@@ -32,8 +33,20 @@ const observationContent = (observation: ComputerUse.Observation): Content[] => 
   ...imageContent(observation),
 ];
 
+/** Only what changed since `before`, unless the whole tree was asked for or is shorter. */
+function afterBatch(
+  snapshot: ComputerUse.Observation,
+  before: NativeSnapshot | undefined,
+  full: boolean,
+) {
+  const whole = formatSnapshot(snapshot, snapshot.snapshotId);
+  if (full || !before) return whole;
+  const changes = formatChanges(before, snapshot, snapshot.snapshotId);
+  return changes.length < whole.length ? changes : whole;
+}
+
 /** One line per completed step, then why the batch stopped, then the app as it is now. */
-function actionContent(result: ComputerUse.ActResult): Content[] {
+function actionContent(result: ComputerUse.ActResult, full: boolean): Content[] {
   const lines = [
     `Completed ${result.completed.length} of ${result.total} steps${
       result.completed.length ? ` (${result.completed.join(", ")})` : ""
@@ -47,7 +60,7 @@ function actionContent(result: ComputerUse.ActResult): Content[] {
     ? [
         {
           type: "text",
-          text: `${lines.join("\n")}\n\n${formatSnapshot(result.snapshot, result.snapshot.snapshotId)}`,
+          text: `${lines.join("\n")}\n\n${afterBatch(result.snapshot, result.before, full)}`,
         },
         ...imageContent(result.snapshot),
       ]
@@ -61,7 +74,9 @@ function actionContent(result: ComputerUse.ActResult): Content[] {
  */
 export const renderComputerToolResult = (
   name: "computer_snapshot" | "computer_action" | "computer_open",
-  input: { readonly app?: string; readonly activate?: boolean } | undefined,
+  input:
+    | { readonly app?: string; readonly activate?: boolean; readonly fullSnapshot?: boolean }
+    | undefined,
   result: unknown,
 ): ComputerToolContent => {
   switch (name) {
@@ -70,7 +85,7 @@ export const renderComputerToolResult = (
     case "computer_action": {
       const acted = result as ComputerUse.ActResult;
       return {
-        content: actionContent(acted),
+        content: actionContent(acted, input?.fullSnapshot === true),
         isError: acted.error !== undefined && acted.completed.length === 0,
       };
     }

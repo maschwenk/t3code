@@ -3,7 +3,6 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { EnvironmentId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Schema from "effect/Schema";
 import { McpSchema, McpServer } from "effect/ai";
 import * as ComputerUse from "../../../computerUse/ComputerUse.ts";
 import * as Driver from "../../../computerUse/Driver.ts";
@@ -58,23 +57,21 @@ const layerTest = (calls: WorkerRequest[]) =>
                         app: "Calculator",
                         pid: 42,
                         truncated: false,
-                        elements: [
-                          {
-                            ref: 1,
-                            role: "button",
-                            name: "7",
-                            value: null,
-                            enabled: true,
-                            editable: false,
-                            actions: ["press"],
-                            path: [0, 0],
-                            stableId: "private-id",
-                            bounds: { x: 0, y: 0, width: 30, height: 30 },
-                            description: null,
-                            states: [],
-                            depth: 1,
-                          },
-                        ],
+                        elements: ["7", "8", "9", "Multiply"].map((name, index) => ({
+                          ref: index + 1,
+                          role: "button",
+                          name,
+                          value: null,
+                          enabled: true,
+                          editable: false,
+                          actions: ["press"],
+                          path: [0, index],
+                          stableId: `private-id-${index}`,
+                          bounds: { x: index * 30, y: 0, width: 30, height: 30 },
+                          description: null,
+                          states: [],
+                          depth: 1,
+                        })),
                         offscreen: 0,
                         frontmost: false,
                         ...(request.includeImage
@@ -134,12 +131,18 @@ it.effect("exposes Claude tools with image content and session-bound action rece
     };
     const result = yield* server.callTool({ name: "computer_action", arguments: args });
     expect(result.isError).toBe(false);
-    expect((result.content[0] as { text: string }).text).toMatch(
-      /^Completed 1 of 1 steps \(accessibility\)\.\n\nCalculator snapshotId=/,
+    const acted = (result.content[0] as { text: string }).text;
+    expect(acted).toMatch(
+      /^Completed 1 of 1 steps \(accessibility\)\.\n\nCalculator snapshotId=[\w-]+ \(4 elements; app is in the background\)\nNo changes since the snapshot you acted on\.$/,
     );
     const duplicate = yield* server.callTool({ name: "computer_action", arguments: args });
     expect(duplicate.isError).toBe(true);
-    expect(calls.filter((call) => call.kind === "action")).toHaveLength(1);
+    const full = yield* server.callTool({
+      name: "computer_action",
+      arguments: { ...args, snapshotId: /snapshotId=([\w-]+)/.exec(acted)![1], fullSnapshot: true },
+    });
+    expect((full.content[0] as { text: string }).text).toContain('[1] button "7" {press}');
+    expect(calls.filter((call) => call.kind === "action")).toHaveLength(2);
   }).pipe(
     Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
     Effect.provideService(McpSchema.McpServerClient, client),

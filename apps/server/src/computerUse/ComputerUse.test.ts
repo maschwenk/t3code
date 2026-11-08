@@ -410,6 +410,140 @@ it.effect("stops a batch when computer use is turned off while it runs", () => {
   }).pipe(Effect.provide(layer));
 });
 
+/** A driver whose snapshots walk `walks` in turn, numbered 1..n like the worker; the last repeats. */
+const walking = (
+  walks: readonly (readonly NativeSnapshot["elements"][number][])[],
+  calls: WorkerRequest[],
+  snapshotFails?: (request: Extract<WorkerRequest, { kind: "snapshot" }>) => boolean,
+) =>
+  ComputerUse.layer.pipe(
+    Layer.provide(
+      Layer.succeed(Driver.Driver, {
+        withSession: (effect) => effect,
+        execute: (request) =>
+          Effect.sync(() => {
+            calls.push(request);
+            if (request.kind !== "snapshot") return { ok: true as const };
+            if (snapshotFails?.(request))
+              return { ok: false as const, code: "target_changed" as const };
+            const walk =
+              walks[
+                Math.min(
+                  calls.filter((call) => call.kind === "snapshot").length - 1,
+                  walks.length - 1,
+                )
+              ]!;
+            return {
+              ok: true as const,
+              snapshot: {
+                ...snapshot,
+                elements: walk.map((element, index) => ({ ...element, ref: index + 1 })),
+              },
+            };
+          }),
+      }),
+    ),
+    Layer.provide(DesktopTelemetryReceiver.layerTest()),
+    Layer.provideMerge(
+      ServerSettings.layerTest({
+        enableAgentComputerAccess: true,
+        computerUseAllowedApps: ["Calculator"],
+      }),
+    ),
+    Layer.provide(NodeServices.layer),
+  );
+const seven = snapshot.elements[0]!;
+const allClear = { ...seven, name: "All Clear", stableId: "AllClear", path: [0, 1] };
+const clear = { ...allClear, name: "Clear", stableId: "Clear" };
+const display = {
+  ...seven,
+  role: "static_text",
+  name: "7",
+  actions: [],
+  stableId: null,
+  path: [0, 2],
+};
+const named = (elements: readonly NativeSnapshot["elements"][number][] | undefined) =>
+  elements?.map((element) => `${element.name}=${element.ref}`);
+
+it.effect("keeps refs across snapshots and actions, and rejects refs the app removed", () => {
+  const calls: WorkerRequest[] = [];
+  return Effect.gen(function* () {
+    const computer = yield* ComputerUse.ComputerUse;
+    const shot = yield* computer.snapshot("a", { app: "Calculator", includeImage: false });
+    expect(named(shot.elements)).toEqual(["7=1", "All Clear=2"]);
+    const pressed = yield* computer.act("a", {
+      snapshotId: shot.snapshotId,
+      steps: [{ ref: 1, action: { kind: "press" } }],
+    });
+    // The result can be read as changes against the snapshot the batch ran on.
+    expect(named(pressed.before?.elements)).toEqual(["7=1", "All Clear=2"]);
+    expect(named(pressed.snapshot?.elements)).toEqual(["7=1", "Clear=3", "7=4"]);
+    // All Clear is gone, so its ref is rejected rather than handed to Clear.
+    expect(
+      yield* code(
+        computer.act("a", {
+          snapshotId: pressed.snapshot!.snapshotId,
+          steps: [{ ref: 2, action: { kind: "press" } }],
+        }),
+      ),
+    ).toBe("invalid_ref");
+    const again = yield* computer.snapshot("a", { app: "Calculator", includeImage: false });
+    expect(named(again.elements)).toEqual(["7=1", "Clear=3", "7=4"]);
+    yield* computer.act("a", {
+      snapshotId: again.snapshotId,
+      steps: [{ ref: 3, action: { kind: "press" } }],
+    });
+    const actions = calls.filter((call) => call.kind === "action");
+    expect(actions.map((call) => call.target?.name)).toEqual(["7", "Clear"]);
+  }).pipe(
+    Effect.provide(
+      walking(
+        [
+          [seven, allClear],
+          [seven, clear, display],
+        ],
+        calls,
+      ),
+    ),
+  );
+});
+
+it.effect("returns no baseline when the batch's view could not be shown again", () => {
+  const calls: WorkerRequest[] = [];
+  const acted = () => calls.some((call) => call.kind === "action");
+  return Effect.gen(function* () {
+    const computer = yield* ComputerUse.ComputerUse;
+    const press = { ref: 1, action: { kind: "press" as const } };
+    yield* computer.snapshot("a", { app: "Calculator", includeImage: false });
+    const rooted = yield* computer.snapshot("a", {
+      app: "Calculator",
+      includeImage: false,
+      root: 1,
+    });
+    // The root vanished, so the result shows the whole app instead.
+    const fallback = yield* computer.act("a", { snapshotId: rooted.snapshotId, steps: [press] });
+    expect(fallback.snapshot).toBeDefined();
+    expect(fallback.before).toBeUndefined();
+    const paged = yield* computer.snapshot("a", {
+      app: "Calculator",
+      includeImage: false,
+      offset: 1,
+    });
+    const reset = yield* computer.act("a", { snapshotId: paged.snapshotId, steps: [press] });
+    expect(reset.snapshot).toBeDefined();
+    expect(reset.before).toBeUndefined();
+  }).pipe(
+    Effect.provide(
+      walking(
+        [[seven, allClear]],
+        calls,
+        (request) => acted() && request.options.root !== undefined,
+      ),
+    ),
+  );
+});
+
 it.effect("expires snapshots and invalidates all observations after an uncertain action", () => {
   const calls: WorkerRequest[] = [];
   return Effect.gen(function* () {
