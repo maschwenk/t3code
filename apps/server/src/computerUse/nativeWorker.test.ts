@@ -12,6 +12,7 @@ import {
   nativeFailure,
   relocationMatches,
   systemMenus,
+  typeTookEffect,
 } from "./nativeWorker.ts";
 import type { MenuItem } from "./macNative.ts";
 import { ComputerUseError, type ElementTarget } from "./protocol.ts";
@@ -249,6 +250,21 @@ it("relocates a named element that moved, never an unnamed one", () => {
   expect(relocationMatches(unnamed, unnamed)).toBe(true);
   expect(relocationMatches({ ...row, name: "Drafts" }, row)).toBe(false);
 });
+
+it.each([
+  ["text that never reached an empty web field", "", "", "Max", false, false],
+  ["inserted text", "", "Max", "Max", false, true],
+  ["a value the app ignored", "old", "old", "new", true, false],
+  ["a value the app reformatted", "", "(555) 010", "555010", true, true],
+  ["a value that already matched", "new", "new", "new", true, true],
+  ["an empty insert", "a", "a", "", false, true],
+  ["a field that reports no value", null, null, "Max", false, true],
+] as const)(
+  "decides whether a type step took effect for %s",
+  (_, before, after, text, replace, took) => {
+    expect(typeTookEffect(before, after, text, replace)).toBe(took);
+  },
+);
 
 const menu = (
   title: string,

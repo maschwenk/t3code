@@ -38,11 +38,12 @@ stays where you left it.
 
 When the environment runs in the T3 desktop app, an agent cursor shows where each action happens.
 
-Some input still needs the real pointer: hovering, double-clicking, dragging, exact wheel
-scrolling, and clicking things that offer no accessibility action. For canvases, games and custom
-controls without usable controls, agents can also click, hover or drag at a position in the app's
-window image, which requires **Allow computer screen captures**. macOS apps ignore synthetic
-pointer events in background windows, so agents use these only when nothing else works:
+Hovering, double-clicking, dragging, exact wheel scrolling and clicking things that offer no
+accessibility action also run in the background: the agent sends them to the app's own window, so
+the app stays where it is and your pointer does not move. For canvases, games and custom controls
+without usable controls, agents can also click, hover or drag at a position in the app's window
+image, which requires **Allow computer screen captures**. A few controls ignore input sent this
+way; for those the agent can use your real pointer instead:
 
 - If the app is already in front and nothing covers the target, the gesture runs right away.
 - Otherwise, with **Let agents briefly take over the pointer when you're idle** on (the default),

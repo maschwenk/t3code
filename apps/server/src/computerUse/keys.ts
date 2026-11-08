@@ -153,6 +153,17 @@ export function parseKeyChord(spec: string): KeyChord | undefined {
   };
 }
 
+/**
+ * The key to post for one typed character, with the text it carries. The text
+ * decides what is typed; the key code only tells web apps which key it was.
+ */
+export function textKey(character: string): { keyCode: number; text: string } {
+  if (character === "\n" || character === "\r") return { keyCode: NAMED_KEYS.return!, text: "\r" };
+  if (character === "\t") return { keyCode: NAMED_KEYS.tab!, text: "\t" };
+  if (character === " ") return { keyCode: NAMED_KEYS.space!, text: " " };
+  return { keyCode: CHARACTER_KEYS[character.toLowerCase()] ?? 0, text: character };
+}
+
 export const modifierKeyCode = (modifier: Modifier) => MODIFIERS[modifier].keyCode;
 
 /** True for chords that apps treat as commands rather than text or navigation. */
