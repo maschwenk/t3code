@@ -22,6 +22,7 @@ import {
 import { cn } from "../../lib/utils";
 import { WorkspacePageContainer, type WorkspacePageWidth } from "../WorkspacePageContainer";
 import { Button } from "../ui/button";
+import { Badge } from "../ui/badge";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { useOptionalSettingsScope } from "./SettingsScopeContext";
 import { SettingsScopeSentence } from "./SettingsScopeSentence";
@@ -308,6 +309,19 @@ function projectOverrides(
   });
 }
 
+export function ForkBadge() {
+  return (
+    <Badge
+      variant="outline"
+      size="sm"
+      className="shrink-0"
+      title="Added by this fork, not in upstream T3 Code"
+    >
+      Fork
+    </Badge>
+  );
+}
+
 export function SettingsRow({
   title,
   description,
@@ -318,11 +332,13 @@ export function SettingsRow({
   serverScoped = false,
   settingKeys = EMPTY_SETTING_KEYS,
   mixed: mixedOverride,
+  fork = false,
   children,
   className,
   ...rowProps
 }: Omit<ComponentPropsWithoutRef<"div">, "title"> & {
   title: ReactNode;
+  fork?: boolean;
   description?: ReactNode;
   status?: ReactNode;
   resetAction?: ReactNode;
@@ -482,6 +498,7 @@ export function SettingsRow({
         <div className="min-w-0 flex-1 space-y-1">
           <div className="flex min-h-5 items-center gap-1.5">
             <h3 className="text-sm font-medium text-foreground">{title}</h3>
+            {fork ? <ForkBadge /> : null}
             {renderedInheritance ? (
               <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center">
                 {renderedInheritance}

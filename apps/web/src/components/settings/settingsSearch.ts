@@ -57,6 +57,8 @@ export interface SettingsSearchItem {
   readonly managedTunnelOnly?: boolean;
   readonly secondary?: boolean;
   readonly requiresThreadAutoSettlement?: boolean;
+  /** Added by this fork, not upstream T3 Code. Gets a Fork badge and matches a "fork" search. */
+  readonly fork?: boolean;
 }
 
 export interface SettingsSearchAvailability {
@@ -331,6 +333,7 @@ export const SETTINGS_SEARCH_ITEMS = [
   {
     id: "sidebar-section-order",
     title: "Sidebar section order",
+    fork: true,
     to: "/settings/general",
     searchTerms: ["thread list working pinned active snoozed settled move reorder top bottom"],
   },
@@ -375,6 +378,7 @@ export const SETTINGS_SEARCH_ITEMS = [
   {
     id: "notification-triage",
     title: "Only alert on news",
+    fork: true,
     to: "/settings/general",
     searchTerms: ["notification triage quiet routine scheduled check-in push phone haiku"],
   },
@@ -539,6 +543,7 @@ export const SETTINGS_SEARCH_ITEMS = [
   {
     id: "auto-rename-recent-threads",
     title: "Auto-rename recent threads",
+    fork: true,
     to: "/settings/general",
     searchTerms: ["regenerate refresh thread titles automatically active"],
   },
@@ -685,6 +690,7 @@ export const SETTINGS_SEARCH_ITEMS = [
   {
     id: "claude-account-rotation",
     title: "Claude account rotation",
+    fork: true,
     to: "/settings/providers",
     searchTerms: ["claude accounts instances usage limit five hour reset new thread switch"],
     providerSettingsOnly: true,
@@ -706,6 +712,7 @@ export const SETTINGS_SEARCH_ITEMS = [
   {
     id: "agent-computer-access",
     title: "Agent computer access",
+    fork: true,
     to: "/settings/integrations",
     scope: "environment",
     searchTerms: ["native macOS accessibility remote control claude computer use"],
@@ -713,6 +720,7 @@ export const SETTINGS_SEARCH_ITEMS = [
   {
     id: "computer-all-apps",
     title: "Allow all computer apps",
+    fork: true,
     to: "/settings/integrations",
     scope: "environment",
     searchTerms: ["native macOS allowlist whitelist any every app computer use approval"],
@@ -720,6 +728,7 @@ export const SETTINGS_SEARCH_ITEMS = [
   {
     id: "computer-allowed-apps",
     title: "Allowed computer apps",
+    fork: true,
     to: "/settings/integrations",
     scope: "environment",
     searchTerms: ["native macOS allowlist computer use"],
@@ -727,6 +736,7 @@ export const SETTINGS_SEARCH_ITEMS = [
   {
     id: "computer-screen-capture",
     title: "Allow computer screen captures",
+    fork: true,
     to: "/settings/integrations",
     scope: "environment",
     searchTerms: ["screenshots screen recording computer use"],
@@ -734,6 +744,7 @@ export const SETTINGS_SEARCH_ITEMS = [
   {
     id: "computer-pointer-takeover",
     title: "Let agents briefly take over the pointer when you're idle",
+    fork: true,
     to: "/settings/integrations",
     scope: "environment",
     searchTerms: ["mouse cursor focus foreground drag double click canvas idle computer use"],
@@ -1173,9 +1184,12 @@ export function isSettingsOverviewVisible(search: SettingsScopeSearch): boolean 
 export function searchableSetting(id: SettingsSearchItemId): {
   readonly id: string;
   readonly title: string;
+  readonly fork?: true;
 } {
-  const { id: anchorId, title } = SEARCH_ITEMS_BY_ID.get(id)!;
-  return { id: anchorId, title };
+  const item: SettingsSearchItem = SEARCH_ITEMS_BY_ID.get(id)!;
+  return item.fork
+    ? { id: item.id, title: item.title, fork: true }
+    : { id: item.id, title: item.title };
 }
 
 export function filterAvailableSettingsSearchItems(
@@ -1217,6 +1231,7 @@ export function searchSettings(
         title,
         normalizeSearchText(SETTINGS_SECTION_LABELS[item.to]),
         ...(item.searchTerms ?? []).map(normalizeSearchText),
+        ...(item.fork ? ["fork"] : []),
       ];
       if (!queryTokens.every((token) => fields.some((field) => field.includes(token)))) return [];
 

@@ -135,6 +135,18 @@ describe("searchSettings", () => {
     expect(searchSettings("sidebar.toggle")[0]?.targetId).toBeUndefined();
   });
 
+  it("lists exactly the fork settings when searching for fork", () => {
+    const forkIds = SETTINGS_SEARCH_ITEMS.flatMap((item: SettingsSearchItem) =>
+      item.fork ? [item.id] : [],
+    );
+    expect(forkIds).toContain("notification-triage");
+    expect(
+      searchSettings("fork")
+        .map((item) => item.id)
+        .toSorted(),
+    ).toEqual(forkIds.toSorted());
+  });
+
   it("keeps catalog result ids unique", () => {
     const ids = SETTINGS_SEARCH_ITEMS.map((item) => item.id);
     expect(new Set(ids).size).toBe(ids.length);
