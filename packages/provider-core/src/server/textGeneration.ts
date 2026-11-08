@@ -75,6 +75,8 @@ export interface CompletionTriageInput {
   request: string;
   /** The agent's last reply in the turn. */
   reply: string;
+  /** The last reply from each of the few runs before this turn, newest first. */
+  earlierReplies?: ReadonlyArray<string>;
   modelSelection: ModelSelection;
 }
 
