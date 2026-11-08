@@ -38,28 +38,62 @@ export class CompletionNotificationTriage extends Context.Service<
   }
 >()("t3/orchestration-v2/CompletionNotificationTriage") {}
 
+// Three runs back still catches a blocker or ask that only comes up every few check-ins.
+const EARLIER_REPLIES = 3;
+
+type TriageMessage = Pick<
+  OrchestrationV2ConversationMessage,
+  "id" | "runId" | "role" | "text" | "streaming" | "createdBy" | "scheduledTaskId"
+>;
+
+function lastFinishedReply(messages: ReadonlyArray<TriageMessage>, runId: RunId) {
+  return messages.findLast(
+    (message) =>
+      message.runId === runId &&
+      message.role === "assistant" &&
+      !message.streaming &&
+      message.text.trim() !== "",
+  )?.text;
+}
+
+/**
+ * The runs whose replies the model compares against: the ones just before
+ * `run` in the thread, newest first.
+ */
+export function earlierTriageRunIds(
+  run: Pick<OrchestrationV2Run, "ordinal"> | undefined,
+  runs: ReadonlyArray<Pick<OrchestrationV2Run, "id" | "ordinal">>,
+): ReadonlyArray<RunId> {
+  if (run === undefined) return [];
+  return runs
+    .filter((candidate) => candidate.ordinal < run.ordinal)
+    .toSorted((a, b) => b.ordinal - a.ordinal)
+    .slice(0, EARLIER_REPLIES)
+    .map((candidate) => candidate.id);
+}
+
 /**
  * What the model reads to triage a completed run, or null when the run alerts
  * without asking: the user typed the request and is waiting on the answer, or
- * there is no reply to judge.
+ * there is no reply to judge. `earlierRunIds` are newest first.
  */
 export function completionTriageSubject(
-  run: Pick<OrchestrationV2Run, "status" | "userMessageId"> | undefined,
-  messages: ReadonlyArray<
-    Pick<
-      OrchestrationV2ConversationMessage,
-      "id" | "role" | "text" | "streaming" | "createdBy" | "scheduledTaskId"
-    >
-  >,
-): { readonly request: string; readonly reply: string } | null {
+  run: Pick<OrchestrationV2Run, "id" | "status" | "userMessageId"> | undefined,
+  messages: ReadonlyArray<TriageMessage>,
+  earlierRunIds: ReadonlyArray<RunId> = [],
+): {
+  readonly request: string;
+  readonly reply: string;
+  readonly earlierReplies: ReadonlyArray<string>;
+} | null {
   if (run?.status !== "completed") return null;
   const request = messages.find((message) => message.id === run.userMessageId);
   if (request === undefined) return null;
   if (request.createdBy === "user" && request.scheduledTaskId === undefined) return null;
-  const reply = messages.findLast(
-    (message) => message.role === "assistant" && !message.streaming && message.text.trim() !== "",
-  );
-  return reply === undefined ? null : { request: request.text, reply: reply.text };
+  const reply = lastFinishedReply(messages, run.id);
+  if (reply === undefined) return null;
+  const earlierReplies = earlierRunIds.flatMap((runId) => lastFinishedReply(messages, runId) ?? []);
+  return { request: request.text, reply, earlierReplies };
 }
 
 const make = Effect.gen(function* () {
@@ -77,22 +111,21 @@ const make = Effect.gen(function* () {
     function* (input: CompletionNotificationTriageInput) {
       const settings = yield* serverSettings.getSettings;
       if (!settings.notificationTriage) return true;
-      const projection = yield* threads.getThreadRecords(input.threadId, ["runs", "messages"], {
-        runIds: [input.runId],
-        messageRunIds: [input.runId],
+      const { thread, runs } = yield* threads.getThreadRecords(input.threadId, ["runs"]);
+      const run = runs.find((candidate) => candidate.id === input.runId);
+      const earlierRunIds = earlierTriageRunIds(run, runs);
+      const { messages } = yield* threads.getThreadRecords(input.threadId, ["messages"], {
+        messageRunIds: [input.runId, ...earlierRunIds],
       });
-      const subject = completionTriageSubject(
-        projection.runs.find((run) => run.id === input.runId),
-        projection.messages,
-      );
+      const subject = completionTriageSubject(run, messages, earlierRunIds);
       if (subject === null) return true;
-      const project = yield* projects.get(projection.thread.projectId);
+      const project = yield* projects.get(thread.projectId);
       if (Option.isNone(project)) return true;
       const { notify } = yield* textGeneration
         .triageCompletion({
-          cwd: projection.thread.worktreePath ?? project.value.workspaceRoot,
+          cwd: thread.worktreePath ?? project.value.workspaceRoot,
           ...subject,
-          modelSelection: resolveProjectSettings(settings, projection.thread.projectId).settings
+          modelSelection: resolveProjectSettings(settings, thread.projectId).settings
             .textGenerationModelSelection,
         })
         .pipe(Effect.timeout("30 seconds"));
