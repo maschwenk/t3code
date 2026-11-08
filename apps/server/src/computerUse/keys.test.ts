@@ -1,5 +1,5 @@
 import { expect, it } from "@effect/vitest";
-import { isShortcut, menuModifierMask, parseKeyChord } from "./keys.ts";
+import { isShortcut, menuModifierMask, parseKeyChord, textKey } from "./keys.ts";
 
 it.each([
   ["Return", 36, 0, null],
@@ -27,4 +27,10 @@ it("matches AX menu shortcut masks, where 0 is command alone", () => {
   expect(mask("ctrl+tab")).toBe(4 | 8);
   expect(isShortcut(parseKeyChord("shift+tab")!)).toBe(false);
   expect(isShortcut(parseKeyChord("ctrl+a")!)).toBe(true);
+});
+
+it("types any character by its text, pressing Return for a newline", () => {
+  expect(textKey("M")).toEqual({ keyCode: 46, text: "M" });
+  expect(textKey("\n")).toEqual({ keyCode: 36, text: "\r" });
+  expect(textKey("é")).toEqual({ keyCode: 0, text: "é" });
 });

@@ -8,7 +8,7 @@ import * as NodePath from "node:path";
 import * as NodeTimersPromises from "node:timers/promises";
 import * as NodeUtil from "node:util";
 import { bringsAppForward, type FocusGuard, makeFocusGuard, OPEN_SETTLE_MS } from "./focusGuard.ts";
-import { isShortcut, menuModifierMask, modifierKeyCode, parseKeyChord } from "./keys.ts";
+import { isShortcut, menuModifierMask, modifierKeyCode, parseKeyChord, textKey } from "./keys.ts";
 import { loadMacNative, type MacNative, type MenuItem, type PointerWindow } from "./macNative.ts";
 import {
   clickTransitions,
@@ -53,9 +53,10 @@ const WALK_BUDGET_MS = 6_500;
 // AXManualAccessibility is set when the window is in the background.
 const ELECTRON_SETTLE_MS = 2_500;
 const MAX_IMAGE_SIDE = 1600;
-// A pressable element this small can take a coordinate click at its centre;
-// canvases and clickable containers are larger and get real pointer events.
-const COORDINATE_PRESS_LIMIT = { width: 480, height: 160 };
+// How long a type step waits for typed text to show in the field, and at most
+// for it to stop changing; both well inside the driver's 12 s deadline.
+const TYPE_SETTLE_MS = 500;
+const TYPE_TIMEOUT_MS = 3_000;
 
 const secure = (element: Element) =>
   /password|secure/i.test(`${element.role} ${String(element.raw.ax_subrole ?? "")}`);
@@ -578,32 +579,31 @@ const asPoint = (tuple: readonly [number, number] | undefined): Point | undefine
   tuple && { x: tuple[0], y: tuple[1] };
 
 // How long a background app gets to process a posted activation before the
-// press that must not raise its window, and the press before the deactivation.
+// input that must not raise its window, and the input before the deactivation.
 const ACTIVATION_SETTLE_MS = 150;
 
 /**
- * Posts pointer transitions to the app one by one, pacing them as a person
- * would. A button press goes to a background app while it believes it is
- * active, so AppKit does not raise the window; the app is told it is inactive
- * again afterwards. The front app is never told anything.
+ * Runs `post` while a background app believes it is active with `window` as
+ * its key window, then tells it it is inactive again. A press posted to an app
+ * that believes it is inactive raises its window, Chromium drops mouse moves
+ * unless its window is key, and keys go to the key window even when
+ * accessibility focused an element in another one. The front app is never
+ * told anything.
  */
-async function postTransitions(
+async function whileActive<A>(
   native: MacNative,
   pid: number,
-  window: PointerWindow,
-  transitions: readonly Transition[],
-): Promise<void> {
-  const pressing = transitions.some((transition) => transition.kind === "down");
-  const activate = pressing && native.frontmostPid() !== pid;
+  window: PointerWindow | undefined,
+  post: () => Promise<A>,
+): Promise<A> {
+  const activate = window !== undefined && native.frontmostPid() !== pid;
   try {
     if (activate) {
       native.postActivation(pid, window, true);
+      native.postKeyWindowClick(pid, window);
       await NodeTimersPromises.setTimeout(ACTIVATION_SETTLE_MS);
     }
-    for (const [index, transition] of transitions.entries()) {
-      if (index > 0) await NodeTimersPromises.setTimeout(transition.kind === "drag" ? 16 : 40);
-      native.postMouse(pid, window, transition.point, transition);
-    }
+    return await post();
   } finally {
     if (activate) {
       await NodeTimersPromises.setTimeout(ACTIVATION_SETTLE_MS);
@@ -612,11 +612,37 @@ async function postTransitions(
   }
 }
 
+/** Posts pointer transitions to the app one by one, pacing them as a person would. */
+const postTransitions = (
+  native: MacNative,
+  pid: number,
+  window: PointerWindow,
+  transitions: readonly Transition[],
+) =>
+  whileActive(native, pid, window, async () => {
+    for (const [index, transition] of transitions.entries()) {
+      if (index > 0) await NodeTimersPromises.setTimeout(transition.kind === "drag" ? 16 : 40);
+      native.postMouse(pid, window, transition.point, transition);
+    }
+  });
+
 /**
- * Delivers a pointer-only step to the app in the background: through the
- * pressable element at the point for a single left click, else as pointer
- * events posted to the app and addressed to `window`. The app stays where it
- * is and the user's pointer never moves.
+ * The window to make key before posting keys to an element of `window`, or
+ * undefined when the app already sends keys there. Making a window key takes
+ * a click, which would also close a popover or menu the app has open.
+ */
+const keyWindowFor = (native: MacNative, pid: number, window: Element | undefined) => {
+  const bounds = window?.bounds;
+  if (!bounds || window.active) return undefined;
+  const centre = { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 };
+  return windowFor(native.windows(pid), bounds, centre);
+};
+
+/**
+ * Delivers a pointer-only step on an element to the app in the background:
+ * through the pressable element at the point for a single left click, else as
+ * pointer events posted to the app and addressed to `window`. The app stays
+ * where it is and the user's pointer never moves.
  */
 async function postPointer(
   native: MacNative,
@@ -627,14 +653,12 @@ async function postPointer(
     | { readonly kind: "move" }
     | { readonly kind: "click"; readonly button: "left" | "right"; readonly count: 1 | 2 }
     | { readonly kind: "scroll"; readonly dx: number; readonly dy: number },
-  /** For a click at chosen coordinates, how large a pressable element may be before its centre is too far from the point to stand in for it. */
-  pressWithin?: { width: number; height: number },
 ): Promise<WorkerResponse> {
   if (
     action.kind === "click" &&
     action.button === "left" &&
     action.count === 1 &&
-    native.pressAt(pid, point, pressWithin)
+    native.pressAt(pid, point)
   )
     return { ok: true, via: "accessibility" };
   if (action.kind === "scroll") {
@@ -745,16 +769,16 @@ async function pointerGesture(
     if (!action.foreground) {
       const target = captured ?? windowFor(native.windows(app.pid), window?.bounds ?? null, at);
       if (!target) return { ok: false, code: "input_requires_foreground" };
-      return postPointer(
+      // Never an accessibility press: it would land at the element's centre, not the point.
+      await postTransitions(
         native,
         app.pid,
         target,
-        at,
         action.kind === "click_at"
-          ? { kind: "click", button: action.button, count: action.count }
-          : { kind: "move" },
-        COORDINATE_PRESS_LIMIT,
+          ? clickTransitions(at, action.button, action.count)
+          : [{ kind: "move", button: "left", clickState: 0, point: at }],
       );
+      return { ok: true, via: "pointer_event" };
     }
     return runPointer(xa11y, native, request, [at], window, async (input) => {
       if (action.kind === "click_at")
@@ -800,6 +824,100 @@ async function pointerGesture(
   });
 }
 
+async function focusElement(element: Element): Promise<void> {
+  if (element.focused) return;
+  await element.focus().catch(() => undefined);
+  await NodeTimersPromises.setTimeout(40);
+}
+
+/**
+ * A text element's value as the app reports it now. Element getters keep what
+ * was read when the element was found; only navigating reads the app again.
+ */
+async function liveValue(element: Element, target: ElementTarget): Promise<string | null> {
+  const parent = await element.parent().catch(() => null);
+  const siblings = parent ? await parent.children().catch(() => []) : [];
+  return siblings.find((sibling) => identityMatches(sibling, target))?.value ?? null;
+}
+
+/**
+ * Whether a type step changed a field that read `before` and now reads
+ * `after`. A value the app does not report cannot be checked, so it counts.
+ */
+export function typeTookEffect(
+  before: string | null,
+  after: string | null,
+  text: string,
+  replace: boolean,
+): boolean {
+  if (after === null) return true;
+  if (replace ? after === text : text === "") return true;
+  return after !== before;
+}
+
+/**
+ * The field's value once typed input has shown up and held still for a poll.
+ * Apps take posted keys at their own pace, so long text keeps arriving after
+ * the first change.
+ */
+async function valueAfterTyping(element: Element, target: ElementTarget, before: string | null) {
+  let value = await liveValue(element, target);
+  for (
+    let waited = 0;
+    waited < (value === before ? TYPE_SETTLE_MS : TYPE_TIMEOUT_MS);
+    waited += 50
+  ) {
+    await NodeTimersPromises.setTimeout(50);
+    const next = await liveValue(element, target);
+    if (next === value && next !== before) return next;
+    value = next;
+  }
+  return value;
+}
+
+/** Posts `text` to the app's focused element as one key press per character. */
+function postText(native: MacNative, pid: number, text: string) {
+  for (const character of text) {
+    const key = textKey(character);
+    native.postKey(pid, key.keyCode, true, 0, key.text);
+    native.postKey(pid, key.keyCode, false, 0, key.text);
+  }
+}
+
+/**
+ * Replacing sets the value through accessibility. Inserting types real keys,
+ * which web apps need to see, and falls back to inserting through
+ * accessibility when the app ignores them. Text that never arrived fails.
+ */
+async function typeText(
+  native: MacNative,
+  pid: number,
+  { element, window }: Resolved,
+  target: ElementTarget,
+  action: Extract<ComputerAction, { kind: "type" }>,
+): Promise<WorkerResponse> {
+  const before = element.value;
+  const took = async () =>
+    typeTookEffect(
+      before,
+      await valueAfterTyping(element, target, before),
+      action.text,
+      action.replace,
+    );
+  if (action.replace) {
+    await element.setValue(action.text);
+    return (await took()) ? { ok: true, via: "accessibility" } : { ok: false, code: "failed" };
+  }
+  const keyed = await whileActive(native, pid, keyWindowFor(native, pid, window), async () => {
+    await focusElement(element);
+    postText(native, pid, action.text);
+    return took();
+  });
+  if (keyed) return { ok: true, via: "keyboard_event" };
+  await element.typeText(action.text);
+  return (await took()) ? { ok: true, via: "accessibility" } : { ok: false, code: "failed" };
+}
+
 async function act(
   xa11y: Xa11y,
   native: MacNative,
@@ -821,22 +939,20 @@ async function act(
       return { ok: false, code: "target_changed" };
   }
   if (action.kind === "key") {
-    // Key events go to the app's focused element; focus the target first.
-    if (resolved && !resolved.element.focused) {
-      await resolved.element.focus().catch(() => undefined);
-      await NodeTimersPromises.setTimeout(40);
-    }
-    return pressKey(native, app.pid, action);
+    const target = resolved;
+    if (!target) return pressKey(native, app.pid, action);
+    return whileActive(native, app.pid, keyWindowFor(native, app.pid, target.window), async () => {
+      await focusElement(target.element);
+      return pressKey(native, app.pid, action);
+    });
   }
   if (action.kind === "click_at" || action.kind === "move_at" || action.kind === "drag")
     return pointerGesture(xa11y, native, app, request, resolved);
   if (!resolved) return { ok: false, code: "target_changed" };
   const { element, window } = resolved;
   if (action.kind === "type") {
-    if (!element.editable) return { ok: false, code: "unsupported_action" };
-    if (action.replace) await element.setValue(action.text);
-    else await element.typeText(action.text);
-    return { ok: true, via: "accessibility" };
+    if (!element.editable || !request.target) return { ok: false, code: "unsupported_action" };
+    return typeText(native, app.pid, resolved, request.target, action);
   }
   const background = backgroundAction(action, element.actions);
   if (background) {

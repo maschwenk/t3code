@@ -190,6 +190,14 @@ export async function loadMacNative() {
     call("cg", "CGEventPostToPid", T.Void, [T.I32, Ref], [pid, event]);
     release(event);
   };
+  const timestamp = (event: bigint) =>
+    call(
+      "cg",
+      "CGEventSetTimestamp",
+      T.Void,
+      [Ref, T.U64],
+      [event, call<bigint>("c", "mach_absolute_time", T.U64, [], [])],
+    );
   const setField = (event: bigint, field: number, value: number) =>
     call("cg", "CGEventSetIntegerValueField", T.Void, [Ref, T.U32, T.I64], [event, field, value]);
   /** Makes a posted pointer event land in `window` at `point` as if routed there. */
@@ -204,39 +212,33 @@ export async function loadMacNative() {
       [Ref, CGPoint],
       [event, { x: point.x - window.bounds.x, y: point.y - window.bounds.y }],
     );
-    call(
-      "cg",
-      "CGEventSetTimestamp",
-      T.Void,
-      [Ref, T.U64],
-      [event, call<bigint>("c", "mach_absolute_time", T.U64, [], [])],
-    );
+    timestamp(event);
   };
-  /**
-   * Whether an element's accessibility size is at most `limit` in both
-   * dimensions. False when the app reports no size, which also happens for
-   * every window while the screen is locked.
-   */
-  const fitsWithin = (element: bigint, limit: { width: number; height: number }) => {
-    const size = attribute(element, "AXSize");
-    if (!size) return false;
-    // AXValueGetValue fills a CGSize (two doubles); kAXValueTypeCGSize is 2.
-    const buffer = call<bigint>("c", "malloc", Ref, [T.I64], [16]);
-    try {
-      if (!call<boolean>("ax", "AXValueGetValue", T.Boolean, [Ref, T.I32, Ref], [size, 2, buffer]))
-        return false;
-      const double = (offset: bigint) => {
-        const cell = ffi.createPointer({ paramsType: [T.Double], paramsValue: [0] });
-        call("c", "memcpy", T.Void, [T.External, Ref, T.I64], [cell[0], buffer + offset, 8]);
-        return ffi.restorePointer({
-          retType: [T.Double],
-          paramsValue: cell,
-        })[0] as unknown as number;
-      };
-      return double(0n) <= limit.width && double(8n) <= limit.height;
-    } finally {
-      call("c", "free", T.Void, [Ref], [buffer]);
-    }
+  const postMouse = (
+    pid: number,
+    window: PointerWindow,
+    point: Point,
+    transition: {
+      kind: "move" | "down" | "up" | "drag";
+      button: "left" | "right";
+      clickState: number;
+    },
+  ) => {
+    const event = call<bigint>(
+      "cg",
+      "CGEventCreateMouseEvent",
+      Ref,
+      [Ref, T.U32, CGPoint, T.U32],
+      [
+        0n,
+        MOUSE_TYPE[transition.button][transition.kind],
+        { x: point.x, y: point.y },
+        transition.button === "left" ? 0 : 1,
+      ],
+    );
+    if (transition.clickState) setField(event, FIELD.clickState, transition.clickState);
+    address(event, window, point);
+    post(pid, event);
   };
   const application = (pid: number) =>
     call<bigint>("ax", "AXUIElementCreateApplication", Ref, [T.I32], [pid]);
@@ -376,32 +378,7 @@ export async function loadMacNative() {
      * app handles it where `point` lies. The app need not be in front and the
      * user's pointer stays where it is.
      */
-    postMouse(
-      pid: number,
-      window: PointerWindow,
-      point: Point,
-      transition: {
-        kind: "move" | "down" | "up" | "drag";
-        button: "left" | "right";
-        clickState: number;
-      },
-    ) {
-      const event = call<bigint>(
-        "cg",
-        "CGEventCreateMouseEvent",
-        Ref,
-        [Ref, T.U32, CGPoint, T.U32],
-        [
-          0n,
-          MOUSE_TYPE[transition.button][transition.kind],
-          { x: point.x, y: point.y },
-          transition.button === "left" ? 0 : 1,
-        ],
-      );
-      if (transition.clickState) setField(event, FIELD.clickState, transition.clickState);
-      address(event, window, point);
-      post(pid, event);
-    },
+    postMouse,
     /**
      * Tells `pid` it became (or stopped being) the active app, the way the
      * window server does, without changing the real front app. A button press
@@ -418,14 +395,19 @@ export async function loadMacNative() {
       for (const field of [FIELD.appKitSubtype, FIELD.appKitSubtypeCopy])
         setField(event, field, active ? 1 : 2);
       if (active) call("cg", "CGEventSetFlags", T.Void, [Ref, T.U64], [event, 0xc0000]);
-      call(
-        "cg",
-        "CGEventSetTimestamp",
-        T.Void,
-        [Ref, T.U64],
-        [event, call<bigint>("c", "mach_absolute_time", T.U64, [], [])],
-      );
+      timestamp(event);
       post(pid, event);
+    },
+    /**
+     * Makes `window` the key window of `pid`, which must believe it is active,
+     * with a click just past the window's bottom-left corner that reaches no
+     * view. The activation alone leaves no window key, and Chromium drops
+     * mouse moves unless its window is key or main.
+     */
+    postKeyWindowClick(pid: number, window: PointerWindow) {
+      const outside = { x: window.bounds.x - 1, y: window.bounds.y + window.bounds.height + 1 };
+      postMouse(pid, window, outside, { kind: "down", button: "left", clickState: 1 });
+      postMouse(pid, window, outside, { kind: "up", button: "left", clickState: 1 });
     },
     /** Posts one scroll wheel event to `pid` only, in pixels, at `point` of `window`. */
     postScroll(
@@ -450,11 +432,9 @@ export async function loadMacNative() {
      * Presses, through accessibility, the element of `pid` at a screen point or
      * its nearest ancestor that offers AXPress. Chromium and WebKit dispatch
      * that as a real click on the element, in the background. False when
-     * nothing there is pressable, or when the pressable element is larger than
-     * `within`: a press lands at an element's centre, which is wrong for a
-     * point chosen inside a canvas or another large clickable area.
+     * nothing there is pressable.
      */
-    pressAt(pid: number, point: Point, within?: { width: number; height: number }): boolean {
+    pressAt(pid: number, point: Point): boolean {
       const element = out();
       if (
         call<number>(
@@ -469,7 +449,6 @@ export async function loadMacNative() {
       let current = read(element);
       for (let level = 0; current && level < 4; level++) {
         if (actionNames(current).includes("AXPress")) {
-          if (within && !fitsWithin(current, within)) return false;
           return (
             call<number>(
               "ax",
@@ -515,8 +494,12 @@ export async function loadMacNative() {
           [application(pid), cfString(name), cfTrue()],
         );
     },
-    /** Posts one key transition to `pid` only. The app need not be in front. */
-    postKey(pid: number, keyCode: number, down: boolean, flags: number) {
+    /**
+     * Posts one key transition to `pid` only. The app need not be in front.
+     * `text` replaces the characters the key would produce, so text typed this
+     * way does not depend on the keyboard layout.
+     */
+    postKey(pid: number, keyCode: number, down: boolean, flags: number, text?: string) {
       const event = call<bigint>(
         "cg",
         "CGEventCreateKeyboardEvent",
@@ -525,6 +508,16 @@ export async function loadMacNative() {
         [0n, keyCode, down],
       );
       call("cg", "CGEventSetFlags", T.Void, [Ref, T.U64], [event, flags]);
+      if (text) {
+        const units = Buffer.from(text, "utf16le");
+        call(
+          "cg",
+          "CGEventKeyboardSetUnicodeString",
+          T.Void,
+          [Ref, T.I64, T.U8Array],
+          [event, units.length / 2, units],
+        );
+      }
       post(pid, event);
     },
     /** The process owning the topmost accessibility element at a screen point. */
