@@ -10,6 +10,7 @@ import * as AgentCursor from "./agentCursor.ts";
 import * as Driver from "./Driver.ts";
 import { parseKeyChord } from "./keys.ts";
 import { type Capture, captureToScreen } from "./pointerTarget.ts";
+import { carryRefs } from "./snapshotTree.ts";
 import {
   ComputerUseError,
   COORDINATE_ACTIONS,
@@ -30,6 +31,8 @@ type Receipt = {
   readonly options: SnapshotOptions;
   /** The latest window image this caller received for the app, for coordinate steps. */
   readonly capture?: Capture | undefined;
+  /** The ref the next new element gets; refs carry over to the caller's next snapshot. */
+  readonly nextRef: number;
 };
 
 const DEFAULT_LIMIT = 250;
@@ -140,6 +143,8 @@ export type ActResult = {
   readonly error?: ComputerUseError;
   /** The app after the batch, viewed the same way as the snapshot it started from. */
   readonly snapshot?: Observation;
+  /** The snapshot the batch ran against, when `snapshot` shows the same view of the app. */
+  readonly before?: NativeSnapshot;
   readonly snapshotError?: ComputerUseError;
 };
 
@@ -257,24 +262,28 @@ const make = Effect.gen(function* () {
 
   /**
    * Takes a snapshot and issues its receipt. Callers hold the mutex and
-   * authorization. A text-only snapshot keeps the caller's latest capture of
-   * the same app, whose window the worker checks before using its pixels.
+   * authorization. The snapshot keeps the refs of the caller's previous one of
+   * the same app, and a text-only snapshot keeps its capture, whose window the
+   * worker checks before using its pixels.
    */
   const observe = Effect.fn("ComputerUse.observe")(function* (
     caller: string,
     app: string,
     includeImage: boolean,
     options: SnapshotOptions,
-    previousCapture?: Capture,
+    previous?: Receipt,
   ) {
-    let inherited = previousCapture;
     for (const receipt of receipts.values())
-      if (receipt.caller === caller && receipt.snapshot.app === app && receipt.capture)
-        inherited = receipt.capture;
+      if (receipt.caller === caller && receipt.snapshot.app === app) previous ??= receipt;
     // A failed refresh must not leave an older observation usable.
     for (const [id, receipt] of receipts) if (receipt.caller === caller) receipts.delete(id);
     const result = yield* execute({ kind: "snapshot", app, includeImage, options });
     if (!result.snapshot) return yield* fail("failed");
+    const { elements, nextRef } = carryRefs(
+      previous?.snapshot.pid === result.snapshot.pid ? previous.snapshot.elements : [],
+      result.snapshot.elements,
+      previous?.nextRef ?? 1,
+    );
     const at = yield* Clock.currentTimeMillis;
     for (const [id, receipt] of receipts)
       if (at - receipt.at > RECEIPT_TTL_MS || receipt.caller === caller) receipts.delete(id);
@@ -287,9 +296,16 @@ const make = Effect.gen(function* () {
     const { image, ...remembered } = result.snapshot;
     const capture = image
       ? { window: image.window, width: image.width, height: image.height }
-      : inherited;
-    receipts.set(snapshotId, { at, caller, snapshot: remembered, options, capture });
-    return { ...result.snapshot, snapshotId };
+      : previous?.capture;
+    receipts.set(snapshotId, {
+      at,
+      caller,
+      snapshot: { ...remembered, elements },
+      options,
+      capture,
+      nextRef,
+    });
+    return { ...result.snapshot, elements, snapshotId };
   });
 
   const snapshot: ComputerUse["Service"]["snapshot"] = (caller, input) =>
@@ -391,12 +407,9 @@ const make = Effect.gen(function* () {
               }
               const options = { ...receipt.options, offset: 0 };
               const includeImage = input.includeImage ?? false;
+              let sameView = receipt.options.offset === 0;
               let after = yield* Effect.result(
-                authorized(
-                  app,
-                  includeImage,
-                  observe(caller, app, includeImage, options, receipt.capture),
-                ),
+                authorized(app, includeImage, observe(caller, app, includeImage, options, receipt)),
               );
               if (
                 Result.isFailure(after) &&
@@ -404,12 +417,9 @@ const make = Effect.gen(function* () {
                 options.root
               ) {
                 const { root: _root, ...whole } = options;
+                sameView = false;
                 after = yield* Effect.result(
-                  authorized(
-                    app,
-                    includeImage,
-                    observe(caller, app, includeImage, whole, receipt.capture),
-                  ),
+                  authorized(app, includeImage, observe(caller, app, includeImage, whole, receipt)),
                 );
               }
               return {
@@ -417,7 +427,10 @@ const make = Effect.gen(function* () {
                 completed,
                 ...(error ? { error } : {}),
                 ...(Result.isSuccess(after)
-                  ? { snapshot: after.success }
+                  ? {
+                      snapshot: after.success,
+                      ...(sameView ? { before: receipt.snapshot } : {}),
+                    }
                   : { snapshotError: after.failure }),
               };
             }),
