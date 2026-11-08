@@ -123,6 +123,7 @@ async function prepareStreamScripts() {
         ["serverBrowserStream.ts"],
         generatePreviewStreamScript,
       ],
+      ["packages/shared/src", ["agentCursor.ts"], generatePreviewStreamScript],
     ]) {
       fs.watch(path.join(workspaceRoot, directory), { persistent: false }, (_event, filename) => {
         if (filename && !files.includes(String(filename))) return;

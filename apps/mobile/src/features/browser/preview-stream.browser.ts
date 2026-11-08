@@ -8,6 +8,7 @@ import {
   type PreviewStreamPointer,
   type PreviewStreamViewport,
 } from "@t3tools/client-runtime/preview/server-browser-stream";
+import { agentCursorMarkup, playAgentCursorClick } from "@t3tools/shared/agentCursor";
 
 import type { PreviewStreamConfiguration, PreviewStreamMessage } from "./preview-stream-document";
 
@@ -41,8 +42,6 @@ const PROBE_REUSE_MS = 10_000;
 // delete and fires `input`; Gboard's keydown carries keyCode 229 and no key.
 const SENTINEL = "\u200b";
 const AGENT_CURSOR_ACTIVE_MS = 700;
-const AGENT_CURSOR_SVG =
-  '<svg width="20" height="20" viewBox="0 0 24 24" fill="#fff" stroke="#3b82f6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.037 4.688a.495.495 0 0 1 .651-.651l16 6.5a.5.5 0 0 1-.063.947l-6.124 1.58a2 2 0 0 0-1.438 1.435l-1.579 6.126a.5.5 0 0 1-.947.063z"/></svg>';
 
 interface Viewer {
   readonly stop: () => void;
@@ -80,7 +79,7 @@ export function start(configuration: PreviewStreamConfiguration) {
   const agentCursor = document.createElement("div");
   agentCursor.className = "agent-cursor";
   agentCursor.setAttribute("aria-hidden", "true");
-  agentCursor.innerHTML = AGENT_CURSOR_SVG;
+  agentCursor.innerHTML = agentCursorMarkup("agent-cursor-stripes");
   container.append(canvas, agentCursor);
   const input = document.createElement("textarea");
   input.setAttribute("aria-label", "Browser page input");
@@ -279,12 +278,7 @@ export function start(configuration: PreviewStreamConfiguration) {
     const top = (box.height - height) / 2 + (pointer.y * height) / viewport.height;
     agentCursor.style.transform = `translate3d(${left}px, ${top}px, 0)`;
     agentCursor.style.opacity = "1";
-    if (pointer.phase === "click") {
-      agentCursor.querySelector(".ping")?.remove();
-      const ping = document.createElement("span");
-      ping.className = "ping";
-      agentCursor.prepend(ping);
-    }
+    if (pointer.phase === "click") playAgentCursorClick(agentCursor);
     if (agentCursorTimer !== null) clearTimeout(agentCursorTimer);
     agentCursorTimer = setTimeout(() => {
       agentCursor.style.opacity = control?.controller === "agent" ? "0.35" : "0";

@@ -60,7 +60,6 @@ ipcRenderer.on(
       recordingCursor ??= installRecordingCursor(document, window, options, (input) =>
         ipcRenderer.send(RECORDING_INPUT_CHANNEL, input),
       );
-      recordingCursor.setTheme(annotationTheme);
       if (controller === "agent" || controller === "human" || controller === "none")
         recordingCursor.setController(controller);
     } else {
@@ -1493,7 +1492,6 @@ ipcRenderer.on(ANNOTATION_SEND_ENABLED_CHANNEL, (_event, enabled: boolean) => {
 });
 ipcRenderer.on(ANNOTATION_THEME_CHANNEL, (_event, theme: DesktopPreviewAnnotationTheme) => {
   annotationTheme = theme;
-  recordingCursor?.setTheme(theme);
   activeSession?.applyTheme(theme);
 });
 ipcRenderer.on(CANCEL_PICK_CHANNEL, () => activeSession?.teardown(false));

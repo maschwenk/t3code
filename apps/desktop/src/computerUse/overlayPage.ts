@@ -1,44 +1,37 @@
+import {
+  AGENT_CURSOR_CLICK,
+  AGENT_CURSOR_RING,
+  AGENT_CURSOR_SCALE,
+  agentCursorMarkup,
+} from "@t3tools/shared/agentCursor";
+
 /**
  * The overlay window's page. It only reacts to calls from the main process:
  * `glide` animates one agent's cursor with precomputed keyframes on a
  * compositor layer (transform/opacity only), `fadeOut` hides it. Nothing runs
  * between calls. Each agent (cursor id) gets its own cursor and name tag.
- *
- * The arrow is the agent cursor style: a thick dark outline around diagonal
- * lavender, white and blue stripes, about 1.7x the size of the system pointer.
  */
-// SVG units: the outline's outer tip sits at (20,20); 1 unit = SCALE px.
-const SCALE = 0.07;
-const ARROW = "M39 59 L408 370 L186 371 L39 552 Z";
-
 export const OVERLAY_HTML = `<!doctype html><meta charset="utf-8"><style>
 html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent;pointer-events:none;user-select:none;-webkit-user-select:none}
 .c{position:absolute;left:0;top:0;will-change:transform}
 .k{position:absolute;left:0;top:0;opacity:0;transform-origin:0 0}
-.arrow{position:absolute;overflow:visible;left:${-20 * SCALE}px;top:${-20 * SCALE}px;width:${480 * SCALE}px;height:${620 * SCALE}px;transform-origin:${20 * SCALE}px ${20 * SCALE}px;filter:drop-shadow(0 2px 3px rgba(0,0,0,.4))}
-.ring{position:absolute;left:-18px;top:-18px;width:36px;height:36px;box-sizing:border-box;border-radius:50%;border:2.5px solid #c79ff7;box-shadow:0 0 0 1px rgba(34,34,34,.35);opacity:0}
-.tags{position:absolute;left:24px;top:33px;display:flex;gap:4px;font:600 11px/14px -apple-system,BlinkMacSystemFont,sans-serif;white-space:nowrap}
+.tags{position:absolute;left:${Math.round(340 * AGENT_CURSOR_SCALE)}px;top:${Math.round(470 * AGENT_CURSOR_SCALE)}px;display:flex;gap:4px;font:600 11px/14px -apple-system,BlinkMacSystemFont,sans-serif;white-space:nowrap}
 .tag,.pill{padding:2px 7px;border-radius:999px;box-shadow:0 1px 3px rgba(0,0,0,.3)}
 .tag{color:#222;border:1px solid #222}
 .pill{background:#222;border:1px solid rgba(255,255,255,.35);color:#fff;opacity:0}
 .scroll{position:absolute;left:-34px;top:2px;width:24px;height:24px;opacity:0}
 .hl{position:absolute;left:0;top:0;box-sizing:border-box;border-radius:8px;border:2px solid #c79ff7;box-shadow:0 0 0 3px rgba(142,205,240,.45);opacity:0;will-change:opacity}
 </style>
-<svg width="0" height="0" style="position:absolute"><defs><linearGradient id="stripes" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="360" y2="480">
-<stop offset=".353" stop-color="#c79ff7"/><stop offset=".353" stop-color="#fff"/><stop offset=".387" stop-color="#fff"/><stop offset=".387" stop-color="#8ecdf0"/><stop offset=".578" stop-color="#8ecdf0"/><stop offset=".578" stop-color="#fff"/><stop offset=".615" stop-color="#fff"/><stop offset=".615" stop-color="#c79ff7"/>
-</linearGradient></defs></svg>
 <template id="cursor"><div class="hl"></div><div class="c"><div class="k">
-<div class="ring"></div><div class="ring"></div>
+${AGENT_CURSOR_RING}
 <svg class="scroll" viewBox="0 0 24 24" fill="none" stroke="#222" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6-6 6 6M6 21l6-6 6 6" stroke="#fff" stroke-width="5.5"/><path d="M6 9l6-6 6 6M6 21l6-6 6 6"/></svg>
-<svg class="arrow" viewBox="0 0 480 620" xmlns="http://www.w3.org/2000/svg">
-<path d="${ARROW}" fill="none" stroke="rgba(255,255,255,.92)" stroke-width="66" stroke-linejoin="miter" stroke-miterlimit="8"/>
-<path d="${ARROW}" fill="url(#stripes)" stroke="#222" stroke-width="38" stroke-linejoin="miter" stroke-miterlimit="8"/>
-</svg>
+${agentCursorMarkup("stripes")}
 <div class="tags"><span class="tag"></span><span class="pill"></span></div>
 </div></div></template>
 <script>
 const template=document.getElementById("cursor");
 const reduce=matchMedia("(prefers-reduced-motion: reduce)").matches;
+const CLICK=${JSON.stringify(AGENT_CURSOR_CLICK)};
 const at=(p)=>"translate3d("+p[0]+"px,"+p[1]+"px,0)";
 const TONES=["#c79ff7","#8ecdf0","#f5a9cc","#a6e3bf"];
 const LABELS={look:"Looking",doubleClick:"Double-click",rightClick:"Right-click",menu:"Open menu",type:"Typing",
@@ -50,8 +43,8 @@ function cursorFor(id){
   if(cur)return cur;
   const root=template.content.cloneNode(true);
   const q=(s)=>root.querySelector(s);
-  const rings=root.querySelectorAll(".ring");
-  cur={hl:q(".hl"),c:q(".c"),k:q(".k"),arrow:q(".arrow"),tag:q(".tag"),pill:q(".pill"),scroll:q(".scroll"),
+  const rings=root.querySelectorAll("[data-agent-cursor-ring]");
+  cur={hl:q(".hl"),c:q(".c"),k:q(".k"),arrow:q("[data-agent-cursor-arrow]"),tag:q(".tag"),pill:q(".pill"),scroll:q(".scroll"),
     r1:rings[0],r2:rings[1],motion:null,fade:null,visible:false};
   document.body.appendChild(root);
   cursors.set(id,cur);
@@ -72,10 +65,10 @@ window.fadeOut=(id)=>{
 };
 function ripple(ring,delay,color){
   ring.style.borderColor=color;
-  ring.animate([{transform:"scale(.35)",opacity:1},{transform:"scale(1.25)",opacity:0}],{duration:460,delay,easing:"cubic-bezier(.2,.7,.3,1)"});
+  ring.animate(CLICK.ripple.keyframes,{...CLICK.ripple.timing,delay});
 }
 function press(cur,delay){
-  cur.arrow.animate([{transform:"scale(1)"},{transform:"scale(.84)"},{transform:"scale(1)"}],{duration:200,delay,easing:"ease-out"});
+  cur.arrow.animate(CLICK.press.keyframes,{...CLICK.press.timing,delay});
 }
 function highlight(cur,bounds,strength,duration){
   if(!bounds)return;

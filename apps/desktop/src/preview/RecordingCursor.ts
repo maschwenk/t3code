@@ -1,7 +1,5 @@
-import type {
-  DesktopPreviewAnnotationTheme,
-  DesktopPreviewRecordingInput,
-} from "@t3tools/contracts";
+import type { DesktopPreviewRecordingInput } from "@t3tools/contracts";
+import { agentCursorMarkup, playAgentCursorClick } from "@t3tools/shared/agentCursor";
 
 import {
   DEFAULT_RECORDING_INPUT_OPTIONS,
@@ -36,9 +34,8 @@ export function installRecordingCursor(
   agentCursor.setAttribute("aria-hidden", "true");
   agentCursor.setAttribute("data-t3code-recording-agent-cursor", "");
   agentCursor.style.cssText =
-    "position:fixed;left:0;top:0;width:20px;height:20px;pointer-events:none;z-index:2147483647;display:none;filter:drop-shadow(0 1px 2px #0003);transition:transform 150ms ease-out,opacity 150ms ease-out;";
-  agentCursor.innerHTML =
-    '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="var(--recording-cursor-background,white)" stroke="var(--recording-cursor-primary,#2563eb)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="transform:translate(-2px,-2px)"><path d="M4.037 4.688a.495.495 0 0 1 .651-.651l16 6.5a.5.5 0 0 1-.063.947l-6.124 1.58a2 2 0 0 0-1.438 1.435l-1.579 6.126a.5.5 0 0 1-.947.063z"/></svg>';
+    "position:fixed;left:0;top:0;pointer-events:none;z-index:2147483647;display:none;transition:transform 150ms ease-out,opacity 150ms ease-out;";
+  agentCursor.innerHTML = agentCursorMarkup("t3code-recording-agent-cursor");
   document.documentElement.append(style, cursor, agentCursor);
   let controller: "human" | "agent" | "none" = "none";
   let humanPoint: { readonly x: number; readonly y: number } | null = null;
@@ -58,12 +55,6 @@ export function installRecordingCursor(
     if (next === "agent") cursor.style.display = "none";
     if (next === "human") drawHuman();
     if (!agentActive) agentCursor.style.opacity = next === "human" ? "0.18" : "0.35";
-  };
-  const setTheme = (
-    theme: Pick<DesktopPreviewAnnotationTheme, "primary" | "background"> | null,
-  ) => {
-    agentCursor.style.setProperty("--recording-cursor-primary", theme?.primary ?? "#2563eb");
-    agentCursor.style.setProperty("--recording-cursor-background", theme?.background ?? "white");
   };
   let lastKeyLabel: string | null = null;
   let pointerHeld = false;
@@ -115,6 +106,7 @@ export function installRecordingCursor(
     agentCursor.style.transform = `translate(${point.x}px, ${point.y}px)`;
     agentCursor.style.display = "block";
     agentCursor.style.opacity = "1";
+    if (phase === "click") playAgentCursorClick(agentCursor);
     agentActive = true;
     window.clearTimeout(agentTimer);
     agentTimer = window.setTimeout(() => {
@@ -176,7 +168,6 @@ export function installRecordingCursor(
     move,
     keyPress,
     setController,
-    setTheme,
     dispose: () => {
       window.removeEventListener("pointermove", pointerMove, true);
       window.removeEventListener("pointerdown", pointerDown, true);
