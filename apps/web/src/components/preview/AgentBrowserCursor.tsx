@@ -1,6 +1,6 @@
 import type { DesktopPreviewPointerEvent } from "@t3tools/contracts";
-import { MousePointer2 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { agentCursorMarkup, playAgentCursorClick } from "@t3tools/shared/agentCursor";
+import { useEffect, useId, useRef, useState } from "react";
 
 import { useBrowserPointerStore } from "~/browser/browserPointerStore";
 import { useBrowserSurfaceStore } from "~/browser/browserSurfaceStore";
@@ -65,14 +65,22 @@ export function AgentCursorMark(props: {
   const { phase, sequence, left, top, controller } = props;
   const [inactiveSequence, setInactiveSequence] = useState<number | null>(null);
   const active = inactiveSequence !== sequence;
+  const cursorRef = useRef<HTMLDivElement>(null);
+  const gradientId = `agent-cursor-${useId().replaceAll(":", "")}`;
 
   useEffect(() => {
     const timeout = window.setTimeout(() => setInactiveSequence(sequence), CURSOR_ACTIVE_MS);
     return () => window.clearTimeout(timeout);
   }, [sequence]);
 
+  const clickSequence = phase === "click" ? sequence : null;
+  useEffect(() => {
+    if (clickSequence !== null && cursorRef.current) playAgentCursorClick(cursorRef.current);
+  }, [clickSequence]);
+
   return (
     <div
+      ref={cursorRef}
       className="pointer-events-none absolute left-0 top-0 z-40 transition-[opacity,transform] duration-150 ease-out motion-reduce:transition-none"
       style={{
         opacity: agentBrowserCursorOpacity(active, controller),
@@ -80,17 +88,8 @@ export function AgentCursorMark(props: {
       }}
       aria-hidden="true"
       data-agent-browser-cursor
-    >
-      {phase === "click" ? (
-        <span
-          key={sequence}
-          className="absolute left-0.5 top-0.5 size-4 animate-status-ping rounded-full bg-primary/25 motion-reduce:animate-none"
-        />
-      ) : null}
-      <MousePointer2
-        className="relative size-5 -translate-x-0.5 -translate-y-0.5 fill-background text-primary drop-shadow-sm"
-        strokeWidth={2}
-      />
-    </div>
+      // Static artwork shared with the native computer-use cursor.
+      dangerouslySetInnerHTML={{ __html: agentCursorMarkup(gradientId) }}
+    />
   );
 }
