@@ -166,6 +166,7 @@ backend's computer tools as the "Dev harness" agent:
 
 ```sh
 node scripts/computer-use-dev.ts smoke                      # Calculator computes 7 + 8 = 15
+node scripts/computer-use-dev.ts bakeoff                    # 11 tasks on a background Chrome page
 node scripts/computer-use-dev.ts snapshot Calculator
 node scripts/computer-use-dev.ts action '{"steps":[{"ref":12,"action":{"kind":"press"}}]}'
 node scripts/computer-use-dev.ts snapshot TextEdit --image /tmp/textedit.png
@@ -175,7 +176,17 @@ It reads the server origin from the main checkout's `.t3` (override with `--home
 day-long admin session for itself, and keeps the token in the system temp directory.
 `action` defaults to the latest snapshot the harness took. Only development servers accept
 the harness, and only over direct loopback requests. Computer access must be enabled in the
-app's settings, with the target app allowed.
+app's settings, with the target app allowed. A `vp run dev:server` started from a T3 Code
+terminal also has the grants, since macOS credits them to the app that started the shell; pass
+it `--home .t3`.
+
+`bakeoff` serves [computer-use-bakeoff.html](../../scripts/computer-use-bakeoff.html), opens it
+in Google Chrome with the harness's own profile and in the background, then runs button, canvas
+point, hover, typing, Return, scroll, drag and select tasks through `computer_action`. Quit any
+other Chrome first, since computer tools find apps by name. The page logs every DOM event with
+`isTrusted`. A task passes when the page logged the expected trusted events, shows the result
+at the end, and the user's pointer and front app never moved. The table also lists each
+`computer_action` response's size and delivery path.
 
 ## Desktop artifacts
 

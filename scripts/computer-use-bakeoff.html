@@ -1,0 +1,167 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Computer use bake-off</title>
+    <style>
+      body {
+        font: 15px system-ui;
+        margin: 20px;
+      }
+      section {
+        margin: 10px 0;
+        padding: 8px;
+        border: 1px solid #ccc;
+      }
+      #canvas {
+        border: 1px solid #333;
+      }
+      #hoverzone {
+        padding: 16px;
+        background: #eef;
+      }
+      #secret {
+        display: none;
+      }
+      #hoverzone:hover #secret {
+        display: inline-block;
+      }
+      #list {
+        height: 120px;
+        overflow: auto;
+        border: 1px solid #999;
+      }
+      #drag {
+        width: 60px;
+        height: 40px;
+        background: #f96;
+        position: relative;
+        touch-action: none;
+      }
+      #drop {
+        width: 160px;
+        height: 60px;
+        border: 2px dashed #69f;
+        margin-top: 8px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Computer use bake-off</h1>
+    <section><button id="btn">Increment</button> <span id="count">count: 0</span></section>
+    <section>
+      <canvas id="canvas" width="300" height="120" aria-label="drawing canvas"></canvas>
+      <span id="canvaslog">no canvas clicks</span>
+    </section>
+    <section id="hoverzone">
+      Hover here to reveal: <button id="secret">Secret action</button> <span id="secretlog"></span>
+    </section>
+    <!-- Never id="name": a bare `name` is window.name and the script below would break. -->
+    <section>
+      <label>Name <input id="nameField" /></label> <span id="echo"></span>
+    </section>
+    <section>
+      <label
+        >Flavor
+        <select id="sel">
+          <option>vanilla</option>
+          <option>chocolate</option>
+          <option>pistachio</option>
+        </select></label
+      >
+    </section>
+    <section>
+      <div id="list"></div>
+      <span id="scrolllog">scrollTop 0</span>
+    </section>
+    <section>
+      <div id="drag">drag</div>
+      <div id="drop">drop zone</div>
+      <span id="draglog">not dropped</span>
+    </section>
+    <script>
+      const log = (type, e, extra = {}) =>
+        fetch("/log", {
+          method: "POST",
+          body: JSON.stringify({
+            type,
+            isTrusted: e?.isTrusted,
+            x: e?.clientX,
+            y: e?.clientY,
+            ...extra,
+          }),
+        });
+      for (let i = 0; i < 50; i++)
+        list.append(Object.assign(document.createElement("div"), { textContent: `item ${i}` }));
+      let n = 0;
+      btn.onclick = (e) => {
+        count.textContent = `count: ${++n}`;
+        log("btn.click", e);
+      };
+      const ctx = canvas.getContext("2d");
+      canvas.addEventListener("click", (e) => {
+        const r = canvas.getBoundingClientRect();
+        const cx = Math.round(e.clientX - r.left),
+          cy = Math.round(e.clientY - r.top);
+        ctx.fillStyle = "red";
+        ctx.beginPath();
+        ctx.arc(cx, cy, 5, 0, 7);
+        ctx.fill();
+        canvaslog.textContent = `canvas click @ ${cx},${cy}`;
+        log("canvas.click", e, { cx, cy });
+      });
+      hoverzone.addEventListener("mouseenter", (e) => log("hover.enter", e));
+      secret.onclick = (e) => {
+        secretlog.textContent = "secret clicked";
+        log("secret.click", e);
+      };
+      nameField.addEventListener("input", (e) => {
+        echo.textContent = `typed: ${nameField.value}`;
+        log("input", e, { value: nameField.value });
+      });
+      nameField.addEventListener("keydown", (e) => log("keydown", e, { key: e.key }));
+      sel.onchange = (e) => log("select", e, { value: sel.value });
+      list.onscroll = () => {
+        scrolllog.textContent = `scrollTop ${list.scrollTop}`;
+      };
+      list.addEventListener("wheel", (e) => log("wheel", e, { dy: e.deltaY }), { passive: true });
+      let ox = 0,
+        oy = 0,
+        dragging = false;
+      drag.addEventListener("pointerdown", (e) => {
+        dragging = true;
+        ox = e.clientX;
+        oy = e.clientY;
+        drag.setPointerCapture(e.pointerId);
+        log("drag.down", e);
+      });
+      drag.addEventListener("pointermove", (e) => {
+        if (dragging) {
+          drag.style.left = `${e.clientX - ox}px`;
+          drag.style.top = `${e.clientY - oy}px`;
+        }
+      });
+      drag.addEventListener("pointerup", (e) => {
+        dragging = false;
+        const d = drop.getBoundingClientRect();
+        const inside =
+          e.clientX >= d.left &&
+          e.clientX <= d.right &&
+          e.clientY >= d.top &&
+          e.clientY <= d.bottom;
+        draglog.textContent = inside ? "DROPPED in zone" : "released outside";
+        log("drag.up", e, { inside });
+      });
+      let moved = false;
+      document.addEventListener("mousedown", (e) => log("mousedown", e));
+      document.addEventListener("mousemove", (e) => {
+        if (!moved) {
+          moved = true;
+          setTimeout(() => (moved = false), 300);
+          log("mousemove", e);
+        }
+      });
+      log("ready");
+    </script>
+  </body>
+</html>
