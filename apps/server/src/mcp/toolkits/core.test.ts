@@ -1106,3 +1106,74 @@ it.effect(
     );
   },
 );
+
+it.effect("t3_thread_read and t3_thread_list say what settled a thread", () => {
+  const unsettled = McpToolAccessTestkit.liveThreadShell(ThreadId.make("unsettled-thread"));
+  const autoSettled: OrchestrationV2ThreadShell = {
+    ...McpToolAccessTestkit.liveThreadShell(ThreadId.make("auto-settled-thread"), {
+      activeRunId: null,
+    }),
+    status: "completed",
+    settledOverride: "settled",
+    settledAt: unsettled.updatedAt,
+    settlementSource: "auto_pull_request_closed",
+  };
+  const shells = [unsettled, autoSettled];
+  return Effect.gen(function* () {
+    const server = yield* McpServer.McpServer;
+    const call = (name: string, args: Record<string, unknown>) =>
+      server
+        .callTool({ name, arguments: args })
+        .pipe(
+          Effect.provideService(
+            McpInvocationContext.McpInvocationContext,
+            clientScope("full-access"),
+          ),
+          Effect.provideService(McpSchema.McpServerClient, client),
+        );
+    const read = yield* call("t3_thread_read", { threadId: autoSettled.id });
+    expect(read.isError).toBe(false);
+    expect((yield* decodeThreadReadResult(read.structuredContent)).thread).toMatchObject({
+      settled: true,
+      settlementSource: "auto_pull_request_closed",
+    });
+    const listed = yield* call("t3_thread_list", { projectId: unsettled.projectId });
+    expect(listed.isError).toBe(false);
+    expect(listed.structuredContent).toMatchObject({
+      threads: [
+        { threadId: unsettled.id, settled: false, settlementSource: null },
+        { threadId: autoSettled.id, settled: true, settlementSource: "auto_pull_request_closed" },
+      ],
+    });
+  }).pipe(
+    Effect.provide(
+      layerOrchestratorToolkit.pipe(
+        Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+        Layer.provide(NodeCrypto.layer),
+        Layer.provide(
+          Layer.mock(ThreadManagement.ThreadManagementService)({
+            getThreadShell: (id) => Effect.succeed(shells.find((shell) => shell.id === id) ?? null),
+            getProjectThreadRecords: (input) =>
+              Effect.succeed(
+                McpToolAccessTestkit.idleThreadProjection(
+                  shells.find((shell) => shell.id === input.threadId)!,
+                ),
+              ),
+            getTimelinePage: () => Effect.succeed({ items: [], totalItems: 0, hasMore: false }),
+            listProjectThreads: () => Effect.succeed(shells),
+          }),
+        ),
+        Layer.provide(ServerSettings.layerTest()),
+        Layer.provide(Layer.mock(ProviderRegistry.ProviderRegistry)({})),
+        Layer.provide(Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({})),
+        Layer.provide(Layer.mock(ScheduledTaskService.ScheduledTaskService)({})),
+        Layer.provide(Layer.mock(ProjectService.ProjectService)({})),
+        Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),
+        Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
+        Layer.provide(Layer.mock(PeerLinkRequests.PeerLinkRequests)({})),
+        Layer.provide(Layer.mock(PeerLinks.PeerLinks)({})),
+        Layer.provide(Layer.mock(RemoteDelegation.RemoteDelegation)({})),
+      ),
+    ),
+  );
+});

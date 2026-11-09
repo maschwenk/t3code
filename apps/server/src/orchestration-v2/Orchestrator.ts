@@ -3805,6 +3805,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             ...thread,
             settledOverride: "settled",
             settledAt: alreadySettled ? thread.settledAt : (command.settledAt ?? now),
+            settlementSource: alreadySettled
+              ? thread.settlementSource
+              : (command.settlementSource ?? null),
             pullRequests: thread.pullRequests?.map((link) => withPullRequestWatch(link, undefined)),
             unsettledAt: null,
             pinnedAt: null,
@@ -3824,6 +3827,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             ...thread,
             settledOverride: "active",
             settledAt: null,
+            settlementSource: null,
             unsettledAt: alreadyPinnedActive ? (thread.unsettledAt ?? null) : now,
             updatedAt: alreadyPinnedActive ? thread.updatedAt : now,
           };
@@ -3868,7 +3872,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             settledOverride:
               thread.settledOverride === "settled" ? "active" : thread.settledOverride,
             settledAt: thread.settledOverride === "settled" ? null : thread.settledAt,
-            ...(thread.settledOverride === "settled" ? { unsettledAt: now } : {}),
+            ...(thread.settledOverride === "settled"
+              ? { unsettledAt: now, settlementSource: null }
+              : {}),
             snoozedUntil: null,
             snoozedAt: null,
             lastSnoozeWakeAt: thread.snoozedUntil == null ? thread.lastSnoozeWakeAt : now,
@@ -5847,6 +5853,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ...projection.thread,
         settledOverride: null,
         settledAt: null,
+        settlementSource: null,
         unsettledAt:
           projection.thread.settledOverride === "active"
             ? (projection.thread.unsettledAt ?? null)
@@ -13466,6 +13473,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             commandId: command.commandId,
             threadId: command.threadId,
             ...(command.settledAt === undefined ? {} : { settledAt: command.settledAt }),
+            ...(command.settlementSource === undefined
+              ? {}
+              : { settlementSource: command.settlementSource }),
           },
           events,
           effects,

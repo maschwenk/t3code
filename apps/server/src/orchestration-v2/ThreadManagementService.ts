@@ -89,6 +89,12 @@ export function withCreationProvenance(
     case "thread.merge_back":
     case "delegated_task.request":
       return { ...command, ...provenance };
+    // Only the server records what settled a thread, so a client cannot claim an agent or rule did.
+    case "thread.settle":
+      return {
+        ...command,
+        settlementSource: provenance.createdBy === "agent" ? "agent" : "user",
+      };
     default:
       return command;
   }
@@ -454,6 +460,7 @@ export interface ThreadManagementServiceShape {
     readonly threadId: ThreadId;
     readonly runId: RunId;
   }) => Effect.Effect<void, ThreadManagementFailure>;
+  /** Settles for an agent's MCP call, so the thread records the `agent` source. */
   readonly settleThread: (input: {
     readonly threadId: ThreadId;
     readonly commandId: CommandId;
@@ -1090,6 +1097,7 @@ const make = Effect.gen(function* () {
         commandId: CommandId.make(`server:settle-after-run:${input.runId}:${sequence}`),
         threadId: input.threadId,
         expectedLatestRunId: latest.id,
+        settlementSource: "agent",
       }).pipe(
         Effect.as(true),
         // A notification can start between the projection read and the guarded dispatch.
@@ -1131,6 +1139,7 @@ const make = Effect.gen(function* () {
       type: "thread.settle",
       commandId: input.commandId,
       threadId: input.threadId,
+      settlementSource: "agent",
     });
     return { sequence: result.sequence };
   });

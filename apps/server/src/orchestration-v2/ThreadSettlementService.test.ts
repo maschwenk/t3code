@@ -582,6 +582,32 @@ function makePullRequestSummary(input: {
   };
 }
 
+function finishedLink(
+  state: "closed" | "merged",
+  linkedAt: string,
+  finishedAt: string,
+): NonNullable<SettlementShell["pullRequests"]>[number] {
+  return {
+    host: "example.test",
+    repository: "owner/repository",
+    number: 42,
+    url: "https://example.test/owner/repository/pull/42",
+    source: "agent",
+    linkedAt,
+    snapshot: {
+      state,
+      title: "Pull request",
+      headBranch: "feature",
+      baseBranch: "main",
+      isDraft: false,
+      updatedAt: finishedAt,
+      syncedAt: finishedAt,
+      ...(state === "merged" ? { mergedAt: finishedAt } : { closedAt: finishedAt }),
+    },
+    stack: null,
+  };
+}
+
 function makeBranchPullRequest(state: "open" | "closed" | "merged") {
   return {
     number: 42,
@@ -904,6 +930,56 @@ describe("ThreadSettlementServiceV2 worker", () => {
           expect((yield* Ref.get(fixture.commands)).map((command) => command.threadId)).toEqual([
             thread.id,
           ]);
+        }).pipe(Effect.provide(fixture.layer));
+      }),
+    ),
+  );
+
+  it.effect("tells the orchestrator which rule settled each thread", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(Date.parse(NOW));
+        // The thread's own agent closed a pull request it opened after the user's last message,
+        // too recently for inactivity to settle it.
+        const closed = makeThread("closed-pull-request", {
+          latestUserMessageAt: DateTime.makeUnsafe("2026-08-28T10:00:00.000Z"),
+          latestRunCompletedAt: DateTime.makeUnsafe("2026-08-28T11:00:00.000Z"),
+          pullRequests: [
+            finishedLink("closed", "2026-08-28T10:30:00.000Z", "2026-08-28T10:55:00.000Z"),
+          ],
+        });
+        const merged = makeThread("merged-pull-request", {
+          pullRequests: [finishedLink("merged", "2026-08-20T00:00:00.000Z", NOW)],
+        });
+        // Nothing linked: the sweep finds the merged pull request from the thread's branch.
+        const onBranch = makeThread("branch-pull-request", {
+          branch: "feature",
+          latestUserMessageAt: DateTime.makeUnsafe("2026-08-28T10:00:00.000Z"),
+        });
+        const idle = makeThread("idle");
+        const fixture = yield* makeHarness({
+          snapshot: makeSnapshot([closed, merged, onBranch, idle]),
+          settings: {
+            ...DEFAULT_SERVER_SETTINGS,
+            sidebarAutoSettleAfterDays: 3,
+            sidebarAutoSettleOnMerge: true,
+          },
+          branchPullRequest: () => Effect.succeed(makeBranchPullRequest("merged")),
+        });
+        yield* Effect.gen(function* () {
+          const service = yield* ThreadSettlementService.ThreadSettlementServiceV2;
+          yield* startHarness(service, fixture.activation, fixture.snapshotReads);
+          const commands = yield* Ref.get(fixture.commands);
+          expect(
+            new Map(commands.map((command) => [command.threadId, command.settlementSource])),
+          ).toEqual(
+            new Map([
+              [closed.id, "auto_pull_request_closed"],
+              [merged.id, "auto_pull_request_merged"],
+              [onBranch.id, "auto_branch_pull_request_merged"],
+              [idle.id, "auto_inactivity"],
+            ]),
+          );
         }).pipe(Effect.provide(fixture.layer));
       }),
     ),
