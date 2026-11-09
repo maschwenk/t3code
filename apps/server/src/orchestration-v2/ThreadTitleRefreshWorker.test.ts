@@ -1,6 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
 import {
   CommandId,
+  EnvironmentId,
   EventId,
   MessageId,
   ProjectId,
@@ -43,7 +44,42 @@ describe("threadsDueForTitleRefresh", () => {
     latestRunRequestedAt: null,
     latestRunStartedAt: null,
     latestRunCompletedAt: null,
+    lineage: {
+      parentThreadId: null,
+      relationshipToParent: null,
+      rootThreadId: ThreadId.make(id),
+    },
     ...overrides,
+  });
+
+  it("leaves subagents, side chats and delegated tasks alone but renames forks", () => {
+    const active = { latestUserMessageAt: hoursAgo(1) };
+    const child = (relationshipToParent: "fork" | "subagent" | null, sideChat?: boolean) => ({
+      parentThreadId: ThreadId.make("parent"),
+      relationshipToParent,
+      rootThreadId: ThreadId.make("parent"),
+      ...(sideChat === undefined ? {} : { sideChat }),
+    });
+    assert.deepEqual(
+      ThreadTitleRefreshWorker.threadsDueForTitleRefresh(
+        [
+          shell("subagent", { ...active, lineage: child("subagent") }),
+          shell("side-chat", { ...active, lineage: child(null, true) }),
+          shell("delegated", {
+            ...active,
+            delegatedFrom: {
+              environmentId: EnvironmentId.make("remote"),
+              threadId: ThreadId.make("remote-parent"),
+              title: "Remote parent",
+            },
+          }),
+          shell("fork", { ...active, lineage: child("fork") }),
+          shell("top-level", active),
+        ],
+        nowMs,
+      ).map(({ threadId }) => threadId),
+      ["fork", "top-level"].map((id) => ThreadId.make(id)),
+    );
   });
 
   it("selects threads with a message or turn in the last three hours, newest first", () => {
