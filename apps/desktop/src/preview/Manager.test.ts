@@ -130,12 +130,51 @@ describe("previewWindowOpenAction", () => {
     }
   });
 
-  it("denies a blank window instead of blanking the opener", () => {
-    for (const url of ["about:blank", ""]) {
-      for (const disposition of ["new-window", "foreground-tab"] as const) {
-        expect(PreviewManager.previewWindowOpenAction(details({ url, disposition }))).toBe("deny");
-      }
+  it("opens a blank window as a popup, so a page can point it at sign-in through the handle", () => {
+    for (const disposition of ["new-window", "foreground-tab", "background-tab"] as const) {
+      expect(
+        PreviewManager.previewWindowOpenAction(details({ url: "about:blank", disposition })),
+      ).toBe("popup");
     }
+  });
+});
+
+describe("popupWindowBounds", () => {
+  const display = { x: 1800, y: 25, width: 2560, height: 1415 };
+
+  it("centres the size the page asked for over the T3 window, not where the page placed it", () => {
+    expect(
+      PreviewManager.popupWindowBounds({
+        host: { x: 2010, y: 266, width: 1100, height: 780 },
+        workArea: display,
+        // Firebase's signInWithPopup features, positioned for the whole screen.
+        features: "location=yes,resizable=yes,toolbar=no,width=500,height=600,top=405,left=2310,",
+      }),
+    ).toEqual({ x: 2310, y: 356, width: 500, height: 600 });
+    expect(
+      PreviewManager.popupWindowBounds({
+        host: { x: 2010, y: 266, width: 1100, height: 780 },
+        workArea: display,
+        features: "",
+      }),
+    ).toEqual({ x: 2160, y: 356, width: 800, height: 600 });
+  });
+
+  it("keeps the popup on the T3 window's display", () => {
+    expect(
+      PreviewManager.popupWindowBounds({
+        host: { x: 1800, y: 25, width: 400, height: 300 },
+        workArea: display,
+        features: "width=500,height=660",
+      }),
+    ).toEqual({ x: 1800, y: 25, width: 500, height: 660 });
+    expect(
+      PreviewManager.popupWindowBounds({
+        host: { x: 0, y: 25, width: 1440, height: 875 },
+        workArea: { x: 0, y: 25, width: 1440, height: 875 },
+        features: "width=3000,height=2000",
+      }),
+    ).toEqual({ x: 0, y: 25, width: 1440, height: 875 });
   });
 });
 

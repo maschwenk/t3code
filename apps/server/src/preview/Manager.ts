@@ -35,6 +35,7 @@ export class PreviewManager extends Context.Service<
     readonly open: (
       input: PreviewOpenInput & {
         readonly automationOwner?: string;
+        readonly openerTabId?: string;
         /** Runs before the `opened` event publishes, so subscribers find state keyed by the tab. */
         readonly beforePublish?: (snapshot: PreviewSessionSnapshot) => void;
       },
@@ -193,6 +194,7 @@ export const make = Effect.gen(function* PreviewManagerMake() {
           ? { automationOwner: input.automationOwner }
           : {}),
         ...(input.reveal === undefined ? {} : { reveal: input.reveal }),
+        ...(input.openerTabId === undefined ? {} : { openerTabId: input.openerTabId }),
         updatedAt,
       };
       yield* SynchronizedRef.modifyEffect(stateRef, (state) =>

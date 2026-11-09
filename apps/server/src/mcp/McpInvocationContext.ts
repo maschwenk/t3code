@@ -29,6 +29,8 @@ export interface McpThreadCaller {
   readonly providerInstanceId: ProviderInstanceId;
   /** A delegated child task; its parent owns the work it hands back. */
   readonly subagent?: boolean;
+  /** `McpDevHarness` on a dev server: acts as the thread from outside any run. */
+  readonly devHarness?: boolean;
 }
 
 export interface McpClientCaller {

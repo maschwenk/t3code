@@ -6,6 +6,7 @@ import {
   DesktopBrowserCommand,
   DesktopBrowserEvent,
   type DesktopBrowserCommand as DesktopBrowserCommandType,
+  type DesktopPopupBlockReason,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
@@ -33,6 +34,14 @@ export interface DesktopTabKey {
   readonly tabId: string;
 }
 
+export type DesktopPopupEvent =
+  | { readonly opener: DesktopTabKey; readonly url: string; readonly popupId: string }
+  | {
+      readonly opener: DesktopTabKey;
+      readonly url: string;
+      readonly blocked: DesktopPopupBlockReason;
+    };
+
 const keyOf = ({ threadId, tabId }: DesktopTabKey) => `${threadId}\u0000${tabId}`;
 
 export class DesktopBrowserChannel extends Context.Service<
@@ -53,6 +62,11 @@ export class DesktopBrowserChannel extends Context.Service<
     ) => Effect.Effect<void>;
     /** Never fails. A failed write means a broken channel; the next backend starts with no turns. */
     readonly turn: (threadId: string, active: boolean) => Effect.Effect<void>;
+    /** Windows a desktop tab's page opened, or asked for and was refused. */
+    readonly popups: Stream.Stream<DesktopPopupEvent>;
+    /** The desktop attaches popup `popupId` as tab `key`, which then reports `attached`. */
+    readonly adoptPopup: (key: DesktopTabKey, popupId: string) => Effect.Effect<void>;
+    readonly closePopup: (key: DesktopTabKey) => Effect.Effect<void>;
   }
 >()("t3/preview/DesktopBrowserChannel") {}
 
@@ -88,8 +102,16 @@ const make = Effect.gen(function* () {
         return Effect.void;
       }),
       isShown: () => false,
+      popups: Stream.empty,
+      adoptPopup: Effect.fn("DesktopBrowserChannel.adoptPopup")(function () {
+        return Effect.void;
+      }),
+      closePopup: Effect.fn("DesktopBrowserChannel.closePopup")(function () {
+        return Effect.void;
+      }),
     });
   }
+  const popups = yield* PubSub.unbounded<DesktopPopupEvent>();
 
   const command = (message: DesktopBrowserCommandType) =>
     writeLock.withPermits(1)(
@@ -137,6 +159,14 @@ const make = Effect.gen(function* () {
         case "shown":
           shownTabs.set(id, event.shown);
           return Effect.void;
+        case "popup":
+          return PubSub.publish(popups, {
+            opener: key,
+            url: event.url,
+            popupId: event.popupId,
+          });
+        case "popupBlocked":
+          return PubSub.publish(popups, { opener: key, url: event.url, blocked: event.reason });
       }
     }),
     Effect.catchCause((cause) => Effect.logWarning("desktop browser channel stopped", { cause })),
@@ -210,10 +240,11 @@ const make = Effect.gen(function* () {
         Effect.gen(function* () {
           const subscription = yield* PubSub.subscribe(changes);
           if (attachedTabs.has(keyOf(key))) return true;
+          // A detach before any attach is a popup window that closed before it was adopted.
           return yield* Stream.fromSubscription(subscription).pipe(
-            Stream.filter((change) => change.attached && keyOf(change.key) === keyOf(key)),
+            Stream.filter((change) => keyOf(change.key) === keyOf(key)),
             Stream.runHead,
-            Effect.map(Option.isSome),
+            Effect.map((change) => Option.isSome(change) && change.value.attached),
             Effect.timeoutOption(timeout),
             Effect.map((result) => Option.getOrElse(result, () => false)),
           );
@@ -238,6 +269,13 @@ const make = Effect.gen(function* () {
     }),
     pointer: Effect.fn("DesktopBrowserChannel.pointer")(function (key, pointer) {
       return command({ type: "pointer", ...key, ...pointer });
+    }),
+    popups: Stream.fromPubSub(popups),
+    adoptPopup: Effect.fn("DesktopBrowserChannel.adoptPopup")(function (key, popupId) {
+      return command({ type: "adoptPopup", ...key, popupId });
+    }),
+    closePopup: Effect.fn("DesktopBrowserChannel.closePopup")(function (key) {
+      return command({ type: "closePopup", ...key });
     }),
   });
 });

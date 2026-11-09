@@ -4,6 +4,7 @@ import {
   DesktopBrowserCommand,
   DesktopBrowserEvent,
   type DesktopBrowserEvent as DesktopBrowserEventType,
+  type DesktopPopupBlockReason,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as NodePath from "node:path";
@@ -31,6 +32,10 @@ export interface DesktopBrowserTabKey {
   readonly threadId: string;
   readonly tabId: string;
 }
+
+export type DesktopPopupCommand =
+  | { readonly type: "adopt"; readonly key: DesktopBrowserTabKey; readonly popupId: string }
+  | { readonly type: "close"; readonly key: DesktopBrowserTabKey };
 
 export interface DesktopBrowserTabDebugger {
   readonly webContents: Electron.WebContents;
@@ -103,6 +108,16 @@ export class DesktopBrowserHost extends Context.Service<
       readonly key: DesktopBrowserTabKey;
       readonly active: boolean;
     }>;
+    /** Asks the server to adopt a popup window that `opener`'s page opened. */
+    readonly popupOpened: (opener: DesktopBrowserTabKey, popupId: string, url: string) => void;
+    readonly popupBlocked: (
+      opener: DesktopBrowserTabKey,
+      url: string,
+      reason: DesktopPopupBlockReason,
+    ) => void;
+    /** A popup the server asked for is gone, so its tab will never attach. */
+    readonly popupGone: (key: DesktopBrowserTabKey) => void;
+    readonly popupCommands: Stream.Stream<DesktopPopupCommand>;
   }
 >()("@t3tools/desktop/preview/DesktopBrowserHost") {}
 
@@ -118,6 +133,7 @@ export const make = Effect.gen(function* () {
     readonly key: DesktopBrowserTabKey;
     readonly active: boolean;
   }>();
+  const popupCommands = yield* PubSub.unbounded<DesktopPopupCommand>();
   const runFork = Effect.runForkWith(yield* Effect.context<never>());
   const tabs = new Map<string, AttachedTab>();
   /** Threads whose agent turn runs, by the server's account. */
@@ -496,6 +512,16 @@ export const make = Effect.gen(function* () {
         else endAgentTurn(command.value.threadId);
         return;
       }
+      // A popup's key attaches only once its window is adopted.
+      if (command.value.type === "adoptPopup" || command.value.type === "closePopup") {
+        const key = { threadId: command.value.threadId, tabId: command.value.tabId };
+        const popupCommand: DesktopPopupCommand =
+          command.value.type === "adoptPopup"
+            ? { type: "adopt", key, popupId: command.value.popupId }
+            : { type: "close", key };
+        runFork(PubSub.publish(popupCommands, popupCommand));
+        return;
+      }
       const tab = tabs.get(keyOf(command.value));
       if (!tab) return;
       if (command.value.type === "pointer") {
@@ -536,9 +562,20 @@ export const make = Effect.gen(function* () {
     );
   });
 
+  // Event URLs travel on every line of the channel; a data: URL can be megabytes.
+  const eventUrl = (url: string) => url.slice(0, 2048);
+
   return DesktopBrowserHost.of({
     pointers: Stream.fromPubSub(pointers),
     painting: Stream.fromPubSub(painting),
+    popupCommands: Stream.fromPubSub(popupCommands),
+    popupOpened: (opener, popupId, url) =>
+      emit({ type: "popup", ...opener, popupId, url: eventUrl(url) }),
+    popupBlocked: (opener, url, reason) =>
+      emit({ type: "popupBlocked", ...opener, url: eventUrl(url), reason }),
+    popupGone: (key) => {
+      if (!tabs.has(keyOf(key))) emit({ type: "detached", ...key });
+    },
     // Subscribes before announcing, so no attach falls between the two.
     events: Stream.unwrap(
       Effect.gen(function* () {
