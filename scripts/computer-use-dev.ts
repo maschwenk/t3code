@@ -387,7 +387,7 @@ const smoke = Command.make(
     for (const names of CALCULATOR_BUTTONS) {
       const button = findButton(elements, names);
       if (!button) return yield* fail(`No Calculator button named ${names.join(" or ")}.`);
-      steps.push({ ref: button.ref, action: { kind: "press" } });
+      steps.push({ ref: button.ref, action: "click" });
     }
     const acted = yield* harness.call("computer_action", {
       snapshotId: snapshotIdOf(textOf(opened)),
@@ -585,7 +585,7 @@ const snapshotPage = Effect.fn("computerUseDev.snapshotPage")(function* (harness
       const close = page.elements
         .slice(index + 1)
         .find((next) => next.role === "button" && next.name === "Close");
-      return close ? [{ ref: close.ref, action: { kind: "press" } }] : [];
+      return close ? [{ ref: close.ref, action: "click" }] : [];
     });
     if (steps.length === 0 && page.find("web_area", PAGE_TITLE)) return page;
     if (steps.length > 0)
@@ -607,27 +607,22 @@ interface BakeoffTask {
 
 const trusted = (events: readonly PageEvent[], type: string) =>
   events.filter((event) => event.type === type && event.isTrusted);
-const on = (element: SnapshotElement | undefined, action: object) =>
-  element && [{ ref: element.ref, action }];
-const at = (pixel: { x: number; y: number } | undefined, action: object) =>
-  pixel && [{ action: { ...action, ...pixel } }];
-const leftClick = { kind: "click", button: "left", count: 1 };
+const on = (element: SnapshotElement | undefined, step: object) =>
+  element && [{ ...step, ref: element.ref }];
+const at = (pixel: { x: number; y: number } | undefined, step: object) =>
+  pixel && [{ ...step, ...pixel }];
 
 const BAKEOFF: readonly BakeoffTask[] = [
   {
     name: "button",
-    actions: [(page) => on(page.find("button", "Increment"), leftClick)],
+    actions: [(page) => on(page.find("button", "Increment"), { action: "click" })],
     logged: (events) => trusted(events, "btn.click").length === 1,
     shows: (page) => page.find("static_text", "count: 1") !== undefined,
   },
   {
     name: "canvas click at 101,60",
     actions: [
-      (page) =>
-        at(page.pixel(page.find("image", "drawing canvas"), 101, 60), {
-          ...leftClick,
-          kind: "click_at",
-        }),
+      (page) => at(page.pixel(page.find("image", "drawing canvas"), 101, 60), { action: "click" }),
     ],
     logged: (events) =>
       trusted(events, "canvas.click")
@@ -637,13 +632,13 @@ const BAKEOFF: readonly BakeoffTask[] = [
   },
   {
     name: "hover by ref",
-    actions: [(page) => on(page.find("static_text", "Hover here to reveal:"), { kind: "move" })],
+    actions: [(page) => on(page.find("static_text", "Hover here to reveal:"), { action: "hover" })],
     logged: (events) => trusted(events, "hover.enter").length > 0,
   },
   {
     name: "move away by point",
     actions: [
-      (page) => at(page.pixel(page.find("heading", PAGE_TITLE), 10, 10), { kind: "move_at" }),
+      (page) => at(page.pixel(page.find("heading", PAGE_TITLE), 10, 10), { action: "hover" }),
     ],
     logged: (events) =>
       trusted(events, "mousemove").length > 0 && trusted(events, "mousedown").length === 0,
@@ -653,22 +648,21 @@ const BAKEOFF: readonly BakeoffTask[] = [
     actions: [
       (page) => {
         const label = page.find("static_text", "Hover here to reveal:");
-        return at(page.pixel(label, (label?.bounds?.width ?? 0) + 200, 5), { kind: "move_at" });
+        return at(page.pixel(label, (label?.bounds?.width ?? 0) + 200, 5), { action: "hover" });
       },
     ],
     logged: (events) => trusted(events, "hover.enter").length > 0,
   },
   {
     name: "revealed button",
-    actions: [(page) => on(page.find("button", "Secret action"), leftClick)],
+    actions: [(page) => on(page.find("button", "Secret action"), { action: "click" })],
     logged: (events) => trusted(events, "secret.click").length === 1,
     shows: (page) => page.find("static_text", "secret clicked") !== undefined,
   },
   {
     name: "typing",
     actions: [
-      (page) =>
-        on(page.find("text_field", "Name"), { kind: "type", text: "Max Bakeoff", replace: false }),
+      (page) => on(page.find("text_field", "Name"), { action: "type", text: "Max Bakeoff" }),
     ],
     logged: (events) =>
       trusted(events, "keydown").length === 11 &&
@@ -677,7 +671,7 @@ const BAKEOFF: readonly BakeoffTask[] = [
   },
   {
     name: "Return",
-    actions: [(page) => on(page.find("text_field", "Name"), { kind: "key", key: "Return" })],
+    actions: [(page) => on(page.find("text_field", "Name"), { action: "press", key: "Return" })],
     logged: (events) =>
       trusted(events, "keydown")
         .map((event) => event.key)
@@ -685,7 +679,7 @@ const BAKEOFF: readonly BakeoffTask[] = [
   },
   {
     name: "list scroll",
-    actions: [(page) => on(page.find("static_text", "item 0"), { kind: "scroll", dx: 0, dy: 100 })],
+    actions: [(page) => on(page.find("static_text", "item 0"), { action: "scroll", deltaY: 100 })],
     logged: (events) => trusted(events, "wheel").length > 0,
     shows: (page) => /"scrollTop [1-9]/.test(page.text),
   },
@@ -695,7 +689,8 @@ const BAKEOFF: readonly BakeoffTask[] = [
       (page) => {
         const zone = page.find("static_text", "drop zone");
         return (
-          zone && on(page.find("static_text", "drag"), { kind: "drag", to: { ref: zone.ref } })
+          zone &&
+          on(page.find("static_text", "drag"), { action: "drag", target: { ref: zone.ref } })
         );
       },
     ],
@@ -707,8 +702,8 @@ const BAKEOFF: readonly BakeoffTask[] = [
   {
     name: "select",
     actions: [
-      (page) => on(page.find("combo_box", "Flavor"), { kind: "press" }),
-      (page) => on(page.find("menu_item", "chocolate"), { kind: "press" }),
+      (page) => on(page.find("combo_box", "Flavor"), { action: "click" }),
+      (page) => on(page.find("menu_item", "chocolate"), { action: "click" }),
     ],
     logged: (events) => trusted(events, "select").some((event) => event.value === "chocolate"),
     shows: (page) => page.find("combo_box", "Flavor")?.value === "chocolate",

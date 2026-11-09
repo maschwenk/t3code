@@ -127,7 +127,7 @@ it.effect("exposes Claude tools with image content and session-bound action rece
     const snapshotId = /snapshotId=([\w-]+)/.exec(text)![1];
     const args = {
       snapshotId,
-      steps: [{ ref: 1, action: { kind: "click", button: "left", count: 1 } }],
+      steps: [{ ref: 1, action: "click" }],
     };
     const result = yield* server.callTool({ name: "computer_action", arguments: args });
     expect(result.isError).toBe(false);

@@ -222,31 +222,56 @@ function refRanges(refs: readonly number[]) {
   return runs.map(([start, end]) => (start === end ? `${start}` : `${start}-${end}`)).join(", ");
 }
 
+/** Each element's parent ref in a walk listed in tree order with depths. */
+function parentRefs(elements: readonly ElementTarget[]) {
+  const parents = new Map<number, number | undefined>();
+  const ancestors: ElementTarget[] = [];
+  for (const element of elements) {
+    while ((ancestors.at(-1)?.depth ?? -1) >= element.depth) ancestors.pop();
+    parents.set(element.ref, ancestors.at(-1)?.ref);
+    ancestors.push(element);
+  }
+  return parents;
+}
+
 /**
  * What changed between two snapshots of the same view whose refs were carried
  * over: `~` lines are elements whose line changed, `+` lines are new elements,
- * both in tree order, then the refs that are gone.
+ * both in tree order, then the refs that are gone, then the refs that only
+ * moved or resized under the same parent. Content that reflows by a few pixels
+ * would otherwise turn every element below it into a `~` line.
  */
 export function formatChanges(
   previous: NativeSnapshot,
   snapshot: NativeSnapshot,
   snapshotId: string,
 ): string {
-  const before = new Map(previous.elements.map((element) => [element.ref, formatElement(element)]));
+  const before = new Map(previous.elements.map((element) => [element.ref, element]));
+  const parentsBefore = parentRefs(previous.elements);
+  const parentsAfter = parentRefs(snapshot.elements);
   const lines: string[] = [];
+  const moved: number[] = [];
   for (const element of snapshot.elements) {
-    const line = formatElement(element);
     const old = before.get(element.ref);
-    if (old !== line) lines.push(`${old === undefined ? "+" : "~"} ${line}`);
     before.delete(element.ref);
+    const line = formatElement(element);
+    if (old === undefined) lines.push(`+ ${line}`);
+    else if (formatElement(old) === line) continue;
+    else if (
+      formatElement({ ...old, bounds: element.bounds }) === line &&
+      parentsBefore.get(element.ref) === parentsAfter.get(element.ref)
+    )
+      moved.push(element.ref);
+    else lines.push(`~ ${line}`);
   }
   if (before.size) lines.push(`removed: ${refRanges([...before.keys()])}`);
+  if (moved.length) lines.push(`moved: ${refRanges(moved)}`);
   const menus = snapshot.menus?.join(" | ") ?? "";
   if (menus !== (previous.menus?.join(" | ") ?? "")) lines.unshift(`menus: ${menus || "none"}`);
   return [
     header(snapshot, snapshotId),
     lines.length
-      ? "Changes since the snapshot you acted on (~ changed, + new; other refs are unchanged):"
+      ? "Changes since the snapshot you acted on (~ changed, + new, moved: only position or size changed; other refs are unchanged):"
       : "No changes since the snapshot you acted on.",
     ...lines,
   ].join("\n");
