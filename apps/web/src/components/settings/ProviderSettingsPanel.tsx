@@ -87,7 +87,6 @@ import {
   EmptyTitle,
 } from "../ui/empty";
 import { ScrollArea } from "../ui/scroll-area";
-import { Switch } from "../ui/switch";
 import { Toggle, ToggleGroup } from "../ui/toggle-group";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { stackedThreadToast, toastManager } from "../ui/toast";
@@ -1094,20 +1093,6 @@ export function EnvironmentProviderSettings({
       />
 
       <SettingsSection title="Advanced">
-        <SettingsRow
-          {...searchableSetting("claude-account-rotation")}
-          description="New threads on a Claude model start on the Claude account whose 5-hour limit resets soonest, among accounts with more than 5% left. The model stays the same."
-          control={
-            <Switch
-              aria-label="Claude account rotation"
-              checked={settings.preferClaudeAccountClosestToReset}
-              disabled={readOnly}
-              onCheckedChange={(checked) =>
-                updateSettings({ preferClaudeAccountClosestToReset: checked })
-              }
-            />
-          }
-        />
         <SettingsRow
           id={searchableSetting("provider-health-check-interval").id}
           title={

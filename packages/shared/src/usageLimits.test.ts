@@ -1,7 +1,6 @@
 import {
   DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
-  ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
   type ServerProvider,
@@ -23,7 +22,6 @@ import {
   exhaustedUsageWindow,
   paceOf,
   paceRemainingPercent,
-  selectClaudeInstanceClosestToReset,
   claudeUsageSummary,
   claudeWeeklyWindowId,
   usesChatGptSharing,
@@ -1470,7 +1468,7 @@ describe("sameUsageLimitCommandCoverage", () => {
   });
 });
 
-describe("Claude account rotation", () => {
+describe("Claude usage summary", () => {
   const opus = "claude-opus-5-5";
   const fable = "claude-fable-5-1";
   const weekReset = "2026-09-08T12:00:00.000Z";
@@ -1513,144 +1511,6 @@ describe("Claude account rotation", () => {
       { ...weeklyWindow("seven_day", 10, weekReset), ...weekly },
     ]);
   }
-  const select = (
-    providers: ReadonlyArray<ServerProvider>,
-    current = "claude_main",
-    model = opus,
-  ) =>
-    selectClaudeInstanceClosestToReset(
-      providers,
-      { instanceId: ProviderInstanceId.make(current), model },
-      now,
-    );
-
-  // Regression: a nearly spent account that resets soonest would take the
-  // thread and hit its limit on the first turn.
-  it("skips an account with 5% or less of its five-hour window left", () => {
-    const providers = [
-      claude("claude_main", { usedPercent: 20, resetsAt: "2026-09-03T15:00:00.000Z" }),
-      claude(
-        "claude_spent",
-        { usedPercent: 95, resetsAt: "2026-09-03T12:10:00.000Z" },
-        { resetsAt: "2026-09-04T12:00:00.000Z" },
-      ),
-      claude(
-        "claude_next",
-        { usedPercent: 60, resetsAt: "2026-09-03T13:00:00.000Z" },
-        { resetsAt: "2026-09-05T12:00:00.000Z" },
-      ),
-    ];
-    expect(select(providers)).toBe("claude_next");
-  });
-
-  it("skips an account the thread's project turns off", () => {
-    const projectId = ProjectId.make("project-a");
-    const providers = [
-      claude("claude_main", { usedPercent: 20, resetsAt: "2026-09-03T15:00:00.000Z" }),
-      claude(
-        "claude_other",
-        { usedPercent: 20, resetsAt: "2026-09-03T13:00:00.000Z" },
-        { resetsAt: "2026-09-05T12:00:00.000Z" },
-      ),
-    ];
-    const settings = {
-      ...DEFAULT_SERVER_SETTINGS,
-      projectSettingsOverrides: {
-        [projectId]: {
-          providerInstances: { [ProviderInstanceId.make("claude_other")]: { enabled: false } },
-        },
-      },
-    };
-    const selection = { instanceId: ProviderInstanceId.make("claude_main"), model: opus };
-    expect(selectClaudeInstanceClosestToReset(providers, selection, now)).toBe("claude_other");
-    expect(
-      selectClaudeInstanceClosestToReset(providers, selection, now, { settings, projectId }),
-    ).toBe("claude_main");
-  });
-
-  // Regression: picking by remaining quota instead of reset time would burn
-  // the fresh account first and let the soon-to-reset quota go unused.
-  it("prefers the earliest weekly reset, ranks unstarted windows last, and keeps the current account on a tie", () => {
-    const idle = withWindows("claude_idle", [
-      { ...sessionWindow, usedPercent: 0 },
-      weeklyWindow("seven_day", 10),
-    ]);
-    const late = claude("claude_main", { usedPercent: 10, resetsAt: "2026-09-03T16:00:00.000Z" });
-    const early = claude(
-      "claude_early",
-      { usedPercent: 80, resetsAt: "2026-09-03T12:30:00.000Z" },
-      { resetsAt: "2026-09-05T12:00:00.000Z" },
-    );
-    expect(select([idle, late, early])).toBe("claude_early");
-    expect(select([idle, late])).toBe("claude_main");
-    const twin = claude("claude_twin", { usedPercent: 50, resetsAt: "2026-09-03T16:00:00.000Z" });
-    expect(select([twin, late])).toBe("claude_main");
-  });
-
-  // Regression: a stale snapshot taken before the reset would keep a
-  // recovered account out of rotation until the next probe.
-  it("counts a window whose reset has passed as fresh", () => {
-    const providers = [
-      claude("claude_main", { usedPercent: 99, resetsAt: "2026-09-03T15:00:00.000Z" }),
-      claude("claude_reset", { usedPercent: 100, resetsAt: "2026-09-03T11:00:00.000Z" }),
-    ];
-    expect(select(providers)).toBe("claude_reset");
-  });
-
-  it("ranks accounts by weekly reset, so a five-hour reset that comes first does not send a thread to an account whose weekly cap resets later", () => {
-    const providers = [
-      claude("claude_main", { usedPercent: 20, resetsAt: "2026-09-03T12:30:00.000Z" }),
-      claude(
-        "claude_weekly_soon",
-        { usedPercent: 20, resetsAt: "2026-09-03T16:00:00.000Z" },
-        { resetsAt: "2026-09-05T12:00:00.000Z" },
-      ),
-    ];
-    expect(select(providers)).toBe("claude_weekly_soon");
-  });
-
-  it("skips an account whose Fable weekly window has 5% or less left for a Fable model, even when its account-wide weekly has room, and keeps it eligible for Opus", () => {
-    const spent = withWindows(
-      "claude_spent",
-      [
-        { ...sessionWindow, usedPercent: 10, resetsAt: "2026-09-03T12:30:00.000Z" },
-        weeklyWindow("seven_day", 10, "2026-09-04T12:00:00.000Z"),
-        weeklyWindow("seven_day_fable", 96, "2026-09-04T12:00:00.000Z"),
-      ],
-      [fable, opus],
-    );
-    const main = withWindows(
-      "claude_main",
-      [
-        { ...sessionWindow, usedPercent: 20, resetsAt: "2026-09-03T16:00:00.000Z" },
-        weeklyWindow("seven_day", 10, weekReset),
-        weeklyWindow("seven_day_fable", 30, weekReset),
-      ],
-      [fable, opus],
-    );
-    expect(select([spent, main], "claude_main", fable)).toBe("claude_main");
-    expect(select([spent, main], "claude_main", opus)).toBe("claude_spent");
-  });
-
-  it("leaves the selection unchanged when no account qualifies or the selection is not Claude", () => {
-    const spent = [
-      claude("claude_main", { usedPercent: 99, resetsAt: "2026-09-03T15:00:00.000Z" }),
-      claude(
-        "claude_weekly_spent",
-        { usedPercent: 10, resetsAt: "2026-09-03T12:30:00.000Z" },
-        { usedPercent: 98 },
-      ),
-      claudeAccount("claude_api_key"),
-    ];
-    expect(select(spent)).toBe("claude_main");
-    expect(
-      select(
-        [provider({}), claude("claude_main", { usedPercent: 0, resetsAt: window.resetsAt })],
-        "codex",
-      ),
-    ).toBe("codex");
-  });
-
   const fableAccount = withWindows(
     "claude_main",
     [
@@ -1661,7 +1521,7 @@ describe("Claude account rotation", () => {
     [fable, opus],
   );
 
-  it("returns seven_day_fable for a Fable model, so a Fable line and rotation never read the account-wide weekly instead of the cap that ends Fable turns", () => {
+  it("returns seven_day_fable for a Fable model, so its usage line reads the cap that ends Fable turns", () => {
     expect(claudeWeeklyWindowId(fableAccount, fable)).toBe("seven_day_fable");
   });
 
@@ -1669,7 +1529,7 @@ describe("Claude account rotation", () => {
     expect(claudeWeeklyWindowId(fableAccount, opus)).toBe("seven_day");
   });
 
-  it("returns null when the account reports no weekly window, so rotation never ranks an account on a weekly reset it does not report", () => {
+  it("returns null when the account reports no weekly window", () => {
     const sessionOnly = withWindows("claude_main", [{ ...sessionWindow, usedPercent: 38 }]);
     expect(claudeWeeklyWindowId(sessionOnly, fable)).toBeNull();
   });

@@ -32,7 +32,6 @@ import {
 import {
   hasExplicitComposerModelSelection,
   resolveNewDraftStartFromOrigin,
-  resolveNewThreadClaudeAccount,
   resolveNewThreadModelSelectionOverride,
 } from "../lib/chatThreadActions";
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
@@ -176,20 +175,6 @@ export function createNewThreadHandler(router: AnyRouter) {
           currentRouteTarget?.kind === "draft" ? currentRouteTarget.draftId : null,
         destinationDraftId,
       });
-    // Call after the sticky/override seed: the seeded model stays and only
-    // the Claude account moves.
-    const rotateClaudeAccount = (destinationDraftId: DraftId) => {
-      const rotated = resolveNewThreadClaudeAccount({
-        draft: getComposerDraft(destinationDraftId),
-        providers: targetServerConfig?.providers ?? [],
-        enabled: targetServerSettings.preferClaudeAccountClosestToReset,
-        now: Date.now(),
-        project: { settings: targetServerSettings, projectId: projectRef.projectId },
-      });
-      if (rotated) {
-        setModelSelection(destinationDraftId, rotated, { replaceOptions: true });
-      }
-    };
     const resolveDefaultEnvMode = async (): Promise<DraftThreadEnvMode> => {
       // Environment queries wait for a connection, so reading the project file on an
       // offline machine would never settle and the draft would never open.
@@ -314,7 +299,6 @@ export function createNewThreadHandler(router: AnyRouter) {
               replaceOptions: true,
             });
           }
-          rotateClaudeAccount(emptyStoredDraftThread.draftId);
         }
         // Remapping physical projects clears workspace context; preserve the branch and worktree.
         setLogicalProjectDraftThreadId(
@@ -428,7 +412,6 @@ export function createNewThreadHandler(router: AnyRouter) {
       if (modelSelectionOverride) {
         setModelSelection(draftId, modelSelectionOverride, { replaceOptions: true });
       }
-      rotateClaudeAccount(draftId);
       seedPrompt(draftId);
       await router.navigate({
         to: "/draft/$draftId",

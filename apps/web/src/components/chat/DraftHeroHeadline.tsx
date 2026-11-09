@@ -9,18 +9,14 @@ import { useRef, useState } from "react";
 
 import { openCommandPalette } from "~/commandPaletteBus";
 import { shortcutLabelForCommand } from "~/keybindings";
-import { environmentServerConfigsAtom, primaryServerKeybindingsAtom } from "~/state/server";
-import { appAtomRegistry } from "~/rpc/atomRegistry";
+import { primaryServerKeybindingsAtom } from "~/state/server";
 import { useNewThreadHandler } from "~/hooks/useHandleNewThread";
 import { useOrderWhileOpen } from "~/hooks/useOrderWhileOpen";
 import { useProjectPin } from "~/hooks/useProjectGroupUpdate";
 import { useScratchProject } from "~/hooks/useScratchProject";
 import { isTriagePrompt } from "~/hooks/useStartTriage";
 import { useClientSettings } from "~/hooks/useSettings";
-import {
-  hasExplicitComposerModelSelection,
-  resolveNewThreadClaudeAccount,
-} from "~/lib/chatThreadActions";
+import { hasExplicitComposerModelSelection } from "~/lib/chatThreadActions";
 import {
   deriveLogicalProjectKeyFromSettings,
   pickableProjectGroups,
@@ -245,21 +241,6 @@ export function DraftHeroHeadline({
         setModelSelection(draftId, defaultModelSelection, {
           replaceOptions: true,
         });
-      }
-      const rotated = resolveNewThreadClaudeAccount({
-        draft: getComposerDraft(draftId),
-        // Read at click time: provider statuses change on every push.
-        providers:
-          appAtomRegistry.get(environmentServerConfigsAtom).get(project.environmentId)?.providers ??
-          [],
-        enabled: environmentSettings?.preferClaudeAccountClosestToReset ?? false,
-        now: Date.now(),
-        ...(environmentSettings
-          ? { project: { settings: environmentSettings, projectId: project.id } }
-          : {}),
-      });
-      if (rotated) {
-        setModelSelection(draftId, rotated, { replaceOptions: true });
       }
     }
   };

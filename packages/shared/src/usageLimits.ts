@@ -685,9 +685,6 @@ export function formatResetsIn(window: ServerProviderUsageWindow, now: number): 
 
 const CLAUDE_DRIVER = "claudeAgent";
 
-/** Share of a Claude window an account must have left to take a new thread. */
-const CLAUDE_ROTATION_MIN_REMAINING_PERCENT = 5;
-
 function claudeWindows(provider: ServerProvider): readonly ServerProviderUsageWindow[] {
   if (provider.driver !== CLAUDE_DRIVER) return [];
   return provider.usageLimits?.windows ?? [];
@@ -769,65 +766,6 @@ export function claudeUsageSummary(
     label: describeClaudeWindow(primary, now),
     detail: details.length > 0 ? details.join(" · ") : null,
   };
-}
-
-/**
- * Of the ready Claude instances `project` allows for `selection.model` with over 5% left in their
- * five-hour, weekly and model weekly windows, the one whose model weekly window resets soonest
- * (unstarted last), so near-reset accounts are spent first. Ties and no match keep the current one.
- */
-export function selectClaudeInstanceClosestToReset(
-  providers: ReadonlyArray<ServerProvider>,
-  selection: Pick<ModelSelection, "instanceId" | "model">,
-  now: number,
-  project?: {
-    readonly settings: Pick<ServerSettings, "providerInstances" | "projectSettingsOverrides">;
-    readonly projectId: ProjectId | null;
-  },
-): ProviderInstanceId {
-  const current = providers.find((provider) => provider.instanceId === selection.instanceId);
-  if (current?.driver !== CLAUDE_DRIVER) return selection.instanceId;
-  const hasRoom = (window: ServerProviderUsageWindow) =>
-    100 - window.usedPercent > CLAUDE_ROTATION_MIN_REMAINING_PERCENT;
-  let best: { readonly instanceId: ProviderInstanceId; readonly resetsAt: number } | null = null;
-  for (const provider of providers) {
-    if (
-      !provider.enabled ||
-      !provider.installed ||
-      provider.status !== "ready" ||
-      !isProviderAvailable(provider) ||
-      !provider.models.some((model) => model.slug === selection.model) ||
-      (project !== undefined &&
-        !resolveProjectProviderInstanceEnabled(
-          project.settings,
-          project.projectId,
-          provider.instanceId,
-        ))
-    ) {
-      continue;
-    }
-    const session = currentClaudeWindow(provider, "five_hour", now);
-    const accountWeekly = currentClaudeWindow(provider, "seven_day", now);
-    const weeklyId = claudeWeeklyWindowId(provider, selection.model);
-    const weekly = weeklyId ? currentClaudeWindow(provider, weeklyId, now) : undefined;
-    if (
-      !session ||
-      !hasRoom(session) ||
-      (accountWeekly && !hasRoom(accountWeekly)) ||
-      (weekly && !hasRoom(weekly))
-    ) {
-      continue;
-    }
-    const resetsAt = resetMillis(weekly ?? session) ?? Number.POSITIVE_INFINITY;
-    if (
-      best === null ||
-      resetsAt < best.resetsAt ||
-      (resetsAt === best.resetsAt && provider.instanceId === selection.instanceId)
-    ) {
-      best = { instanceId: provider.instanceId, resetsAt };
-    }
-  }
-  return best?.instanceId ?? selection.instanceId;
 }
 
 export const USAGE_LIMITS_COMMAND = {

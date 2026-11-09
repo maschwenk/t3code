@@ -1507,14 +1507,6 @@ export const ServerSettings = Schema.Struct({
   secretProviders: Schema.Record(SecretProviderId, SecretProviderConfig).pipe(
     Schema.withDecodingDefault(Effect.succeed({})),
   ),
-  /**
-   * New threads on a Claude model start on the Claude instance whose five-hour
-   * window resets soonest among those with room left, keeping the model.
-   */
-  preferClaudeAccountClosestToReset: Schema.Boolean.pipe(
-    Schema.withDecodingDefault(Effect.succeed(true)),
-  ),
-
   usagePriceOverrides: Schema.Record(TrimmedNonEmptyString, UsageModelPriceOverride).pipe(
     Schema.withDecodingDefault(Effect.succeed({})),
   ),
@@ -1882,8 +1874,6 @@ export const ServerSettingsPatch = Schema.Struct({
   secretProviders: Schema.optionalKey(
     Schema.Record(SecretProviderId, Schema.NullOr(SecretProviderConfigWrite)),
   ),
-  preferClaudeAccountClosestToReset: Schema.optionalKey(Schema.Boolean),
-
   usagePriceOverrides: Schema.optionalKey(
     Schema.Record(TrimmedNonEmptyString, Schema.NullOr(UsageModelPriceOverride)),
   ),

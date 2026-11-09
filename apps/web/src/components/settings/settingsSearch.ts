@@ -973,14 +973,6 @@ export const SETTINGS_SEARCH_ITEMS = [
     providerSettingsOnly: true,
   },
   {
-    id: "claude-account-rotation",
-    title: "Claude account rotation",
-    fork: true,
-    to: "/settings/providers",
-    searchTerms: ["claude accounts instances usage limit five hour reset new thread switch"],
-    providerSettingsOnly: true,
-  },
-  {
     id: "provider-health-check-interval",
     title: "Health check interval",
     to: "/settings/providers",
