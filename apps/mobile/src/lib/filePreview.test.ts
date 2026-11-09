@@ -126,6 +126,12 @@ vi.mock("expo", () => ({
     return player;
   },
 }));
+// ThreadFeed's scheduled-task cards read app state, which loads native Expo modules on import.
+vi.mock("../features/threads/ScheduledTaskCards", () => ({
+  ThreadScheduledTaskCardsProvider: (props: { readonly children?: unknown }) => props.children,
+  ScheduledTaskCardsForMessage: () => null,
+  TrailingScheduledTaskCards: () => null,
+}));
 vi.mock("expo-video", () => ({
   useVideoPlayer: () => audio.video,
   VideoView: () => null,
