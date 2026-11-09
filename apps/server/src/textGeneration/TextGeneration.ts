@@ -48,7 +48,8 @@ type TextGenerationOp =
   | "generateThreadTitle"
   | "generateReviewGuide"
   | "generateTranscriptionPostProcessing"
-  | "triageCompletion";
+  | "triageCompletion"
+  | "checkSettlementReply";
 
 const resolveInstance = (
   registry: ProviderInstanceRegistry.ProviderInstanceRegistry["Service"],
@@ -166,6 +167,11 @@ export const make = Effect.gen(function* () {
     triageCompletion: Effect.fn("TextGeneration.triageCompletion")(function (input) {
       return generate("triageCompletion", input.modelSelection, (service, modelSelection) =>
         service.triageCompletion({ ...input, modelSelection }),
+      );
+    }),
+    checkSettlementReply: Effect.fn("TextGeneration.checkSettlementReply")(function (input) {
+      return generate("checkSettlementReply", input.modelSelection, (service, modelSelection) =>
+        service.checkSettlementReply({ ...input, modelSelection }),
       );
     }),
     generateThreadTitle: Effect.fn("TextGeneration.generateThreadTitle")(function (input) {

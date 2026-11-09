@@ -46,7 +46,8 @@ type TriageMessage = Pick<
   "id" | "runId" | "role" | "text" | "streaming" | "createdBy" | "scheduledTaskId"
 >;
 
-function lastFinishedReply(messages: ReadonlyArray<TriageMessage>, runId: RunId) {
+/** The text of the run's last finished, non-blank assistant message. */
+export function lastFinishedReply(messages: ReadonlyArray<TriageMessage>, runId: RunId) {
   return messages.findLast(
     (message) =>
       message.runId === runId &&

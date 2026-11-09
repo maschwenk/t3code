@@ -137,6 +137,7 @@ describe("searchSettings", () => {
       "wsl-backend",
       "auto-settle-inactive-threads",
       "auto-settle-merged-threads",
+      "auto-settle-reply-check",
       "days-before-auto-settle",
       "linked-environments",
     ]);
@@ -282,6 +283,7 @@ describe("auto-settlement search availability", () => {
       "auto-settle-inactive-threads",
       "auto-settle-merged-threads",
       "days-before-auto-settle",
+      "auto-settle-reply-check",
       "keep-threads-with-pull-requests",
     ]);
   });

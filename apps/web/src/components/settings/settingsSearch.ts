@@ -645,6 +645,14 @@ export const SETTINGS_SEARCH_ITEMS = [
     scope: "project-defaults",
   },
   {
+    id: "auto-settle-reply-check",
+    title: "Check the last reply first",
+    fork: true,
+    to: "/settings/threads",
+    searchTerms: ["auto-settle merge close pull request reply question needs you hold model haiku"],
+    requiresThreadAutoSettlement: true,
+  },
+  {
     id: "keep-threads-with-pull-requests",
     title: "Keep threads with a PR",
     to: "/settings/threads",

@@ -4,7 +4,7 @@ import { limitTitleMessage } from "./threadTitleContext.ts";
 import type { BranchNamingOptions, ChatAttachment } from "@t3tools/contracts";
 
 import { limitSection } from "./textGenerationUtils.ts";
-import type { ReviewGuideStackLayer } from "./textGeneration.ts";
+import type { ReviewGuideStackLayer, SettlementReplyCheckInput } from "./textGeneration.ts";
 import type { TextGenerationPolicy } from "@t3tools/provider-core/server/textGenerationPolicy";
 
 const EARLIER_CONTENT_TRUNCATION_MARKER = "[Earlier content truncated]\n\n";
@@ -536,4 +536,50 @@ export function buildCompletionTriagePrompt(input: CompletionTriagePromptInput) 
   ].join("\n");
 
   return { prompt, outputSchema: Schema.Struct({ notify: Schema.Boolean }) };
+}
+
+export type SettlementReplyPromptInput = Omit<SettlementReplyCheckInput, "cwd" | "modelSelection">;
+
+const SETTLEMENT_REPLY_ORIGIN: Record<SettlementReplyPromptInput["requestOrigin"], string> = {
+  user: "the user",
+  scheduled: "a scheduled task",
+  automated:
+    "an automated wake-up, such as a background job finishing, a pull request update, or another agent",
+};
+
+/** Asks whether a run's last reply still needs the user, before its pull request settles the thread. */
+export function buildSettlementReplyPrompt(input: SettlementReplyPromptInput) {
+  const reply =
+    input.reply.length <= 12_000
+      ? input.reply
+      : `${EARLIER_CONTENT_TRUNCATION_MARKER}${input.reply.slice(-12_000)}`;
+  const prompt = [
+    "A coding agent's thread is about to leave the user's active list because its pull request merged or closed. Decide whether the agent's last reply still needs the user. If it does, the thread stays in the list.",
+    "Return a JSON object with key: needsUser (boolean).",
+    "needsUser is true when the reply does any of these:",
+    '- asks the user a question or offers options and waits for a choice ("Want me to...?", "Should I...?", "Want both, or just one?"), or says it is holding until the user answers',
+    "- asks the user for approval, a decision, a sign-in, or access",
+    "- tells the user to do a step themselves, such as running a command, installing or restarting an app, or retrying something",
+    "- ends on an error instead of a result, such as an API, rate limit, or connection error",
+    '- says one-off work it started is still in flight and it will report back or act when that finishes: a background job, watcher, deploy, build, or review run, or a check it will make once the pull request merges or deploys. This includes "I\'ll be woken when it merges", because a merge does not always wake the agent.',
+    "needsUser is false when the reply only does these:",
+    "- reports finished work or a final result, even surprising news",
+    "- waits for this pull request to get approved, pass checks, or go through the merge queue, and expects nothing more once it merges",
+    '- is a periodic check-in that reports status, progress, findings, or no change while further checks run on a schedule ("hourly monitoring continues", "next check at...", "the check remains scheduled"). A schedule wakes the agent again on its own, so scheduled checks are not work in flight, whatever started this turn.',
+    "- notes caveats, open follow-ups, untested parts, or steps someone else could take, without asking the user to act on them or decide",
+    '- ends finished work with a passing offer such as "I can also ... if you want"',
+    "When unsure, answer true.",
+    "",
+    input.pullRequestFinishedAfterReply
+      ? `The thread's pull request ${input.pullRequestState} after the agent wrote this reply.`
+      : `The thread's pull request had already ${input.pullRequestState} when the agent wrote this reply.`,
+    "",
+    `Message that started the turn, from ${SETTLEMENT_REPLY_ORIGIN[input.requestOrigin]}:`,
+    limitSection(input.request, 2_000),
+    "",
+    "Agent's last reply:",
+    reply,
+  ].join("\n");
+
+  return { prompt, outputSchema: Schema.Struct({ needsUser: Schema.Boolean }) };
 }

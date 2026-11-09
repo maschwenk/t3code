@@ -87,6 +87,24 @@ export interface CompletionTriageResult {
   notify: boolean;
 }
 
+export interface SettlementReplyCheckInput {
+  cwd: string;
+  /** The message that started the run. */
+  request: string;
+  /** Who sent `request`: the user, a scheduled task, or anything else automated. */
+  requestOrigin: "user" | "scheduled" | "automated";
+  /** The agent's last reply in the run. */
+  reply: string;
+  pullRequestState: "merged" | "closed";
+  /** True when the pull request merged or closed after the run that wrote `reply` ended. */
+  pullRequestFinishedAfterReply: boolean;
+  modelSelection: ModelSelection;
+}
+
+export interface SettlementReplyCheckResult {
+  needsUser: boolean;
+}
+
 export interface ReviewGuideStackLayer {
   readonly number: number;
   readonly title: string | null;
@@ -150,4 +168,9 @@ export interface ProviderTextGeneration {
   readonly triageCompletion: (
     input: CompletionTriageInput,
   ) => Effect.Effect<CompletionTriageResult, TextGenerationError>;
+
+  /** Whether a run's last reply still needs the user before its pull request settles the thread. */
+  readonly checkSettlementReply: (
+    input: SettlementReplyCheckInput,
+  ) => Effect.Effect<SettlementReplyCheckResult, TextGenerationError>;
 }

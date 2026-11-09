@@ -37,6 +37,7 @@ import * as ProjectStore from "./ProjectStore.ts";
 import { sourceControlDefinitions } from "../sourceControl/sourceControlDefinitions.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
+import * as SettlementReplyGate from "./SettlementReplyGate.ts";
 
 export interface SettlementPullRequest {
   readonly state: "open" | "closed" | "merged";
@@ -216,6 +217,8 @@ type AutoSettlementInput = {
   readonly autoSettleAfterDays: number | null;
   readonly autoSettleOnMerge: boolean;
   readonly autoSettleKeepPullRequests?: boolean;
+  /** The latest run keeps a merged or closed pull request from settling; inactivity still can. */
+  readonly pullRequestHeld?: boolean;
 };
 
 export function resolveAutoSettlementAt(input: AutoSettlementInput): DateTime.Utc | null {
@@ -226,11 +229,16 @@ export function resolveAutoSettlementAt(input: AutoSettlementInput): DateTime.Ut
 function resolveAutoSettlement(input: AutoSettlementInput): {
   readonly settledAt: DateTime.Utc;
   readonly source: OrchestrationV2AutoSettlementSource;
+  /** Set when a merged or closed pull request settles the thread. */
+  readonly pullRequest?: SettlementPullRequest & { readonly state: "merged" | "closed" };
 } | null {
   const { thread } = input;
   let pullRequest = input.pullRequest;
+  const visibleLinks = visibleThreadPullRequests(thread.pullRequests ?? []);
   const links = settlementPullRequestLinks(thread);
   if (links.some((link) => link.snapshot === null)) return null;
+  // Every link recorded the thread's own work, and a looked-up pull request may be one of them.
+  if (visibleLinks.length > 0 && links.length === 0) pullRequest = null;
   // An open link means the pull request has not finished, so only inactivity
   // can settle the thread, never a merged or closed lookup.
   const hasOpenLink = links.some((link) => link.snapshot?.state === "open");
@@ -257,13 +265,18 @@ function resolveAutoSettlement(input: AutoSettlementInput): {
       toMillis(thread.latestRunStartedAt),
       toMillis(thread.latestRunCompletedAt),
     ]) ?? DateTime.toEpochMillis(thread.createdAt);
-  if (pullRequest !== null && pullRequestSettles(thread, pullRequest, input.autoSettleOnMerge)) {
+  if (
+    pullRequest !== null &&
+    input.pullRequestHeld !== true &&
+    pullRequestSettles(thread, pullRequest, input.autoSettleOnMerge)
+  ) {
     // With no link, the sweep found this pull request from the thread's branch.
-    const fromBranch = links.length === 0 && thread.linkedPullRequest == null;
+    const fromBranch = visibleLinks.length === 0 && thread.linkedPullRequest == null;
     const state = pullRequest.state === "merged" ? "merged" : "closed";
     return {
       settledAt: DateTime.makeUnsafe(activityAtMs),
       source: fromBranch ? `auto_branch_pull_request_${state}` : `auto_pull_request_${state}`,
+      pullRequest: { ...pullRequest, state },
     };
   }
   const hasPullRequest =
@@ -310,6 +323,7 @@ export function autoSettlementSettingsKey(
     settings.sidebarAutoSettleOnMerge,
     settings.sidebarAutoSettleAfterDays,
     settings.sidebarAutoSettleKeepPullRequests,
+    settings.sidebarAutoSettleReplyCheck,
     Object.entries(settings.projectSettingsOverrides)
       .filter(
         ([, entry]) =>
@@ -344,6 +358,7 @@ export const make = Effect.gen(function* () {
   const shellClosedThreads = new Set<ThreadId>();
   const terminals = yield* TerminalManager.TerminalManager;
   const projectScripts = yield* ProjectSetupScriptRunner.ProjectSetupScriptRunner;
+  const replyGate = yield* SettlementReplyGate.make;
   // Repeated thread.settled retains settledAt; run the action only once per settlement.
   const settleActionRunAt = new Map<ThreadId, number>();
 
@@ -371,15 +386,33 @@ export const make = Effect.gen(function* () {
           yield* settingsService.getSettings,
           thread.projectId,
         ).settings;
-        const decisionNow = yield* DateTime.now;
-        const settlement = resolveAutoSettlement({
-          thread,
-          pullRequest,
-          nowMs: DateTime.toEpochMillis(decisionNow),
-          autoSettleAfterDays: currentSettings.sidebarAutoSettleAfterDays,
-          autoSettleOnMerge: currentSettings.sidebarAutoSettleOnMerge,
-          autoSettleKeepPullRequests: currentSettings.sidebarAutoSettleKeepPullRequests,
-        });
+        const decisionNowMs = DateTime.toEpochMillis(yield* DateTime.now);
+        const checkReply = currentSettings.sidebarAutoSettleReplyCheck;
+        const decide = (pullRequestHeld: boolean) =>
+          resolveAutoSettlement({
+            thread,
+            pullRequest,
+            nowMs: decisionNowMs,
+            autoSettleAfterDays: currentSettings.sidebarAutoSettleAfterDays,
+            autoSettleOnMerge: currentSettings.sidebarAutoSettleOnMerge,
+            autoSettleKeepPullRequests: currentSettings.sidebarAutoSettleKeepPullRequests,
+            pullRequestHeld,
+          });
+        let settlement = decide(replyGate.holds(thread, decisionNowMs, checkReply));
+        if (settlement?.pullRequest !== undefined) {
+          const { state, mergedAt, closedAt } = settlement.pullRequest;
+          const held = yield* replyGate.check({
+            thread,
+            pullRequest: {
+              state,
+              finishedAtMs: Date.parse((state === "merged" ? mergedAt : closedAt) ?? ""),
+            },
+            cwd: projects.get(thread.projectId)?.workspaceRoot ?? null,
+            modelSelection: currentSettings.textGenerationModelSelection,
+            checkReply,
+          });
+          if (held !== null) settlement = decide(true);
+        }
         if (settlement === null) return thread;
         const uuid = yield* random.uuidV4();
         yield* orchestrator.dispatch({
@@ -417,6 +450,11 @@ export const make = Effect.gen(function* () {
           autoSettleAfterDays: projectSettings.sidebarAutoSettleAfterDays,
           autoSettleOnMerge: projectSettings.sidebarAutoSettleOnMerge,
           autoSettleKeepPullRequests: projectSettings.sidebarAutoSettleKeepPullRequests,
+          pullRequestHeld: replyGate.holds(
+            thread,
+            nowMs,
+            projectSettings.sidebarAutoSettleReplyCheck,
+          ),
         });
         return settledAt === null ? Effect.succeed(thread) : settleThread(thread, null);
       },
@@ -486,16 +524,23 @@ export const make = Effect.gen(function* () {
     ) {
       const currentSettings = yield* settingsService.getSettings;
       const decisionNow = yield* DateTime.now;
+      const decisionNowMs = DateTime.toEpochMillis(decisionNow);
       return group.some((thread) => {
         const { settings } = resolveProjectSettings(currentSettings, thread.projectId);
         return (
           resolveAutoSettlementAt({
             thread,
             pullRequest,
-            nowMs: DateTime.toEpochMillis(decisionNow),
+            nowMs: decisionNowMs,
             autoSettleAfterDays: settings.sidebarAutoSettleAfterDays,
             autoSettleOnMerge: settings.sidebarAutoSettleOnMerge,
             autoSettleKeepPullRequests: settings.sidebarAutoSettleKeepPullRequests,
+            // A held thread must not refresh the host every sweep only to stay held.
+            pullRequestHeld: replyGate.holds(
+              thread,
+              decisionNowMs,
+              settings.sidebarAutoSettleReplyCheck,
+            ),
           }) !== null
         );
       });
