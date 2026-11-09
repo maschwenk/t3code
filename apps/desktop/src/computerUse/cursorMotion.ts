@@ -1,9 +1,7 @@
 /**
- * Agent cursor motion. A glide is a cubic Hermite curve in time from the
- * current position and velocity to the target (arriving at rest), plus a small
- * sideways bow so long moves arc like a wrist movement instead of a ruler line.
- * Starting from the current velocity keeps the motion continuous when a new
- * target arrives mid-flight.
+ * A glide is a cubic Hermite curve from the current position and velocity to the target,
+ * arriving at rest, plus a small sideways bow so long moves arc like a wrist. Starting from
+ * the current velocity keeps motion continuous when a new target arrives mid-flight.
  */
 export interface Point {
   readonly x: number;

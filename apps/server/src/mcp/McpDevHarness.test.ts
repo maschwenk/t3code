@@ -9,7 +9,6 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import { McpProtocol, McpServer } from "effect/ai";
 import { HttpBody, HttpClient, HttpRouter } from "effect/http";
 
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
@@ -17,6 +16,7 @@ import * as ComputerUse from "../computerUse/ComputerUse.ts";
 import { ComputerUseError } from "../computerUse/protocol.ts";
 import * as ServerConfig from "../config.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import * as ServerSettings from "../serverSettings.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
 import * as McpSessionRegistry from "./McpSessionRegistry.ts";
 
@@ -56,19 +56,15 @@ const serveMcp = (devUrl: URL | undefined) =>
     ).pipe(
       Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-mcp-dev-harness-test-" })),
     );
-    const transport = McpServer.layerHttp({
-      name: "MCP dev harness test",
-      version: "1.0.0",
-      path: "/mcp",
-      protocols: [McpProtocol.v2025_06_18],
-    }).pipe(Layer.provide(McpHttpServer.layerMcpAuthMiddleware));
-    yield* HttpRouter.serve(McpHttpServer.layerComputerTools.pipe(Layer.provideMerge(transport)), {
+    const transport = McpHttpServer.layerMcpTransport(McpHttpServer.layerComputerTools);
+    yield* HttpRouter.serve(transport, {
       disableListenLog: true,
       disableLogger: true,
     }).pipe(
       Layer.provide(computer),
       Layer.provide(auth),
       Layer.provide(config),
+      Layer.provide(ServerSettings.layerTest()),
       Layer.provide(
         Layer.mock(McpSessionRegistry.McpSessionRegistry)({ resolve: () => Effect.undefined }),
       ),

@@ -40,7 +40,8 @@ describe("AgentBrowserCursor", () => {
       expect(arrow().left - unzoomed.left).toBeCloseTo(40);
       expect(arrow().top - unzoomed.top).toBeCloseTo(30);
     });
-    expect(arrow().width).toBe(unzoomed.width);
-    expect(arrow().height).toBe(unzoomed.height);
+    // Sub-pixel translation can perturb the measured box by float noise.
+    expect(arrow().width).toBeCloseTo(unzoomed.width, 3);
+    expect(arrow().height).toBeCloseTo(unzoomed.height, 3);
   });
 });

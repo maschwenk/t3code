@@ -1,20 +1,9 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Loaded only by the isolated native worker.
 /**
- * Direct macOS calls that xa11y does not expose: events posted to one process,
- * the window server's window list, the menu bar, the system-wide hit test, and
- * what pointer takeover needs (idle time, pointer location, app activation).
- *
- * Pointer events posted to a process reach a background window only when they
- * carry what AppKit reads off an event the window server did not route: the
- * window number (fields 51, 91 and 92), the posting process (field 41, which
- * Chromium checks before accepting a click into an inactive app) and the
- * window-relative location, whose only setter is SkyLight's. With those set
- * the app handles the event where it says, and the user's pointer never moves.
- *
- * CF references cross ffi-rs as BigInt. Short strings and numbers are tagged
- * pointers with the high bit set, which a JS number cannot represent. The
- * worker exits after one request, so CF objects created here are not released
- * individually.
+ * Direct macOS calls xa11y lacks: per-process events, window list, menu bar, hit test, takeover.
+ * Posted pointer events reach a background window only with its number (fields 51, 91, 92), the
+ * poster (41, checked by Chromium) and SkyLight's window-relative location; the pointer stays put.
+ * CF refs cross ffi-rs as BigInt (tagged pointers overflow JS numbers); one request per worker, no release.
  */
 import * as NodeProcess from "node:process";
 
@@ -380,12 +369,10 @@ export async function loadMacNative() {
      */
     postMouse,
     /**
-     * Tells `pid` it became (or stopped being) the active app, the way the
-     * window server does, without changing the real front app. A button press
-     * posted to an app that believes it is inactive makes AppKit raise the
-     * window above every other inactive app's; one posted while it believes
-     * it is active leaves the window where it is. The flags are what AppKit
-     * sets on an activation that names a window.
+     * Tells `pid` it became (or stopped being) the active app, as the window server does, without
+     * changing the real front app. A press posted to an app that believes it is inactive raises its
+     * window above other inactive apps'; one posted while it believes it is active leaves it put.
+     * The flags are what AppKit sets on an activation that names a window.
      */
     postActivation(pid: number, window: PointerWindow, active: boolean) {
       const event = call<bigint>("cg", "CGEventCreate", Ref, [Ref], [0n]);
@@ -609,11 +596,9 @@ export async function loadMacNative() {
     frontProcess,
     frontmostPid: () => frontProcess()?.pid,
     /**
-     * Puts `app` back in front with `window` on top, the way the window server
-     * does when the user picks it, falling back to the app's own choice of
-     * window and then to asking it through accessibility. AXFrontmost alone
-     * waits on the app, which can block for the whole accessibility timeout,
-     * and brings every one of its windows forward.
+     * Puts `app` back in front with `window` on top, as the window server does when the user picks
+     * it, falling back to the app's own window choice, then to accessibility. AXFrontmost alone waits
+     * on the app, which can block for the whole accessibility timeout, and raises all its windows.
      */
     bringToFront(app: FrontProcess, window: number): boolean {
       const psn = ffi.createPointer({ paramsType: [Ref], paramsValue: [app.psn] });

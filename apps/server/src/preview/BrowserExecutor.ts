@@ -18,7 +18,7 @@ import {
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Result from "effect/Result";
@@ -85,7 +85,7 @@ type Session = {
 
 const make = Effect.gen(function* () {
   const broker = yield* Broker.PreviewAutomationBroker;
-  const crypto = yield* Crypto.Crypto;
+  const random = yield* SecureRandom.SecureRandom;
   const sessions = new Map<string, Session>();
   const execute = Effect.fn("BrowserExecutor.execute")(function* (
     scope: McpThreadInvocationScope,
@@ -116,9 +116,7 @@ const make = Effect.gen(function* () {
         [...sessions.values()].filter((value) => value.owner === owner).length >= 4
       )
         return yield* invalid("Executor session limit reached. Reset an unused session first.");
-      sessionId = yield* crypto
-        .randomUUIDv4()
-        .pipe(Effect.mapError(() => invalid("Could not create executor session.")));
+      sessionId = yield* random.uuidV4();
       session = {
         owner,
         tabs: new Map(),

@@ -2,7 +2,7 @@
 
 The desktop app's preview browser runs Chrome extensions such as 1Password.
 
-Open **Settings → Integrations → Browser → Extensions → Add extension**. Choose **From a
+Open **Settings → Browser → Extensions → Add extension**. Choose **From a
 browser on this computer** to copy an extension you already use in Chrome, Edge, Brave, Arc or
 another Chromium browser, or **From the Chrome Web Store** and paste the extension's store link.
 Extensions with a toolbar button appear next to the preview's address bar; click one to open

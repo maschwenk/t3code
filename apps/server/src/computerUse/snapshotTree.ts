@@ -135,12 +135,10 @@ const identityCounts = (elements: readonly ElementTarget[]) => {
 };
 
 /**
- * Renumbers a fresh walk so every element of `previous` that is still there
- * keeps its ref. An element is the same one when its role, name and identifier
- * match and it sits at the same place under the same kept ancestor, or when
- * that identity is unique in both walks (it moved). Every other element,
- * including one whose name changed, gets a ref from `nextRef` up, so a ref
- * that left the tree is never handed to another element.
+ * Renumbers a fresh walk so elements of `previous` still there keep their refs: same role, name and
+ * identifier, at the same place under the same kept ancestor, or an identity unique in both walks
+ * (it moved). Every other element, renamed ones too, gets a ref from `nextRef` up, so a ref that
+ * left the tree is never handed to another element.
  */
 export function carryRefs(
   previous: readonly ElementTarget[],
@@ -235,11 +233,9 @@ function parentRefs(elements: readonly ElementTarget[]) {
 }
 
 /**
- * What changed between two snapshots of the same view whose refs were carried
- * over: `~` lines are elements whose line changed, `+` lines are new elements,
- * both in tree order, then the refs that are gone, then the refs that only
- * moved or resized under the same parent. Content that reflows by a few pixels
- * would otherwise turn every element below it into a `~` line.
+ * What changed between two carried-over snapshots of one view: `~` changed lines and `+` new
+ * elements in tree order, then the refs that are gone, then refs that only moved or resized under
+ * the same parent, so content reflowing a few pixels doesn't turn everything below into `~` lines.
  */
 export function formatChanges(
   previous: NativeSnapshot,

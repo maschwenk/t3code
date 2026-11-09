@@ -37,11 +37,14 @@ export function scheduledTaskStatusText(
   nowMs: number,
 ): string {
   const timing = scheduledTaskTiming(task, nowMs);
-  if (timing.lifecycle === "paused") return `${timing.cadence} · Paused`;
+  // The shared label carries a one-time task's raw ISO time; show it in the reader's format.
+  const cadence =
+    task.schedule.type === "once" ? `Once, ${formatTime(task.schedule.runAt)}` : timing.cadence;
+  if (timing.lifecycle === "paused") return `${cadence} · Paused`;
   if (timing.lifecycle === "ended") {
-    return `${timing.cadence} · Ended after ${task.runCount} ${task.runCount === 1 ? "run" : "runs"}`;
+    return `${cadence} · Ended after ${task.runCount} ${task.runCount === 1 ? "run" : "runs"}`;
   }
-  const parts = [timing.cadence];
+  const parts = [cadence];
   if (task.schedule.type === "webhook") parts.push("Listening");
   if (timing.endsAt !== null) parts.push(`until ${formatTime(timing.endsAt)}`);
   if (timing.runsLeft !== null) {

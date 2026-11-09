@@ -10,6 +10,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
+import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
@@ -21,12 +22,15 @@ const decodeUpsertInput = Schema.decodeUnknownEffect(ScheduledTaskUpsertInput);
 const START = Date.parse("2026-09-09T12:00:00.000Z");
 
 /** Records each prompt posted into a thread. Bookkeeping is the same whether the send succeeds or fails. */
-const layerRecordingSends = (sends: Ref.Ref<ReadonlyArray<string>>) =>
+const layerRecordingSends = (sends: Ref.Ref<ReadonlyArray<string>>, projectId: string) =>
   Layer.mergeAll(
     NodeCrypto.layer,
     Scheduler.layer,
     Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
     Layer.mock(ThreadManagementService.ThreadManagementService)({
+      // Saving a bound task checks that its thread is live and in the task's project.
+      getThreadShell: () =>
+        Effect.succeed({ projectId, archivedAt: null, deletedAt: null } as never),
       sendToThread: (input) =>
         Ref.update(sends, (all) => [...all, `${input.threadId}:${input.text}`]).pipe(
           Effect.andThen(Effect.die(new Error("send recorded"))),
@@ -37,6 +41,7 @@ const layerRecordingSends = (sends: Ref.Ref<ReadonlyArray<string>>) =>
       namedProjectsRoot: "/projects",
       isScratchProject: () => Effect.succeed(false),
     }),
+    ManagedPolicy.layerTest(),
   );
 
 // The poll loop sleeps five seconds between passes; stepping the clock by
@@ -108,7 +113,11 @@ it.effect("posts a thread-bound schedule into its thread until the end time, the
       assert.isNotNull(extended.task.nextRunAt);
       assert.equal(scheduledTaskLifecycle(extended.task, START + 60 * 60_000), "active");
     }).pipe(
-      Effect.provide(ScheduledTaskService.layer.pipe(Layer.provide(layerRecordingSends(sends)))),
+      Effect.provide(
+        ScheduledTaskService.layer.pipe(
+          Layer.provide(layerRecordingSends(sends, "project-end-time")),
+        ),
+      ),
     );
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
@@ -147,7 +156,11 @@ it.effect("keeps end conditions when an older client edits without them", () =>
       assert.isNull(cleared.task.endsAt);
       assert.isNull(cleared.task.maxRuns);
     }).pipe(
-      Effect.provide(ScheduledTaskService.layer.pipe(Layer.provide(layerRecordingSends(sends)))),
+      Effect.provide(
+        ScheduledTaskService.layer.pipe(
+          Layer.provide(layerRecordingSends(sends, "project-old-client")),
+        ),
+      ),
     );
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
@@ -181,7 +194,11 @@ it.effect("stops after its run budget", () =>
         "ended",
       );
     }).pipe(
-      Effect.provide(ScheduledTaskService.layer.pipe(Layer.provide(layerRecordingSends(sends)))),
+      Effect.provide(
+        ScheduledTaskService.layer.pipe(
+          Layer.provide(layerRecordingSends(sends, "project-max-runs")),
+        ),
+      ),
     );
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
@@ -228,7 +245,11 @@ it.effect("ends a schedule whose end passed while the server was down without ru
         "ended",
       );
     }).pipe(
-      Effect.provide(ScheduledTaskService.layer.pipe(Layer.provide(layerRecordingSends(sends)))),
+      Effect.provide(
+        ScheduledTaskService.layer.pipe(
+          Layer.provide(layerRecordingSends(sends, "project-missed-end")),
+        ),
+      ),
     );
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );

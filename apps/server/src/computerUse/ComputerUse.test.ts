@@ -1,4 +1,5 @@
 import { expect, it } from "@effect/vitest";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -185,7 +186,7 @@ const setup = (calls: WorkerRequest[], enabled = true, failAction = false) =>
         computerUseAllowedApps: ["Calculator"],
       }),
     ),
-    Layer.provide(NodeServices.layer),
+    Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
   );
 const code = <A>(effect: Effect.Effect<A, ComputerUseError>) =>
   effect.pipe(Effect.match({ onSuccess: () => "success", onFailure: (error) => error.code }));
@@ -227,7 +228,7 @@ it.effect("aims coordinate steps at the latest capture, even after text-only sna
         computerUseAllowedApps: ["Calculator"],
       }),
     ),
-    Layer.provide(NodeServices.layer),
+    Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
   );
   return Effect.gen(function* () {
     const computer = yield* ComputerUse.ComputerUse;
@@ -275,7 +276,7 @@ it.effect("tells the agent when the app was sent back, in that operation's resul
         computerUseAllowedApps: ["Calculator"],
       }),
     ),
-    Layer.provide(NodeServices.layer),
+    Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
   );
   return Effect.gen(function* () {
     const computer = yield* ComputerUse.ComputerUse;
@@ -451,7 +452,7 @@ it.effect("stops a batch when computer use is turned off while it runs", () => {
         computerUseAllowedApps: ["Calculator"],
       }),
     ),
-    Layer.provide(NodeServices.layer),
+    Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
   );
   return Effect.gen(function* () {
     const computer = yield* ComputerUse.ComputerUse;
@@ -505,7 +506,7 @@ const walking = (
         computerUseAllowedApps: ["Calculator"],
       }),
     ),
-    Layer.provide(NodeServices.layer),
+    Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
   );
 const allClear = { ...seven, name: "All Clear", stableId: "AllClear", path: [0, 1] };
 const clear = { ...allClear, name: "Clear", stableId: "Clear" };

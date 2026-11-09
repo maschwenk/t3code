@@ -68,12 +68,14 @@ export function AgentCursorMark(props: {
   const cursorRef = useRef<HTMLDivElement>(null);
   const gradientId = `agent-cursor-${useId().replaceAll(":", "")}`;
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- timer fades the agent cursor after each move or click
   useEffect(() => {
     const timeout = window.setTimeout(() => setInactiveSequence(sequence), CURSOR_ACTIVE_MS);
     return () => window.clearTimeout(timeout);
   }, [sequence]);
 
   const clickSequence = phase === "click" ? sequence : null;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- plays the click ripple on the cursor's DOM node once per agent click
   useEffect(() => {
     if (clickSequence !== null && cursorRef.current) playAgentCursorClick(cursorRef.current);
   }, [clickSequence]);

@@ -163,13 +163,10 @@ const pickSized = <T>(value: unknown, isLeaf: (candidate: unknown) => boolean): 
 };
 
 /**
- * Runs Chrome extensions in the preview browser's persistent profiles.
- *
- * Electron loads an extension and supports part of its API. This fills in
- * what the browser around it normally provides: the windows and tabs the
- * preview has, the toolbar button and its popup, native messaging to desktop
- * companions, and namespaces such as `contextMenus` that extensions expect to
- * exist. The extension side of that lives in preview-extension-preload.ts.
+ * Runs Chrome extensions in persistent preview profiles, filling in what Electron leaves
+ * to the browser: windows and tabs, the toolbar popup, native messaging to desktop
+ * companions, and namespaces such as `contextMenus`. The extension side lives in
+ * preview-extension-preload.ts.
  */
 export class ExtensionHost {
   readonly #options: ExtensionHostOptions;

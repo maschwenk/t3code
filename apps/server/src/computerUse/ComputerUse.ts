@@ -1,6 +1,6 @@
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Result from "effect/Result";
@@ -233,7 +233,7 @@ const make = Effect.gen(function* () {
   const settings = yield* ServerSettings.ServerSettingsService;
   const driver = yield* Driver.Driver;
   const cursor = yield* AgentCursor.make;
-  const crypto = yield* Crypto.Crypto;
+  const random = yield* SecureRandom.SecureRandom;
   const mutex = yield* Semaphore.make(1);
   const receipts = new Map<string, Receipt>();
   // When the last agent pointer gesture ended; see deliverPointer's ownInputAt.
@@ -249,18 +249,15 @@ const make = Effect.gen(function* () {
           if (result.sentBack) sentBack = true;
         }),
       ),
-      Effect.flatMap((result) =>
-        result.ok
-          ? Effect.succeed(result)
-          : Effect.fail(
-              new ComputerUseError({
-                code: result.code,
-                ...("detail" in result && result.detail ? { detail: result.detail } : {}),
-                ...("available" in result && result.available
-                  ? { available: result.available }
-                  : {}),
-              }),
-            ),
+      Effect.filterOrFail(
+        (result): result is Extract<WorkerResponse, { readonly ok: true }> => result.ok,
+        // orFailWith sees the whole union, so the failure fields are read with `in`.
+        (result) =>
+          new ComputerUseError({
+            code: "code" in result ? result.code : "failed",
+            ...("detail" in result && result.detail ? { detail: result.detail } : {}),
+            ...("available" in result && result.available ? { available: result.available } : {}),
+          }),
       ),
     );
   const status = settings.getSettings.pipe(
@@ -337,9 +334,7 @@ const make = Effect.gen(function* () {
       if (at - receipt.at > RECEIPT_TTL_MS || receipt.caller === caller) receipts.delete(id);
     const oldest = receipts.keys().next().value;
     if (receipts.size >= 32 && oldest !== undefined) receipts.delete(oldest);
-    const snapshotId = yield* crypto
-      .randomUUIDv4()
-      .pipe(Effect.mapError((cause) => new ComputerUseError({ code: "failed", cause })));
+    const snapshotId = yield* random.uuidV4();
     // Images live only in the tool response, never in the receipt cache.
     const { image, ...remembered } = result.snapshot;
     const capture = image

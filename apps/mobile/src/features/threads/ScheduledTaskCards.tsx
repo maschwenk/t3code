@@ -11,6 +11,7 @@ import { createContext, use, useMemo, type ReactNode } from "react";
 import { Pressable, View } from "react-native";
 
 import { AppText as Text } from "../../components/ui/AppText";
+import { useNowMinuteMs } from "../../lib/clock";
 import { SymbolView } from "../../components/ui/AppSymbol";
 import type { ThreadFeedEntry } from "../../lib/threadActivity";
 import { useEnvironmentPresentation } from "../../state/presentation";
@@ -80,7 +81,7 @@ function ScheduledTaskCard(props: {
 }) {
   const navigation = useNavigation();
   const { presentation } = useEnvironmentPresentation(props.environmentId);
-  const nowMs = Date.now();
+  const nowMs = useNowMinuteMs();
   const timing = scheduledTaskTiming(props.task, nowMs);
   const status = scheduledTaskStatusText(props.task, formatTime, nowMs);
   const open = () => {
@@ -89,10 +90,7 @@ function ScheduledTaskCard(props: {
       environmentLabel: presentation?.entry.target.label ?? "",
       draft: editDraft(props.task),
     });
-    navigation.navigate("SettingsSheet", {
-      screen: "SettingsContent",
-      params: { screen: "SettingsScheduledTaskEdit" },
-    });
+    navigation.navigate("SettingsScheduledTaskEdit");
   };
   return (
     <Pressable
@@ -107,7 +105,9 @@ function ScheduledTaskCard(props: {
           {props.task.title}
         </Text>
         <Text className="text-sm text-foreground-muted" numberOfLines={1}>
-          {timing.nextRunAt !== null ? `Next ${formatTime(timing.nextRunAt)} · ` : ""}
+          {timing.nextRunAt !== null && props.task.schedule.type !== "once"
+            ? `Next ${formatTime(timing.nextRunAt)} · `
+            : ""}
           {status}
         </Text>
       </View>

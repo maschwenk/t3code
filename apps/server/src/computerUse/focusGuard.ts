@@ -99,11 +99,9 @@ export function bringsAppForward(request: WorkerRequest): boolean {
 }
 
 /**
- * Watches the front app for one worker session and sends the target app back
- * behind the user's app whenever it comes forward on its own: apps activate
- * themselves when they launch or reopen, and some when an accessibility
- * action reaches them. Native failures turn the guard off rather than fail
- * the request.
+ * Watches the front app for one worker session and sends the target app back behind the user's
+ * app whenever it comes forward on its own, as apps do on launch, reopen, or some accessibility
+ * actions. Native failures turn the guard off rather than fail the request.
  */
 export function makeFocusGuard(desktop: FocusDesktop) {
   let previous: FrontProcess | undefined;

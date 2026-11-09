@@ -153,12 +153,10 @@ const lsappinfo = (args: string[]) =>
     (result) => result.stdout,
   );
 
-// xa11y's App.byName and App.foreground read accessibility attributes from
-// every windowed app, so each unresponsive app on the machine stalls them for
-// a full AX messaging timeout (a minute in practice). LaunchServices names
-// apps without contacting them; attaching by pid then only talks to the target.
-// Some apps run a windowless helper under the same name (Wispr Flow's Swift
-// accessibility agent), so a match with windows wins over the first match.
+// xa11y's App.byName and App.foreground query every windowed app, so one unresponsive app stalls
+// them for a full AX timeout (a minute). LaunchServices names apps without contacting them, then
+// attaching by pid talks only to the target. A windowless same-name helper (Wispr Flow's
+// accessibility agent) can come first, so a match with windows wins.
 async function appByName(App: Xa11y["App"], name: string): Promise<App | undefined> {
   let first: App | undefined;
   for (const pid of launchServicesPids(await lsappinfo(["list"]), name)) {
@@ -583,12 +581,10 @@ const asPoint = (tuple: readonly [number, number] | undefined): Point | undefine
 const ACTIVATION_SETTLE_MS = 150;
 
 /**
- * Runs `post` while a background app believes it is active with `window` as
- * its key window, then tells it it is inactive again. A press posted to an app
- * that believes it is inactive raises its window, Chromium drops mouse moves
- * unless its window is key, and keys go to the key window even when
- * accessibility focused an element in another one. The front app is never
- * told anything.
+ * Runs `post` while a background app believes it is active with `window` as key, then tells it it
+ * is inactive again: a press to a believed-inactive app raises its window, Chromium drops mouse
+ * moves unless its window is key, and keys go to the key window even when accessibility focused an
+ * element in another. The front app is never told anything.
  */
 async function whileActive<A>(
   native: MacNative,

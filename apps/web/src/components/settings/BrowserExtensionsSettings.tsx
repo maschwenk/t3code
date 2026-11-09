@@ -182,6 +182,7 @@ function ImportFromBrowserDialog({
   const [adding, setAdding] = useState<string | null>(null);
   const [added, setAdded] = useState<ReadonlySet<string>>(new Set());
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- reads other browsers' extensions from the desktop bridge while the dialog is open
   useEffect(() => {
     if (!open || !bridge) return;
     let current = true;

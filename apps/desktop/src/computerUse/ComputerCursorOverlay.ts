@@ -82,11 +82,9 @@ const quote = (value: string) =>
   `"${value.replace(/[^\w .:-]/g, (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`)}"`;
 
 /**
- * Draws agent computer-use cursors in click-through, non-focusable overlays,
- * one window per display a cursor travels across and one cursor per agent.
- * Background accessibility actions never move the user's mouse, so this is how
- * the user sees where each agent is working. Motion runs as compositor
- * animations; an idle cursor costs nothing.
+ * Draws agent cursors in click-through, non-focusable overlays, one window per display and
+ * one cursor per agent. Background actions never move the user's mouse, so this is how the
+ * user sees where each agent works. Motion runs as compositor animations; idle costs nothing.
  */
 export const listen: Effect.Effect<
   void,
@@ -193,9 +191,9 @@ export const listen: Effect.Effect<
             ? `[${round(request.bounds.x - origin.x)},${round(request.bounds.y - origin.y)},${round(request.bounds.width)},${round(request.bounds.height)}]`
             : "null";
           const cue = request.cue ? `"${request.cue}"` : "null";
-          yield* Effect.tryPromise(() => overlay.loaded);
+          yield* Effect.promise(() => overlay.loaded);
           if (overlay.window.isDestroyed()) return;
-          yield* Effect.tryPromise(() =>
+          yield* Effect.promise(() =>
             overlay.window.webContents.executeJavaScript(
               `glide(${quote(id)},[${local}],${Math.round(durationMs)},${cue},${bounds},${quote(cursor.tag)},${cursor.tone})`,
             ),

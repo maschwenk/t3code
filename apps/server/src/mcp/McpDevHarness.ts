@@ -6,6 +6,7 @@ import {
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import { HttpServerRequest } from "effect/http";
 
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
@@ -39,22 +40,27 @@ const devHarnessScope = (
 });
 
 /**
- * Development servers only: lets `scripts/computer-use-dev.ts` on the same
- * machine call `/mcp` with an administrative environment bearer token, so an
- * agent outside the app can drive computer use through the backend that holds
- * the macOS Accessibility and Screen Recording grants. The request must come
- * straight from loopback; a proxy such as `tailscale serve` adds forwarding
- * headers and is refused. Each environment session is its own caller, so its
- * snapshot receipts carry over between commands.
+ * Dev servers only: lets `scripts/computer-use-dev.ts` call `/mcp` with an admin environment
+ * token, so an agent outside the app drives computer use through the backend holding the macOS
+ * grants. Loopback only: a proxy such as `tailscale serve` adds forwarding headers and is refused.
+ * Each environment session is its own caller, so its snapshot receipts carry over.
  */
 export const makeResolve = Effect.gen(function* () {
-  const config = yield* ServerConfig.ServerConfig;
-  if (config.devUrl === undefined) {
+  // Optional so upstream's transport tests, which build the middleware without them, need no harness wiring.
+  const config = yield* Effect.serviceOption(ServerConfig.ServerConfig);
+  const environmentAuth = yield* Effect.serviceOption(EnvironmentAuth.EnvironmentAuth);
+  const environment = yield* Effect.serviceOption(ServerEnvironment.ServerEnvironment);
+  if (
+    Option.isNone(config) ||
+    config.value.devUrl === undefined ||
+    Option.isNone(environmentAuth) ||
+    Option.isNone(environment)
+  ) {
     return (_request: HttpServerRequest.HttpServerRequest) =>
       Effect.succeed<McpInvocationContext.McpThreadInvocationScope | undefined>(undefined);
   }
-  const auth = yield* EnvironmentAuth.EnvironmentAuth;
-  const environmentId = yield* (yield* ServerEnvironment.ServerEnvironment).getEnvironmentId;
+  const auth = environmentAuth.value;
+  const environmentId = yield* environment.value.getEnvironmentId;
   return Effect.fn("McpDevHarness.resolve")(function* (
     request: HttpServerRequest.HttpServerRequest,
   ) {

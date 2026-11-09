@@ -14,6 +14,7 @@ import { useThreadShell } from "~/state/entities";
 import { useEnvironmentQuery } from "~/state/query";
 import { serverEnvironment } from "~/state/server";
 import { formatUpcomingTimestamp } from "~/timestampFormat";
+import { useNowMinute } from "~/hooks/useNowMinute";
 
 import {
   ScheduledTaskEditorDialog,
@@ -98,11 +99,9 @@ interface ThreadScheduledTaskCardsValue extends ScheduledTaskCardPlacement {
 const ThreadScheduledTaskCardsContext = createContext<ThreadScheduledTaskCardsValue | null>(null);
 
 /**
- * Owns the schedule subscription for an open thread so a change to any
- * schedule in the environment re-renders only this provider: `children` is
- * the timeline element its parent already built, so React skips it. The
- * card placement value stays the same object in threads without schedules,
- * so their rows never re-render for schedule changes.
+ * Owns the schedule subscription so a schedule change re-renders only this provider;
+ * `children` is the timeline its parent already built. Placement stays the same object
+ * in threads without schedules, so their rows never re-render for schedule changes.
  */
 export function ThreadScheduledTaskCardsProvider({
   threadRef,
@@ -157,7 +156,8 @@ function ScheduledTaskInlineCard({
   readonly environmentId: EnvironmentId;
   readonly timestampFormat: TimestampFormat;
 }) {
-  const nowMs = Date.now();
+  const nowMinute = useNowMinute();
+  const nowMs = Date.parse(`${nowMinute}:00.000Z`);
   const timing = scheduledTaskTiming(task, nowMs);
   const formatTime = (iso: string) => formatUpcomingTimestamp(iso, timestampFormat);
   const status = scheduledTaskStatusText(task, formatTime, nowMs);
@@ -170,7 +170,9 @@ function ScheduledTaskInlineCard({
       <div className="min-w-0 flex-1">
         <p className="truncate text-sm font-medium text-foreground">{task.title}</p>
         <p className="truncate text-xs text-muted-foreground">
-          {timing.nextRunAt !== null ? `Next ${formatTime(timing.nextRunAt)} · ` : ""}
+          {timing.nextRunAt !== null && task.schedule.type !== "once"
+            ? `Next ${formatTime(timing.nextRunAt)} · `
+            : ""}
           {status}
         </p>
       </div>

@@ -1,35 +1,8 @@
 // @effect-diagnostics nodeBuiltinImport:off globalDate:off globalConsole:off - Dependency-free host-side installer with no Effect runtime, like setup-worktree.ts.
-/**
- * Build this checkout as a personal "T3 Code (Fork)" desktop app and install
- * it into /Applications, replacing the previous fork build.
- *
- * The build is versioned `<version>-fork.<yyyymmdd>.<sha>`, which gives it its
- * own product name and bundle id (see resolveDesktopAppId in
- * build-desktop-artifact.ts) and no update feed, so it coexists with a stable
- * install and nothing can replace it with an upstream release.
- *
+/** Build this checkout as "T3 Code (Fork)" (`-fork.<date>.<sha>`: own bundle id, no update feed)
+ * and install it into /Applications. macOS only; see "Running your own fork" in development.md.
  *   node scripts/install-fork-desktop.ts [--no-launch] [--skip-build | --build-only]
- *                                        [--identity <codesign name>|none]
- *                                        [--allow-no-connect]
- *
- * `--build-only` then `--skip-build` splits this in two, so an agent running
- * inside the fork can build while the app is still open and install from a
- * detached script.
- *
- * T3 Connect's public identifiers are compiled into the bundle. When neither
- * the shell nor `.env`/`.env.local` sets them, the build takes them from
- * `.env.example` (the values official releases ship), and the install refuses
- * a bundle without them unless `--allow-no-connect` is passed. Otherwise a
- * fresh checkout silently builds an app with no Connect settings and no relay
- * route for other devices. After launching, it also waits for the relaunched
- * app to report T3 Connect reachable, and fails with a macOS alert if it does
- * not.
- *
- * macOS only (it relies on ditto, codesign, open, and security). When an
- * "Apple Development" identity is in the keychain the app
- * is signed with it so Keychain and TCC grants survive rebuilds; ad-hoc signed
- * builds re-prompt after every install because their signature changes.
- */
+ *     [--identity <codesign name>|none] [--allow-no-connect] */
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";

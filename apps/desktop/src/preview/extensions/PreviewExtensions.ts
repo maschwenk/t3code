@@ -79,7 +79,7 @@ export class PreviewExtensions extends Context.Service<
 /** How long a new preview tab waits for its profile's extensions before loading anyway. */
 const ATTACH_TIMEOUT = "4 seconds";
 
-/** @public Service construction is part of the canonical Effect module API. */
+/** @public */
 export const make = Effect.gen(function* PreviewExtensionsMake() {
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
   const fileSystem = yield* FileSystem.FileSystem;
@@ -168,13 +168,17 @@ export const make = Effect.gen(function* PreviewExtensionsMake() {
   }).pipe(Effect.provideService(FileSystem.FileSystem, fileSystem));
 
   return PreviewExtensions.of({
-    attachSession: (session) =>
-      Effect.promise(() => host.attachSession(session)).pipe(
+    attachSession: Effect.fn("PreviewExtensions.attachSession")(function* (session: Session) {
+      yield* Effect.promise(() => host.attachSession(session)).pipe(
         Effect.timeoutOption(ATTACH_TIMEOUT),
-        Effect.asVoid,
-      ),
-    list: (tabWebContentsId) => attempt("list", () => host.list(tabWebContentsId)),
-    openPopup: (input) => attempt("openPopup", () => host.openPopup(input)),
+      );
+    }),
+    list: Effect.fn("PreviewExtensions.list")(function* (tabWebContentsId?: number) {
+      return yield* attempt("list", () => host.list(tabWebContentsId));
+    }),
+    openPopup: Effect.fn("PreviewExtensions.openPopup")(function* (input) {
+      yield* attempt("openPopup", () => host.openPopup(input));
+    }),
     listBrowserCandidates,
     importFromBrowser: Effect.fn("PreviewExtensions.importFromBrowser")(function* (input) {
       const definition = BROWSER_IMPORT_SOURCES.find(
@@ -211,14 +215,23 @@ export const make = Effect.gen(function* PreviewExtensionsMake() {
       );
       return yield* listOne(installed.id);
     }),
-    setEnabled: (extensionId, enabled) =>
-      attempt("setEnabled", () => host.setEnabled(extensionId, enabled)),
-    remove: (extensionId) => attempt("remove", () => host.remove(extensionId)),
-    subscribeChanges: (listener) =>
-      Effect.acquireRelease(
+    setEnabled: Effect.fn("PreviewExtensions.setEnabled")(function* (
+      extensionId: string,
+      enabled: boolean,
+    ) {
+      yield* attempt("setEnabled", () => host.setEnabled(extensionId, enabled));
+    }),
+    remove: Effect.fn("PreviewExtensions.remove")(function* (extensionId: string) {
+      yield* attempt("remove", () => host.remove(extensionId));
+    }),
+    subscribeChanges: Effect.fn("PreviewExtensions.subscribeChanges")(function* (
+      listener: () => Effect.Effect<void>,
+    ) {
+      yield* Effect.acquireRelease(
         Effect.sync(() => listeners.add(listener)),
         () => Effect.sync(() => listeners.delete(listener)),
-      ).pipe(Effect.asVoid),
+      );
+    }),
   });
 }).pipe(Effect.withSpan("PreviewExtensions.make"));
 

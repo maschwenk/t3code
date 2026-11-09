@@ -1,4 +1,5 @@
 import { expect, it } from "@effect/vitest";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { EnvironmentId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -40,7 +41,7 @@ const png =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a9ZkAAAAASUVORK5CYII=";
 const layerTest = (calls: WorkerRequest[]) =>
   McpHttpServer.layerComputerTools.pipe(
-    Layer.provideMerge(McpServer.McpServer.layer),
+    Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
     Layer.provide(
       ComputerUse.layer.pipe(
         Layer.provide(
@@ -100,7 +101,7 @@ const layerTest = (calls: WorkerRequest[]) =>
       }),
     ),
     Layer.provide(DesktopTelemetryReceiver.layerTest()),
-    Layer.provide(NodeServices.layer),
+    Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
   );
 
 it.effect("exposes Claude tools with image content and session-bound action receipts", () => {

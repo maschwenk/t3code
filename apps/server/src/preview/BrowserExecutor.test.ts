@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import {
@@ -32,7 +33,7 @@ const scope = {
 const tabId = PreviewTabId.make("executor-tab");
 const layer = BrowserExecutor.layer.pipe(
   Layer.provideMerge(Broker.layer),
-  Layer.provide(NodeServices.layer),
+  Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
 );
 const setup = Effect.fn("BrowserExecutorTest.setup")(function* (
   fail?: string,

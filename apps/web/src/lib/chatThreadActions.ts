@@ -67,11 +67,17 @@ export function resolveNewThreadClaudeAccount(input: {
   readonly providers: ReadonlyArray<ServerProvider>;
   readonly enabled: boolean;
   readonly now: number;
+  readonly project?: Parameters<typeof selectClaudeInstanceClosestToReset>[3];
 }): ModelSelection | null {
   const activeProvider = input.draft?.activeProvider;
   const selection = activeProvider ? input.draft?.modelSelectionByProvider[activeProvider] : null;
   if (!input.enabled || !selection) return null;
-  const instanceId = selectClaudeInstanceClosestToReset(input.providers, selection, input.now);
+  const instanceId = selectClaudeInstanceClosestToReset(
+    input.providers,
+    selection,
+    input.now,
+    input.project,
+  );
   return instanceId === selection.instanceId ? null : { ...selection, instanceId };
 }
 

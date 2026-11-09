@@ -1,17 +1,9 @@
 // @effect-diagnostics globalTimers:off globalConsole:off globalDate:off globalRandom:off -- This preload, and the function it injects, run inside extension service workers and pages, outside any Effect runtime.
 /**
- * Preload for Chrome extension contexts in preview browser sessions: each
- * extension's service worker and its pages (action popups, options pages).
- *
- * Electron implements only part of the extensions API. Extensions such as
- * 1Password call namespaces Electron lacks (`windows`, `contextMenus`,
- * `webNavigation`, ...) during start-up and stop working when one is missing.
- * This installs them in the extension's own world before its code runs. Calls
- * go to the main process (src/preview/extensions/ExtensionHost.ts), and events
- * come back on {@link EVENT_CHANNEL}.
- *
- * Registered for every frame and service worker in the session, so it returns
- * at once for web pages and websites' own service workers.
+ * Installs extension namespaces Electron lacks (`windows`, `contextMenus`, ...) before
+ * extension code runs; 1Password stops working when one is missing. Calls go to
+ * ExtensionHost.ts and events return on {@link EVENT_CHANNEL}. Registered for every
+ * frame and worker in the session, so it returns at once outside extension contexts.
  */
 import { contextBridge, ipcRenderer } from "electron";
 

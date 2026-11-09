@@ -13,29 +13,20 @@ Keep both families and their names. Their observe and act tools share one set of
 
 - **Not one family with a target selector.** Only observe and act overlap. Everything else is specific to one target: opening, navigation, dialogs, uploads, recording, menus and permissions. Merging would save two tool names. In exchange, every description would have to explain two gating models: apps need macOS and the allowlist, tabs have per-thread ownership.
 - **Not a REPL like Codex's `cua_repl`.** Codex's models are trained on it (`@oai/cua-repl` README, "Training"), and the six providers T3 drives are not. On the 2026-11-08 bake-off page, Codex's first `getApp` returned about 23.3k characters. About 3.1k of that was state; the rest was API docs. A REPL also runs agent-written JS on the environment, and its real win, many steps per call, T3 already has with `steps`.
-- **Names follow upstream.** `preview_*` belongs to upstream, which landed about 2,100 commits (45 in preview code) between the fork's base (2026-10-25) and 2026-11-08. It already merged the per-action browser tools into `preview_act` (https://github.com/pingdotgg/t3code/pull/25423). Renaming them would conflict on every sync. `computer_*` is fork-only, so it is the family that moves toward `preview_act`.
+- **Names follow upstream.** `preview_*` belongs to upstream, which merged the per-action browser tools into `preview_act` (https://github.com/pingdotgg/t3code/pull/25423). Renaming them would conflict on every sync. `computer_*` is fork-only, so it is the family that moves toward `preview_act`.
 
 ## The shared contract
 
-|                 | Apps today                                            | Tabs today                                                                                   | Both                                               |
-| --------------- | ----------------------------------------------------- | -------------------------------------------------------------------------------------------- | -------------------------------------------------- |
-| Act             | `computer_action`, 1–20 steps                         | a tool per action (upstream `preview_act`: one action); the fork's `preview_execute` batches | `computer_action` / `preview_act`, `steps` 1–20    |
-| Element line    | `[17] button "7" (focused) {press} @x,y wxh`          | `- button "7" [ref=t3-3-e17]`                                                                | the apps line                                      |
-| Refs            | integers, kept while role and name hold, never reused | the prefix changes every response                                                            | integers per caller and target, kept, never reused |
-| Other targeting | exact `name` (+ `role`)                               | Playwright locator, CSS selector                                                             | `name` + `role`; locators stay tab-only            |
-| Act result      | steps run; `~` changed, `+` new, `removed:`, `moved:` | `{}`                                                                                         | steps run, then that diff                          |
-| Coordinates     | pixels of the latest `includeImage` capture           | viewport CSS px, but screenshots are capped at 1280 px wide                                  | image pixels; the server maps them                 |
+|                 | Apps today                                            | Tabs today                                                      | Both                                               |
+| --------------- | ----------------------------------------------------- | --------------------------------------------------------------- | -------------------------------------------------- |
+| Act             | `computer_action`, 1–20 steps                         | `preview_act`, one action; the fork's `preview_execute` batches | `computer_action` / `preview_act`, `steps` 1–20    |
+| Element line    | `[17] button "7" (focused) {press} @x,y wxh`          | `- button "7" [ref=t3-3-e17]`                                   | the apps line                                      |
+| Refs            | integers, kept while role and name hold, never reused | the prefix changes every response                               | integers per caller and target, kept, never reused |
+| Other targeting | exact `name` (+ `role`)                               | Playwright locator, CSS selector                                | `name` + `role`; locators stay tab-only            |
+| Act result      | steps run; `~` changed, `+` new, `removed:`, `moved:` | `{}`                                                            | steps run, then that diff                          |
+| Coordinates     | pixels of the latest `includeImage` capture           | viewport CSS px, but screenshots are capped at 1280 px wide     | image pixels; the server maps them                 |
 
-Steps use the flat shape and field names of upstream's `preview_act`. `computer_action` takes them as `steps`; the fork's tabs still have one tool per action:
-
-| Step `action`                             | Tabs today       |
-| ----------------------------------------- | ---------------- |
-| `click` (`ref`, `name`+`role` or `x`,`y`) | `preview_click`  |
-| `hover`                                   | `preview_hover`  |
-| `type` (`text`, `clear`)                  | `preview_type`   |
-| `press` (`key`, `modifiers`)              | `preview_press`  |
-| `scroll` (`deltaX`, `deltaY`)             | `preview_scroll` |
-| `drag` (`target`)                         | `preview_drag`   |
+Steps use the flat shape and field names of upstream's `preview_act` (`click`, `hover`, `type`, `press`, `scroll`, `drag`). `computer_action` takes them as `steps`; `preview_act` takes one.
 
 Apps alone keep `perform`, `menu` and `wait`. Tabs alone keep `select` and `upload`.
 
@@ -76,7 +67,6 @@ That makes three vocabularies and no shared one. `computer_*` covers the same gr
 
 Don't wait for the stack and don't adopt its vocabulary:
 
-- Take `preview_act` now.
 - Keep the shared formatter and ref map in new fork-only modules, with small hooks into upstream files.
 - Offer the tab half upstream once it works.
 - When the stack merges, decide whether `computer_*` keeps its native worker or puts this vocabulary over Cua's driver.
@@ -90,6 +80,5 @@ Agents read tool schemas every session, so new calls depend on nothing old. What
   - Old threads keep their old names and inputs, so the old rows stay.
   - Add computer rows, and resolve steps the way upstream's `ACTION_TOOLS` resolves `preview_act`.
 - **Text that names tools:** errors in `ServerBrowser.ts` and `McpHttpServer.ts`.
-- **Stale copy:** the fork's hover and drag descriptions say "server browser tabs only", but both work on desktop tabs. Upstream's `preview_act` text no longer says that.
 
 Add no aliases. Upstream just cut its tool schemas by a third, and a second name per tool would add that back. Old names stay only in the presentation table, so history still renders.
