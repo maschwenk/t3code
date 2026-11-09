@@ -153,7 +153,7 @@ it("reports only what each Calculator key changed and never reuses a ref", () =>
     start.length + 1,
   );
   expect(changes(start, seven.elements)).toEqual([
-    "Changes since the snapshot you acted on (~ changed, + new; other refs are unchanged):",
+    "Changes since the snapshot you acted on (~ changed, + new, moved: only position or size changed; other refs are unchanged):",
     '+         [25] static_text "7" @5092,119 18x36',
     '+       [26] button "Clear" {press} @4954,163 48x48',
     "removed: 4, 6",
@@ -169,7 +169,7 @@ it("reports only what each Calculator key changed and never reuses a ref", () =>
     sum.nextRef,
   );
   expect(changes(sum.elements, equals.elements)).toEqual([
-    "Changes since the snapshot you acted on (~ changed, + new; other refs are unchanged):",
+    "Changes since the snapshot you acted on (~ changed, + new, moved: only position or size changed; other refs are unchanged):",
     '+       [28] group "Last Expression" @4900,88 210x29',
     '~         [27] static_text "7+8" @5072,89 38x26',
     '+         [29] static_text "15" @5077,119 33x36',
@@ -224,6 +224,58 @@ it("keeps refs of unnamed web text by position and shows its new value", () => {
   ]);
   expect(changes(after.elements, after.elements)).toEqual([
     "No changes since the snapshot you acted on.",
+  ]);
+});
+
+it("lists elements that only reflowed as moved instead of changed", () => {
+  // Hovering the bake-off page reveals a button that makes its row 3 px taller,
+  // pushing everything below down without changing it.
+  const page = (revealed: boolean) =>
+    [
+      element({ role: "web_area", name: "CU Bakeoff", path: [0], depth: 3 }),
+      element({
+        role: "static_text",
+        name: "",
+        value: "Hover here to reveal:",
+        path: [0, 0, 0],
+        depth: 4,
+        bounds: { x: 1017, y: 421, width: 143, height: 19 },
+      }),
+      ...(revealed
+        ? [
+            element({
+              role: "button",
+              name: "Secret action",
+              path: [0, 0, 1],
+              depth: 4,
+              actions: ["press"],
+              bounds: { x: 1163, y: 419, width: 98, height: 22 },
+            }),
+          ]
+        : []),
+      element({
+        role: "text_field",
+        name: "Name",
+        path: [0, 1, 0],
+        depth: 4,
+        editable: true,
+        bounds: { x: 1053, y: revealed ? 478 : 475, width: 154, height: 22 },
+      }),
+      element({
+        role: "static_text",
+        name: "",
+        value: "scrollTop 0",
+        path: [0, 2, 0],
+        depth: 4,
+        bounds: { x: 1009, y: revealed ? 697 : 694, width: 76, height: 19 },
+      }),
+    ].map((item) => ({ ...item, ref: 0 }));
+  const before = numbered(page(false));
+  const after = carryRefs(before, page(true), before.length + 1);
+  expect(changes(before, after.elements)).toEqual([
+    "Changes since the snapshot you acted on (~ changed, + new, moved: only position or size changed; other refs are unchanged):",
+    '+         [5] button "Secret action" {press} @1163,419 98x22',
+    "moved: 3-4",
   ]);
 });
 
