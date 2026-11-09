@@ -499,6 +499,10 @@ export function useSettingsRestore(onRestored?: () => void) {
     ...(settings.sidebarAutoSettleOnMerge !== DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleOnMerge
       ? ["Auto-settle merged threads"]
       : []),
+    ...(settings.sidebarAutoSettleReplyCheck !==
+    DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleReplyCheck
+      ? ["Check the last reply first"]
+      : []),
     ...(settings.autoResumeLimitedThreads !== DEFAULT_UNIFIED_SETTINGS.autoResumeLimitedThreads
       ? ["Resume after usage limits"]
       : []),
@@ -668,6 +672,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       sidebarAutoSettleAfterDays: DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleAfterDays,
       sidebarAutoSettleKeepPullRequests: DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleKeepPullRequests,
       sidebarAutoSettleOnMerge: DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleOnMerge,
+      sidebarAutoSettleReplyCheck: DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleReplyCheck,
       autoResumeLimitedThreads: DEFAULT_UNIFIED_SETTINGS.autoResumeLimitedThreads,
       snoozeLimitedThreads: DEFAULT_UNIFIED_SETTINGS.snoozeLimitedThreads,
       autoRenameRecentThreads: DEFAULT_UNIFIED_SETTINGS.autoRenameRecentThreads,
@@ -1756,6 +1761,23 @@ export function ThreadsSettingsPanel() {
                   updateSettings({ sidebarAutoSettleOnMerge: Boolean(checked) })
                 }
                 aria-label="Auto-settle merged threads"
+              />
+            }
+          />
+
+          <SettingsRow
+            serverScoped
+            settingKeys={["sidebarAutoSettleReplyCheck"]}
+            {...searchableSetting("auto-settle-reply-check")}
+            description="Before a merged or closed pull request settles a thread, the text generation model reads the last reply. The thread stays if it asks you something, gives you a step, or says work is still running."
+            control={
+              <ScopedSwitch
+                settingKeys={["sidebarAutoSettleReplyCheck"]}
+                checked={settings.sidebarAutoSettleReplyCheck}
+                onCheckedChange={(checked) =>
+                  updateSettings({ sidebarAutoSettleReplyCheck: Boolean(checked) })
+                }
+                aria-label="Check the last reply first"
               />
             }
           />

@@ -3,23 +3,30 @@ import { assert, describe, expect, it } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
 import {
   DEFAULT_SERVER_SETTINGS,
+  MessageId,
   ProjectId,
   EventId,
   ProviderInstanceId,
   RuntimeRequestId,
   RunId,
+  ScheduledTaskId,
+  TextGenerationError,
   ThreadId,
   TurnItemId,
   type OrchestrationProjectShell,
   type OrchestrationV2AppThread,
   type OrchestrationV2Command,
+  type OrchestrationV2ConversationMessage,
   type OrchestrationV2DomainEvent,
+  type OrchestrationV2Run,
   type OrchestrationV2ShellSnapshot,
+  type OrchestrationV2ThreadProjection,
   type OrchestrationV2ThreadShell,
   type PullRequestSummary,
   type ServerSettings as ContractServerSettings,
   type ServerSettingsPatch,
 } from "@t3tools/contracts";
+import type { SettlementReplyCheckInput } from "@t3tools/provider-core/server/textGeneration";
 import { applyServerSettingsPatch } from "@t3tools/shared/serverSettings";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Deferred from "effect/Deferred";
@@ -40,6 +47,7 @@ import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import * as ServerActivation from "../serverActivation.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as TerminalManager from "../terminal/Manager.ts";
+import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
@@ -491,6 +499,32 @@ describe("resolveAutoSettlementAt", () => {
     const diagnostic = link(2, "closed", minutes(-55));
     expect(settle([link(1, "merged", minutes(-58)), diagnostic])).toEqual(minutes(-50));
     expect(settle([link(1, "merged", minutes(-150)), diagnostic])).toBeNull();
+
+    // The sweep's lookup of the thread's own reference returns the same closed pull request.
+    const reference = {
+      projectId: ProjectId.make("project-1"),
+      repository: "owner/repository",
+      number: 2,
+      url: diagnostic.url,
+    };
+    for (const lookedUp of [{ linkedPullRequest: reference }, { branchPullRequest: reference }]) {
+      expect(
+        ThreadSettlementService.resolveAutoSettlementAt({
+          thread: shell({
+            latestUserMessageAt: minutes(-120),
+            latestRunStartedAt: minutes(-60),
+            latestRunCompletedAt: minutes(-50),
+            automatedRunWindows: [{ startedAt: minutes(-60), completedAt: minutes(-50) }],
+            pullRequests: [diagnostic],
+            ...lookedUp,
+          }),
+          pullRequest: { state: "closed", closedAt: DateTime.formatIso(minutes(-55)) },
+          nowMs: NOW_MS,
+          autoSettleAfterDays: null,
+          autoSettleOnMerge: true,
+        }),
+      ).toBeNull();
+    }
   });
 });
 
@@ -623,6 +657,133 @@ function makeBranchPullRequest(state: "open" | "closed" | "merged") {
   } satisfies GitManager.GitBranchPullRequest;
 }
 
+function appThread(
+  id: string,
+  settledOverride: OrchestrationV2AppThread["settledOverride"] = null,
+  worktreePath: string | null = null,
+): OrchestrationV2AppThread {
+  const threadId = ThreadId.make(id);
+  return {
+    createdBy: "user",
+    creationSource: "web",
+    id: threadId,
+    projectId: PROJECT_ID,
+    title: id,
+    providerInstanceId: ProviderInstanceId.make("codex"),
+    modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
+    runtimeMode: "full-access",
+    interactionMode: "default",
+    branch: null,
+    worktreePath,
+    activeProviderThreadId: null,
+    lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
+    forkedFrom: null,
+    createdAt: DateTime.makeUnsafe(NOW),
+    updatedAt: DateTime.makeUnsafe(NOW),
+    archivedAt: null,
+    settledOverride,
+    settledAt: settledOverride === "settled" ? DateTime.makeUnsafe(NOW) : null,
+    lastVisitedAt: null,
+    deletedAt: null,
+  };
+}
+
+/** The records the reply gate reads for a thread's latest run; no `run`, no run at all. */
+function latestRunRecords(input: {
+  readonly threadId: ThreadId;
+  readonly run?: {
+    readonly id: RunId;
+    readonly status?: OrchestrationV2Run["status"];
+    readonly request?: { readonly text: string; readonly by: "user" | "agent" | "scheduled" };
+    readonly reply?: string;
+    readonly stopped?: boolean;
+  };
+}): OrchestrationV2ThreadProjection {
+  const at = DateTime.makeUnsafe(NOW);
+  const projection = ProjectionStore.emptyProjection({
+    type: "thread.created",
+    id: EventId.make(`event:created:${input.threadId}`),
+    threadId: input.threadId,
+    occurredAt: at,
+    payload: appThread(input.threadId),
+  });
+  const { run } = input;
+  if (run === undefined) return projection;
+  const userMessageId = MessageId.make(`message:request:${run.id}`);
+  const message = (
+    id: MessageId,
+    role: "user" | "assistant",
+    text: string,
+    by: "user" | "agent" | "scheduled",
+  ): OrchestrationV2ConversationMessage => ({
+    createdBy: by === "agent" ? "agent" : "user",
+    creationSource: by === "agent" ? "provider" : "web",
+    ...(by === "scheduled" ? { scheduledTaskId: ScheduledTaskId.make("task:monitor") } : {}),
+    id,
+    threadId: input.threadId,
+    runId: run.id,
+    nodeId: null,
+    role,
+    text,
+    attachments: [],
+    streaming: false,
+    createdAt: at,
+    updatedAt: at,
+  });
+  return {
+    ...projection,
+    runs: [
+      {
+        id: run.id,
+        threadId: input.threadId,
+        ordinal: 1,
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
+        providerThreadId: null,
+        userMessageId,
+        rootNodeId: null,
+        activeAttemptId: null,
+        status: run.status ?? "completed",
+        requestedAt: at,
+        startedAt: at,
+        completedAt: at,
+        checkpointId: null,
+        contextHandoffId: null,
+      },
+    ],
+    messages: [
+      ...(run.request === undefined
+        ? []
+        : [message(userMessageId, "user", run.request.text, run.request.by)]),
+      ...(run.reply === undefined
+        ? []
+        : [message(MessageId.make(`message:reply:${run.id}`), "assistant", run.reply, "agent")]),
+    ],
+    turnItems: run.stopped
+      ? [
+          {
+            id: TurnItemId.make(`turn-item:stop:${run.id}`),
+            threadId: input.threadId,
+            runId: run.id,
+            nodeId: null,
+            providerThreadId: null,
+            providerTurnId: null,
+            nativeItemRef: null,
+            parentItemId: null,
+            ordinal: 1,
+            status: "completed",
+            title: "Interrupt requested",
+            startedAt: at,
+            completedAt: at,
+            updatedAt: at,
+            type: "run_interrupt_request",
+            message: "Stopped by the user",
+          },
+        ]
+      : [],
+  };
+}
+
 interface HarnessOptions {
   readonly snapshot: SettlementSnapshot;
   readonly settings?: ContractServerSettings;
@@ -636,6 +797,9 @@ interface HarnessOptions {
   ) => Effect.Effect<void>;
   readonly onCloseIdle?: () => Effect.Effect<void>;
   readonly currentThreads?: ReadonlyArray<OrchestrationV2AppThread>;
+  /** What the reply gate reads about each thread's latest run; see `latestRunRecords`. */
+  readonly runRecords?: ReadonlyArray<OrchestrationV2ThreadProjection>;
+  readonly checkSettlementReply?: TextGeneration.TextGeneration["Service"]["checkSettlementReply"];
 }
 
 const makeHarness = Effect.fn("makeThreadSettlementHarness")(function* (options: HarnessOptions) {
@@ -665,6 +829,8 @@ const makeHarness = Effect.fn("makeThreadSettlementHarness")(function* (options:
   const closedIdle = yield* Queue.unbounded<{ readonly threadId: string }>();
   const scriptRuns =
     yield* Queue.unbounded<ProjectSetupScriptRunner.ProjectSetupScriptRunnerInput>();
+  const runRecords = yield* Ref.make(options.runRecords ?? []);
+  const replyChecks = yield* Ref.make<ReadonlyArray<SettlementReplyCheckInput>>([]);
 
   const updateSettings = (patch: ServerSettingsPatch) =>
     Effect.gen(function* () {
@@ -749,6 +915,23 @@ const makeHarness = Effect.fn("makeThreadSettlementHarness")(function* (options:
           ? Effect.succeed(thread)
           : Effect.die(new Error(`Unexpected thread read: ${threadId}`));
       },
+      getThreadRecords: (threadId) =>
+        Ref.get(runRecords).pipe(
+          Effect.map(
+            (records) =>
+              records.find((record) => record.thread.id === threadId) ??
+              latestRunRecords({ threadId }),
+          ),
+        ),
+    }),
+    Layer.mock(TextGeneration.TextGeneration)({
+      checkSettlementReply: (input) =>
+        Ref.update(replyChecks, (checks) => [...checks, input]).pipe(
+          Effect.andThen(
+            options.checkSettlementReply?.(input) ??
+              Effect.die(new Error("Unexpected settlement reply check")),
+          ),
+        ),
     }),
     Layer.mock(Orchestrator.OrchestratorV2)({
       streamDomainEvents: Stream.fromPubSub(domainEvents),
@@ -808,6 +991,8 @@ const makeHarness = Effect.fn("makeThreadSettlementHarness")(function* (options:
     invalidatedCwds,
     closedIdle,
     scriptRuns,
+    runRecords,
+    replyChecks,
     publishEvent: (event: OrchestrationV2DomainEvent) => PubSub.publish(domainEvents, event),
     updateSettings,
     publishMerge: PubSub.publish(mergedPullRequests, {
@@ -1540,37 +1725,297 @@ describe("ThreadSettlementServiceV2 worker", () => {
   );
 });
 
-describe("ThreadSettlementServiceV2 terminals", () => {
-  const appThread = (
+describe("ThreadSettlementServiceV2 reply check", () => {
+  const RUN_ENDED_AT = DateTime.makeUnsafe("2026-08-28T10:00:00.000Z");
+  // The user last wrote on 08-20 and the pull request merged at NOW, after the latest run ended.
+  const mergedThread = (
     id: string,
-    settledOverride: OrchestrationV2AppThread["settledOverride"],
-    worktreePath: string | null = null,
-  ): OrchestrationV2AppThread => {
-    const threadId = ThreadId.make(id);
-    return {
-      createdBy: "user",
-      creationSource: "web",
-      id: threadId,
-      projectId: PROJECT_ID,
-      title: id,
-      providerInstanceId: ProviderInstanceId.make("codex"),
-      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
-      runtimeMode: "full-access",
-      interactionMode: "default",
-      branch: null,
-      worktreePath,
-      activeProviderThreadId: null,
-      lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
-      forkedFrom: null,
-      createdAt: DateTime.makeUnsafe(NOW),
-      updatedAt: DateTime.makeUnsafe(NOW),
-      archivedAt: null,
-      settledOverride,
-      settledAt: settledOverride === "settled" ? DateTime.makeUnsafe(NOW) : null,
-      lastVisitedAt: null,
-      deletedAt: null,
-    };
+    overrides: Partial<SettlementShell> & { readonly latestRunCompletedAt?: DateTime.Utc } = {},
+  ) => {
+    const completedAt = overrides.latestRunCompletedAt ?? RUN_ENDED_AT;
+    return makeThread(id, {
+      status: "completed",
+      latestRunId: RunId.make(`run:${id}:1`),
+      latestRunStartedAt: DateTime.subtract(completedAt, { minutes: 20 }),
+      latestRunCompletedAt: completedAt,
+      pullRequests: [finishedLink("merged", "2026-08-20T00:00:00.000Z", NOW)],
+      ...overrides,
+    });
   };
+  const records = (
+    thread: SettlementShell,
+    reply: string,
+    run: { readonly by?: "user" | "agent" | "scheduled"; readonly stopped?: boolean } = {},
+  ) =>
+    latestRunRecords({
+      threadId: thread.id,
+      run: {
+        id: thread.latestRunId!,
+        request: { text: `Request for ${thread.id}`, by: run.by ?? "user" },
+        reply,
+        ...(run.stopped ? { stopped: true } : {}),
+      },
+    });
+  const settings = { ...DEFAULT_SERVER_SETTINGS, sidebarAutoSettleAfterDays: 3 };
+  // The model's verdict: a reply that ends in a question needs the user.
+  const asksWhenQuestion: TextGeneration.TextGeneration["Service"]["checkSettlementReply"] = (
+    input,
+  ) => Effect.succeed({ needsUser: input.reply.trimEnd().endsWith("?") });
+  const sources = (commands: ReadonlyArray<AutoSettleCommand>) =>
+    new Map(commands.map((command) => [command.threadId, command.settlementSource]));
+  // Sweeps every candidate again now, without waiting for the minute timer.
+  const sweepAgain = (
+    fixture: Effect.Success<ReturnType<typeof makeHarness>>,
+    service: ThreadSettlementService.ThreadSettlementServiceV2["Service"],
+    patch: ServerSettingsPatch,
+  ) =>
+    Effect.gen(function* () {
+      yield* service.drain;
+      yield* Queue.clear(fixture.snapshotReads);
+      yield* fixture.updateSettings(patch);
+      yield* Queue.take(fixture.snapshotReads);
+      yield* service.drain;
+    });
+
+  it.effect(
+    "keeps a merged thread whose last reply needs the user and settles one that does not",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          yield* TestClock.setTime(Date.parse(NOW));
+          const asks = mergedThread("asks");
+          const done = mergedThread("done");
+          const fixture = yield* makeHarness({
+            snapshot: makeSnapshot([asks, done]),
+            settings,
+            runRecords: [
+              records(asks, "Merged. Want me to post the summary in the thread?"),
+              records(done, "Merged, and the deploy finished.", { by: "scheduled" }),
+            ],
+            checkSettlementReply: asksWhenQuestion,
+          });
+          yield* Effect.gen(function* () {
+            const service = yield* ThreadSettlementService.ThreadSettlementServiceV2;
+            yield* startHarness(service, fixture.activation, fixture.snapshotReads);
+            expect(sources(yield* Ref.get(fixture.commands))).toEqual(
+              new Map([[done.id, "auto_pull_request_merged"]]),
+            );
+            const checks = yield* Ref.get(fixture.replyChecks);
+            expect(checks.find((check) => check.request === `Request for ${asks.id}`)).toEqual({
+              cwd: "/workspace/project",
+              request: `Request for ${asks.id}`,
+              requestOrigin: "user",
+              reply: "Merged. Want me to post the summary in the thread?",
+              pullRequestState: "merged",
+              pullRequestFinishedAfterReply: true,
+              modelSelection: DEFAULT_SERVER_SETTINGS.textGenerationModelSelection,
+            });
+            expect(
+              checks.find((check) => check.request === `Request for ${done.id}`)?.requestOrigin,
+            ).toBe("scheduled");
+          }).pipe(Effect.provide(fixture.layer));
+        }),
+      ),
+  );
+
+  it.effect("asks the model once per run, and again for the next run", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(Date.parse(NOW));
+        const asks = mergedThread("asks-once");
+        // Found from the branch, not a link: the lookup path is held the same way.
+        const onBranch = makeThread("branch-asks-once", {
+          branch: "feature",
+          status: "completed",
+          latestUserMessageAt: DateTime.makeUnsafe("2026-08-28T08:00:00.000Z"),
+          latestRunId: RunId.make("run:branch-asks-once:1"),
+          latestRunCompletedAt: RUN_ENDED_AT,
+        });
+        const fixture = yield* makeHarness({
+          snapshot: makeSnapshot([asks, onBranch]),
+          settings,
+          runRecords: [
+            records(asks, "Want both, or just one?"),
+            records(onBranch, "I'm holding until you say yes. Should I add his paths?"),
+          ],
+          checkSettlementReply: asksWhenQuestion,
+          branchPullRequest: () => Effect.succeed(makeBranchPullRequest("merged")),
+        });
+        yield* Effect.gen(function* () {
+          const service = yield* ThreadSettlementService.ThreadSettlementServiceV2;
+          yield* startHarness(service, fixture.activation, fixture.snapshotReads);
+          yield* sweepAgain(fixture, service, { sidebarAutoSettleAfterDays: 4 });
+          yield* sweepAgain(fixture, service, { sidebarAutoSettleAfterDays: 5 });
+          assert.deepEqual(yield* Ref.get(fixture.commands), []);
+          assert.equal((yield* Ref.get(fixture.replyChecks)).length, 2);
+
+          // A scheduled check-in runs again and reports nothing that needs the user.
+          const nextRun = { ...asks, latestRunId: RunId.make("run:asks-once:2") };
+          yield* Ref.set(fixture.snapshots, makeSnapshot([nextRun, onBranch]));
+          yield* Ref.update(fixture.runRecords, (current) => [
+            records(nextRun, "No change since the last check.", { by: "scheduled" }),
+            ...current,
+          ]);
+          yield* sweepAgain(fixture, service, { sidebarAutoSettleAfterDays: 6 });
+          expect(sources(yield* Ref.get(fixture.commands))).toEqual(
+            new Map([[asks.id, "auto_pull_request_merged"]]),
+          );
+          assert.equal((yield* Ref.get(fixture.replyChecks)).length, 3);
+        }).pipe(Effect.provide(fixture.layer));
+      }),
+    ),
+  );
+
+  it.effect("holds while the model fails, retrying a bounded number of times", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(Date.parse(NOW));
+        const thread = mergedThread("model-down");
+        const calls = yield* Queue.unbounded<void>();
+        const fixture = yield* makeHarness({
+          snapshot: makeSnapshot([thread]),
+          settings,
+          runRecords: [records(thread, "Merged, nothing left to do.")],
+          checkSettlementReply: () =>
+            Queue.offer(calls, undefined).pipe(
+              Effect.andThen(
+                Effect.fail(
+                  new TextGenerationError({
+                    operation: "checkSettlementReply",
+                    detail: "Request rejected (429)",
+                  }),
+                ),
+              ),
+            ),
+        });
+        yield* Effect.gen(function* () {
+          const service = yield* ThreadSettlementService.ThreadSettlementServiceV2;
+          yield* startHarness(service, fixture.activation, fixture.snapshotReads);
+          yield* Queue.take(calls);
+          // Sweeps inside the retry delay do not ask again.
+          yield* sweepAgain(fixture, service, { sidebarAutoSettleAfterDays: 4 });
+          yield* TestClock.adjust("4 minutes");
+          yield* service.drain;
+          assert.equal((yield* Ref.get(fixture.replyChecks)).length, 1);
+
+          yield* TestClock.adjust("1 minute");
+          yield* Queue.take(calls);
+          yield* TestClock.adjust("30 minutes");
+          yield* Queue.take(calls);
+          // Three failures use up the retries; only inactivity can settle this run now.
+          yield* TestClock.adjust("2 hours");
+          yield* sweepAgain(fixture, service, { sidebarAutoSettleAfterDays: 5 });
+          assert.equal((yield* Ref.get(fixture.replyChecks)).length, 3);
+          assert.deepEqual(yield* Ref.get(fixture.commands), []);
+        }).pipe(Effect.provide(fixture.layer));
+      }),
+    ),
+  );
+
+  it.effect.each([true, false])(
+    "does not settle on a merge after the latest run failed, was interrupted, or was stopped (reply check %s)",
+    (checkReply) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          yield* TestClock.setTime(Date.parse(NOW));
+          const idleSince = {
+            latestRunCompletedAt: DateTime.makeUnsafe("2026-08-26T10:00:00.000Z"),
+          };
+          const failed = mergedThread("failed-run", { ...idleSince, status: "failed" });
+          const interrupted = mergedThread("interrupted-run", {
+            ...idleSince,
+            status: "interrupted",
+          });
+          // Stop pressed after the run completed, while its background work still ran.
+          const stopped = mergedThread("stopped-run", idleSince);
+          const fixture = yield* makeHarness({
+            snapshot: makeSnapshot([failed, interrupted, stopped]),
+            settings: { ...settings, sidebarAutoSettleReplyCheck: checkReply },
+            runRecords: [
+              latestRunRecords({
+                threadId: failed.id,
+                run: { id: failed.latestRunId!, status: "failed", reply: "API Error: 429" },
+              }),
+              latestRunRecords({
+                threadId: interrupted.id,
+                run: { id: interrupted.latestRunId!, status: "interrupted", reply: "Stopped." },
+              }),
+              records(stopped, "All merged and verified.", { stopped: true }),
+            ],
+          });
+          yield* Effect.gen(function* () {
+            const service = yield* ThreadSettlementService.ThreadSettlementServiceV2;
+            yield* startHarness(service, fixture.activation, fixture.snapshotReads);
+            assert.deepEqual(yield* Ref.get(fixture.commands), []);
+
+            // Inactivity still settles them.
+            yield* sweepAgain(fixture, service, { sidebarAutoSettleAfterDays: 1 });
+            expect(sources(yield* Ref.get(fixture.commands))).toEqual(
+              new Map([
+                [failed.id, "auto_inactivity"],
+                [interrupted.id, "auto_inactivity"],
+                [stopped.id, "auto_inactivity"],
+              ]),
+            );
+            assert.deepEqual(yield* Ref.get(fixture.replyChecks), []);
+          }).pipe(Effect.provide(fixture.layer));
+        }),
+      ),
+  );
+
+  it.effect("settles on merge without asking the model while the reply check is off", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(Date.parse(NOW));
+        const asks = mergedThread("asks-check-off");
+        const fixture = yield* makeHarness({
+          snapshot: makeSnapshot([asks]),
+          settings: { ...settings, sidebarAutoSettleReplyCheck: false },
+          runRecords: [records(asks, "Want me to send it?")],
+        });
+        yield* Effect.gen(function* () {
+          const service = yield* ThreadSettlementService.ThreadSettlementServiceV2;
+          yield* startHarness(service, fixture.activation, fixture.snapshotReads);
+          expect(sources(yield* Ref.get(fixture.commands))).toEqual(
+            new Map([[asks.id, "auto_pull_request_merged"]]),
+          );
+          assert.deepEqual(yield* Ref.get(fixture.replyChecks), []);
+        }).pipe(Effect.provide(fixture.layer));
+      }),
+    ),
+  );
+
+  it.effect(
+    "still settles a thread on inactivity while its reply keeps the merge from settling it",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          yield* TestClock.setTime(Date.parse(NOW));
+          const asks = mergedThread("asks-then-idle", {
+            latestRunCompletedAt: DateTime.makeUnsafe("2026-08-26T10:00:00.000Z"),
+          });
+          const fixture = yield* makeHarness({
+            snapshot: makeSnapshot([asks]),
+            settings,
+            runRecords: [records(asks, "Should I open the follow-up PR?")],
+            checkSettlementReply: asksWhenQuestion,
+          });
+          yield* Effect.gen(function* () {
+            const service = yield* ThreadSettlementService.ThreadSettlementServiceV2;
+            yield* startHarness(service, fixture.activation, fixture.snapshotReads);
+            assert.deepEqual(yield* Ref.get(fixture.commands), []);
+            yield* sweepAgain(fixture, service, { sidebarAutoSettleAfterDays: 1 });
+            expect(sources(yield* Ref.get(fixture.commands))).toEqual(
+              new Map([[asks.id, "auto_inactivity"]]),
+            );
+            assert.equal((yield* Ref.get(fixture.replyChecks)).length, 1);
+          }).pipe(Effect.provide(fixture.layer));
+        }),
+      ),
+  );
+});
+
+describe("ThreadSettlementServiceV2 terminals", () => {
   const settledEvent = (thread: OrchestrationV2AppThread): OrchestrationV2DomainEvent => ({
     type: "thread.settled",
     id: EventId.make(`event:settled:${thread.id}`),

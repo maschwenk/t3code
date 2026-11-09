@@ -12,6 +12,7 @@ import {
   buildCompletionTriagePrompt,
   buildPrContentPrompt,
   buildReviewGuidePrompt,
+  buildSettlementReplyPrompt,
   buildThreadTitlePrompt,
 } from "./textGenerationPrompts.ts";
 import {
@@ -192,6 +193,17 @@ export function fromRunner(name: string, run: Runner): ProviderTextGeneration {
     });
   });
 
+  const checkSettlementReply: ProviderTextGeneration["checkSettlementReply"] = Effect.fn(
+    `${name}.checkSettlementReply`,
+  )(function* (input) {
+    return yield* run({
+      operation: "checkSettlementReply",
+      cwd: input.cwd,
+      modelSelection: input.modelSelection,
+      ...buildSettlementReplyPrompt(input),
+    });
+  });
+
   return {
     generateCommitMessage,
     generatePrContent,
@@ -199,6 +211,7 @@ export function fromRunner(name: string, run: Runner): ProviderTextGeneration {
     generateThreadTitle,
     generateReviewGuide,
     triageCompletion,
+    checkSettlementReply,
     generateTranscriptionPostProcessing,
   } satisfies ProviderTextGeneration;
 }

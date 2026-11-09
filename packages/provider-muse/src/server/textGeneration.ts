@@ -31,6 +31,7 @@ import {
   buildCommitMessagePrompt,
   buildCompletionTriagePrompt,
   buildPrContentPrompt,
+  buildSettlementReplyPrompt,
   buildThreadTitlePrompt,
 } from "@t3tools/provider-core/server/textGenerationPrompts";
 import {
@@ -371,6 +372,15 @@ export const makeMuseTextGeneration = Effect.fn("makeMuseTextGeneration")(functi
       modelSelection: input.modelSelection,
     });
   });
+  const checkSettlementReply: ProviderTextGeneration["checkSettlementReply"] = Effect.fn(
+    "MuseTextGeneration.checkSettlementReply",
+  )(function* (input) {
+    return yield* runMuseJson({
+      operation: "checkSettlementReply",
+      ...buildSettlementReplyPrompt(input),
+      modelSelection: input.modelSelection,
+    });
+  });
   return {
     generateCommitMessage,
     generatePrContent,
@@ -378,6 +388,7 @@ export const makeMuseTextGeneration = Effect.fn("makeMuseTextGeneration")(functi
     generateThreadTitle,
     generateReviewGuide,
     triageCompletion,
+    checkSettlementReply,
     generateTranscriptionPostProcessing,
   } satisfies ProviderTextGeneration;
 });

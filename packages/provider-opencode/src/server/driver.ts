@@ -162,6 +162,11 @@ function selectOpenCodeRuntimeTextGeneration(
         v1: v1.triageCompletion(input),
         v2: v2.triageCompletion(input),
       }),
+    checkSettlementReply: (input) =>
+      byOpenCodeRuntime(probe.get, {
+        v1: v1.checkSettlementReply(input),
+        v2: v2.checkSettlementReply(input),
+      }),
     generateTranscriptionPostProcessing: (input) =>
       byOpenCodeRuntime(probe.get, {
         v1: v1.generateTranscriptionPostProcessing(input),

@@ -20,8 +20,12 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
+import type { SettlementReplyCheckInput } from "@t3tools/provider-core/server/textGeneration";
+
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
+import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
+import * as SettlementReplyGate from "./SettlementReplyGate.ts";
 import {
   isAutoSettlementCandidate,
   isSnoozed,
@@ -597,4 +601,121 @@ it.effect("sql: an unsettled-only shell read skips settled threads", () =>
     const all = yield* store.getShellSnapshot({ location: "active" });
     assert.equal(all.threads.length, 4);
   }).pipe(Effect.provide(layerSql)),
+);
+
+it.effect("sql: the reply check reads only the latest run's request, reply, and stop", () =>
+  Effect.gen(function* () {
+    const store = yield* ProjectionStore.ProjectionStoreV2;
+    const asked: Array<SettlementReplyCheckInput> = [];
+    const gate = yield* SettlementReplyGate.make.pipe(
+      Effect.provide(
+        Layer.mock(TextGeneration.TextGeneration)({
+          checkSettlementReply: (input) =>
+            Effect.sync(() => {
+              asked.push(input);
+              return { needsUser: true };
+            }),
+        }),
+      ),
+    );
+    const threadId = yield* createThread("reply-check");
+    let sent = 0;
+    const message = (
+      runId: RunId,
+      name: string,
+      role: "user" | "assistant",
+      text: string,
+      options: { readonly scheduled?: boolean; readonly streaming?: boolean } = {},
+    ) => {
+      const at = DateTime.add(old, { minutes: ++sent });
+      return store.apply({
+        id: EventId.make(`event:message:${runId}:${name}`),
+        type: "message.updated",
+        threadId,
+        occurredAt: at,
+        payload: {
+          createdBy: role === "user" ? "user" : "agent",
+          creationSource: role === "user" ? "web" : "provider",
+          ...(options.scheduled ? { scheduledTaskId: ScheduledTaskId.make("hourly") } : {}),
+          id: MessageId.make(name === "request" ? `message:${runId}` : `message:${runId}:${name}`),
+          threadId,
+          runId,
+          nodeId: null,
+          role,
+          text,
+          attachments: [],
+          streaming: options.streaming ?? false,
+          createdAt: at,
+          updatedAt: at,
+        },
+      });
+    };
+    const check = (runId: RunId) =>
+      gate.check({
+        thread: { id: threadId, latestRunId: runId, latestRunCompletedAt: old },
+        pullRequest: { state: "merged", finishedAtMs: DateTime.toEpochMillis(now) },
+        cwd: "/workspace/project",
+        modelSelection,
+        checkReply: true,
+      });
+
+    const earlier = yield* createRun(threadId, "completed", 1);
+    yield* message(earlier, "request", "user", "Open the PR.");
+    yield* message(earlier, "reply", "assistant", "Opened it. Should I merge?");
+    const checkIn = yield* createRun(threadId, "completed", 2);
+    yield* message(checkIn, "request", "user", "Hourly check: watch the PR.", { scheduled: true });
+    yield* message(checkIn, "progress", "assistant", "Checking CI.");
+    yield* message(checkIn, "final", "assistant", "Merged. Want me to post in the thread?");
+    yield* message(checkIn, "partial", "assistant", "Draft", { streaming: true });
+    assert.equal(yield* check(checkIn), "needs_user");
+    assert.deepEqual(
+      asked.map(({ request, requestOrigin, reply, pullRequestFinishedAfterReply }) => ({
+        request,
+        requestOrigin,
+        reply,
+        pullRequestFinishedAfterReply,
+      })),
+      [
+        {
+          request: "Hourly check: watch the PR.",
+          requestOrigin: "scheduled",
+          reply: "Merged. Want me to post in the thread?",
+          pullRequestFinishedAfterReply: true,
+        },
+      ],
+    );
+
+    // The user pressed Stop after this run completed, while its background work still ran.
+    const stopped = yield* createRun(threadId, "completed", 3);
+    yield* message(stopped, "reply", "assistant", "All done.");
+    yield* store.apply({
+      id: EventId.make(`event:stop:${stopped}`),
+      type: "turn-item.updated",
+      threadId,
+      occurredAt: now,
+      payload: {
+        id: TurnItemId.make(`item:stop:${stopped}`),
+        threadId,
+        runId: stopped,
+        nodeId: null,
+        providerThreadId: null,
+        providerTurnId: null,
+        nativeItemRef: null,
+        parentItemId: null,
+        ordinal: 2,
+        type: "run_interrupt_request",
+        status: "completed",
+        title: "Interrupt requested",
+        startedAt: now,
+        completedAt: now,
+        updatedAt: now,
+        message: "Stopped by the user",
+      },
+    });
+    assert.equal(yield* check(stopped), "stop_requested");
+    const failed = yield* createRun(threadId, "failed", 4);
+    yield* message(failed, "reply", "assistant", "API Error: Request rejected (429)");
+    assert.equal(yield* check(failed), "run_failed");
+    assert.equal(asked.length, 1);
+  }).pipe(Effect.scoped, Effect.provide(layerSql)),
 );
