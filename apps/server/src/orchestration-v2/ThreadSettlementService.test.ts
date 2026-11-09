@@ -53,7 +53,10 @@ function at(offsetMs: number): DateTime.Utc {
 }
 
 type SettlementShell = OrchestrationV2ThreadShell &
-  Pick<ProjectionStore.ProjectionSettlementCandidate, "latestUserAuthoredMessageAt">;
+  Pick<
+    ProjectionStore.ProjectionSettlementCandidate,
+    "latestUserAuthoredMessageAt" | "automatedRunWindows"
+  >;
 
 function shell(overrides: Partial<SettlementShell> = {}): SettlementShell {
   return {
@@ -444,6 +447,50 @@ describe("resolveAutoSettlementAt", () => {
         },
       }),
     ).toEqual(at(-45 * 60 * 1_000));
+  });
+
+  it("settles on a merge an automated run made, but not on a pull request it closed", () => {
+    const minutes = (count: number) => at(count * 60 * 1_000);
+    const link = (number: number, state: "merged" | "closed", finishedAt: DateTime.Utc) => ({
+      host: "example.test",
+      repository: "owner/repository",
+      number,
+      url: `https://example.test/owner/repository/pull/${number}`,
+      source: "agent" as const,
+      linkedAt: DateTime.formatIso(minutes(-240)),
+      snapshot: {
+        state,
+        title: "Pull request",
+        headBranch: `feature-${number}`,
+        baseBranch: "main",
+        isDraft: false,
+        updatedAt: DateTime.formatIso(finishedAt),
+        syncedAt: DateTime.formatIso(finishedAt),
+        ...(state === "merged"
+          ? { mergedAt: DateTime.formatIso(finishedAt) }
+          : { closedAt: DateTime.formatIso(finishedAt) }),
+      },
+      stack: null,
+    });
+    const settle = (pullRequests: ReadonlyArray<ReturnType<typeof link>>) =>
+      ThreadSettlementService.resolveAutoSettlementAt({
+        thread: shell({
+          latestUserMessageAt: minutes(-120),
+          latestRunStartedAt: minutes(-60),
+          latestRunCompletedAt: minutes(-50),
+          automatedRunWindows: [{ startedAt: minutes(-60), completedAt: minutes(-50) }],
+          pullRequests,
+        }),
+        pullRequest: null,
+        nowMs: NOW_MS,
+        autoSettleAfterDays: null,
+        autoSettleOnMerge: true,
+      });
+
+    // A background wake merges its work and then closes a diagnostic pull request: the merge decides.
+    const diagnostic = link(2, "closed", minutes(-55));
+    expect(settle([link(1, "merged", minutes(-58)), diagnostic])).toEqual(minutes(-50));
+    expect(settle([link(1, "merged", minutes(-150)), diagnostic])).toBeNull();
   });
 });
 

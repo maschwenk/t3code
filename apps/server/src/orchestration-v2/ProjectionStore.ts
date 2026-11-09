@@ -225,7 +225,39 @@ export type ProjectionSettlementCandidate = Pick<
 > &
   Pick<OrchestrationV2AppThread, "lastSnoozeWakeAt"> & {
     readonly latestUserAuthoredMessageAt: DateTime.Utc | null;
+    /**
+     * Set only when a pull request link closed after the user last wrote: every started run that
+     * ended at or after that close and was not started by a message the user wrote. Scheduled
+     * tasks, notices, and other agents' messages start such runs.
+     */
+    readonly automatedRunWindows?: ReadonlyArray<{
+      readonly startedAt: DateTime.Utc;
+      readonly completedAt: DateTime.Utc;
+    }>;
   };
+
+/** Closes before the user's last message never settle, so only later ones need run history. */
+function earliestUnansweredCloseMs(
+  thread: Pick<
+    ProjectionSettlementCandidate,
+    "pullRequests" | "createdAt" | "latestUserAuthoredMessageAt"
+  >,
+): number | null {
+  const anchorMs = Math.max(
+    DateTime.toEpochMillis(thread.createdAt),
+    thread.latestUserAuthoredMessageAt === null
+      ? Number.NEGATIVE_INFINITY
+      : DateTime.toEpochMillis(thread.latestUserAuthoredMessageAt),
+  );
+  let earliest: number | null = null;
+  for (const link of thread.pullRequests ?? []) {
+    if (link.snapshot?.state !== "closed") continue;
+    const closedAtMs = Date.parse(link.snapshot.closedAt ?? "");
+    if (Number.isNaN(closedAtMs) || closedAtMs < anchorMs) continue;
+    if (earliest === null || closedAtMs < earliest) earliest = closedAtMs;
+  }
+  return earliest;
+}
 
 const ProjectionCheckpointContext = Schema.Struct({
   runs: Schema.Array(
@@ -6648,7 +6680,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 providerThreadRows: yield* selectShellProviderThreadRows(threadIds),
                 pendingTurnItemRows: yield* selectShellPendingTurnItemRows(threadIds),
               });
-            return yield* Effect.forEach(rows, (row) =>
+            const candidates = yield* Effect.forEach(rows, (row) =>
               Effect.gen(function* () {
                 const thread = yield* decodeThreadPayload(row.payload_json);
                 const status = shellStatusFromStoredRunStatus(row.latest_run_status);
@@ -6701,6 +6733,55 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 } satisfies ProjectionSettlementCandidate;
               }),
             );
+            // Closed links are rare, so only their threads read run history, bounded by the close.
+            const closes = candidates.flatMap((candidate) => {
+              const closedAtMs = earliestUnansweredCloseMs(candidate);
+              return closedAtMs === null ? [] : [{ threadId: candidate.id, closedAtMs }];
+            });
+            if (closes.length === 0) return candidates;
+            const earliestCloseMs = closes.reduce(
+              (earliest, close) => Math.min(earliest, close.closedAtMs),
+              Number.POSITIVE_INFINITY,
+            );
+            const windowRows = yield* sql<{
+              readonly thread_id: string;
+              readonly started_at: string;
+              readonly completed_at: string;
+            }>`
+              SELECT r.thread_id, json_extract(r.payload_json, '$.startedAt') AS started_at,
+                r.completed_at
+              FROM orchestration_v2_projection_runs r
+              WHERE r.thread_id IN (
+                  SELECT value FROM json_each(${encodeIdList(closes.map((close) => close.threadId))})
+                )
+                AND r.completed_at IS NOT NULL
+                AND json_extract(r.payload_json, '$.startedAt') IS NOT NULL
+                AND julianday(r.completed_at) >= julianday(${DateTime.formatIso(DateTime.makeUnsafe(earliestCloseMs))})
+                AND NOT ${isSilentShellRun("r")}
+                -- Scheduled task prompts carry their creator, so a user-created one is still
+                -- automated. A run whose prompt message is gone counts as the user's.
+                AND EXISTS (
+                  SELECT 1 FROM orchestration_v2_projection_messages prompt
+                  WHERE prompt.message_id = json_extract(r.payload_json, '$.userMessageId')
+                    AND (
+                      json_extract(prompt.payload_json, '$.createdBy') IS NOT 'user'
+                      OR json_extract(prompt.payload_json, '$.scheduledTaskId') IS NOT NULL
+                    )
+                )
+            `;
+            const windowsByThreadId = Map.groupBy(windowRows, (row) => row.thread_id);
+            return candidates.map((candidate) => {
+              const windows = windowsByThreadId.get(candidate.id);
+              return windows === undefined
+                ? candidate
+                : {
+                    ...candidate,
+                    automatedRunWindows: windows.map((row) => ({
+                      startedAt: DateTime.makeUnsafe(row.started_at),
+                      completedAt: DateTime.makeUnsafe(row.completed_at),
+                    })),
+                  };
+            });
           }),
         )
         .pipe(Effect.mapError((cause) => new ProjectionStoreSetupError({ cause })));
