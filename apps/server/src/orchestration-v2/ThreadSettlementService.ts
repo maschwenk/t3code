@@ -8,6 +8,7 @@ import {
   CommandId,
   isOrchestrationV2WorkActive,
   type ThreadId,
+  type OrchestrationV2AutoSettlementSource,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2ThreadShell,
 } from "@t3tools/contracts";
@@ -208,14 +209,24 @@ export function isSnoozed(
   return !wokeOnError;
 }
 
-export function resolveAutoSettlementAt(input: {
+type AutoSettlementInput = {
   readonly thread: ProjectionStore.ProjectionSettlementCandidate;
   readonly pullRequest: SettlementPullRequest | null;
   readonly nowMs: number;
   readonly autoSettleAfterDays: number | null;
   readonly autoSettleOnMerge: boolean;
   readonly autoSettleKeepPullRequests?: boolean;
-}): DateTime.Utc | null {
+};
+
+export function resolveAutoSettlementAt(input: AutoSettlementInput): DateTime.Utc | null {
+  return resolveAutoSettlement(input)?.settledAt ?? null;
+}
+
+/** When the thread should settle and which rule settles it, or null if none does yet. */
+function resolveAutoSettlement(input: AutoSettlementInput): {
+  readonly settledAt: DateTime.Utc;
+  readonly source: OrchestrationV2AutoSettlementSource;
+} | null {
   const { thread } = input;
   let pullRequest = input.pullRequest;
   const links = settlementPullRequestLinks(thread);
@@ -247,7 +258,13 @@ export function resolveAutoSettlementAt(input: {
       toMillis(thread.latestRunCompletedAt),
     ]) ?? DateTime.toEpochMillis(thread.createdAt);
   if (pullRequest !== null && pullRequestSettles(thread, pullRequest, input.autoSettleOnMerge)) {
-    return DateTime.makeUnsafe(activityAtMs);
+    // With no link, the sweep found this pull request from the thread's branch.
+    const fromBranch = links.length === 0 && thread.linkedPullRequest == null;
+    const state = pullRequest.state === "merged" ? "merged" : "closed";
+    return {
+      settledAt: DateTime.makeUnsafe(activityAtMs),
+      source: fromBranch ? `auto_branch_pull_request_${state}` : `auto_pull_request_${state}`,
+    };
   }
   const hasPullRequest =
     hasOpenLink ||
@@ -262,7 +279,7 @@ export function resolveAutoSettlementAt(input: {
   const inactivityAtMs =
     latestMillis([activityAtMs, toMillis(thread.lastSnoozeWakeAt), timerWakeAtMs]) ?? activityAtMs;
   return inactivityAtMs < input.nowMs - input.autoSettleAfterDays * DAY_MS
-    ? DateTime.makeUnsafe(inactivityAtMs)
+    ? { settledAt: DateTime.makeUnsafe(inactivityAtMs), source: "auto_inactivity" }
     : null;
 }
 
@@ -355,7 +372,7 @@ export const make = Effect.gen(function* () {
           thread.projectId,
         ).settings;
         const decisionNow = yield* DateTime.now;
-        const settledAt = resolveAutoSettlementAt({
+        const settlement = resolveAutoSettlement({
           thread,
           pullRequest,
           nowMs: DateTime.toEpochMillis(decisionNow),
@@ -363,14 +380,15 @@ export const make = Effect.gen(function* () {
           autoSettleOnMerge: currentSettings.sidebarAutoSettleOnMerge,
           autoSettleKeepPullRequests: currentSettings.sidebarAutoSettleKeepPullRequests,
         });
-        if (settledAt === null) return thread;
+        if (settlement === null) return thread;
         const uuid = yield* random.uuidV4();
         yield* orchestrator.dispatch({
           type: "thread.auto-settle",
           commandId: CommandId.make(`server:auto-settle:${thread.id}:${uuid}`),
           threadId: thread.id,
           snapshotAt: thread.updatedAt,
-          settledAt,
+          settledAt: settlement.settledAt,
+          settlementSource: settlement.source,
         });
         return null;
       },

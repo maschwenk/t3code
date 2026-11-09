@@ -39,6 +39,7 @@ import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
+import * as ThreadManagementService from "./ThreadManagementService.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 
 const instanceId = ProviderInstanceId.make("codex");
@@ -1544,6 +1545,77 @@ it.effect("explicit settle clears snooze atomically and stays idempotent after r
     } as const;
     assert.deepInclude(yield* projections.getThreadShell(threadId), active);
     assert.deepInclude((yield* projections.getThreadProjection(threadId)).thread, active);
+  }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("records what settled a thread until it is unsettled", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const create = Effect.fn(function* (name: string) {
+      const threadId = ThreadId.make(`thread:settlement-source-${name}`);
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make(`create-settlement-source-${name}`),
+        threadId,
+        projectId: ProjectId.make("project:settlement-source"),
+        title: name,
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdBy: "user",
+        creationSource: "web",
+      });
+      return threadId;
+    });
+    const settlementSource = Effect.fn(function* (threadId: ThreadId) {
+      const thread = yield* projections.getThread(threadId);
+      const shell = yield* projections.getThreadShell(threadId);
+      assert.equal(shell?.settlementSource ?? null, thread.settlementSource ?? null);
+      return thread.settlementSource ?? null;
+    });
+
+    // A client's settle is the user's, whatever source it claims.
+    const manual = yield* create("user");
+    yield* orchestrator.dispatch(
+      ThreadManagementService.withCreationProvenance(
+        {
+          type: "thread.settle",
+          commandId: CommandId.make("settle-from-client"),
+          threadId: manual,
+          settlementSource: "agent",
+        },
+        { createdBy: "user", creationSource: "web" },
+      ),
+    );
+    assert.equal(yield* settlementSource(manual), "user");
+    // Settling a settled thread keeps its first settlement, as settledAt does.
+    yield* orchestrator.dispatch({
+      type: "thread.settle",
+      commandId: CommandId.make("settle-again-by-agent"),
+      threadId: manual,
+      settlementSource: "agent",
+    });
+    assert.equal(yield* settlementSource(manual), "user");
+    yield* orchestrator.dispatch({
+      type: "thread.unsettle",
+      commandId: CommandId.make("unsettle-user-settled"),
+      threadId: manual,
+      reason: "user",
+    });
+    assert.isNull(yield* settlementSource(manual));
+
+    const automatic = yield* create("automatic");
+    yield* orchestrator.dispatch({
+      type: "thread.auto-settle",
+      commandId: CommandId.make("auto-settle-closed-pull-request"),
+      threadId: automatic,
+      snapshotAt: (yield* projections.getThread(automatic)).updatedAt,
+      settlementSource: "auto_pull_request_closed",
+    });
+    assert.equal(yield* settlementSource(automatic), "auto_pull_request_closed");
   }).pipe(Effect.provide(layerTest)),
 );
 

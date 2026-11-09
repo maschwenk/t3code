@@ -822,12 +822,13 @@ function threadTitle(input: {
 }
 
 function threadSettlement(
-  thread: Pick<OrchestrationV2ThreadShell, "settledOverride" | "settledAt">,
-): Pick<OrchestratorMcpThreadListItem, "settled" | "settledAt"> {
+  thread: Pick<OrchestrationV2ThreadShell, "settledOverride" | "settledAt" | "settlementSource">,
+): Pick<OrchestratorMcpThreadListItem, "settled" | "settledAt" | "settlementSource"> {
   const settled = thread.settledOverride === "settled";
   return {
     settled,
     settledAt: settled && thread.settledAt !== null ? DateTime.formatIso(thread.settledAt) : null,
+    settlementSource: settled ? (thread.settlementSource ?? null) : null,
   };
 }
 

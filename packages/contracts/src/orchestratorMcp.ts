@@ -39,6 +39,7 @@ import {
   OrchestrationV2Actor,
   OrchestrationV2CreationSource,
   OrchestrationV2RunStatus,
+  OrchestrationV2ThreadSettlementSource,
   OrchestrationV2TurnItemStatus,
 } from "./orchestrationV2.ts";
 import { ProviderOptionSelection, ProviderOptionSelectionValue } from "./model.ts";
@@ -353,6 +354,14 @@ export const OrchestratorMcpThreadPullRequest = Schema.Struct({
 });
 export type OrchestratorMcpThreadPullRequest = typeof OrchestratorMcpThreadPullRequest.Type;
 
+// Optional so a linked environment on an older build still decodes.
+const OrchestratorMcpThreadSettlementSource = Schema.optional(
+  Schema.NullOr(OrchestrationV2ThreadSettlementSource),
+).annotate({
+  description:
+    "What settled it: user, agent (MCP), or an auto_* rule. null if unsettled or unknown.",
+});
+
 export const OrchestratorMcpThreadListItem = Schema.Struct({
   threadId: ThreadId,
   projectId: ProjectId,
@@ -370,6 +379,7 @@ export const OrchestratorMcpThreadListItem = Schema.Struct({
   pullRequests: Schema.optional(Schema.Array(OrchestratorMcpThreadPullRequest)),
   settled: Schema.Boolean,
   settledAt: Schema.NullOr(IsoDateTime),
+  settlementSource: OrchestratorMcpThreadSettlementSource,
   snoozed: Schema.Boolean,
   snoozedUntil: Schema.NullOr(IsoDateTime),
   parentThreadId: Schema.NullOr(ThreadId),
@@ -450,6 +460,7 @@ export const OrchestratorMcpThreadDetail = Schema.Struct({
   archived: Schema.Boolean,
   settled: Schema.Boolean,
   settledAt: Schema.NullOr(IsoDateTime),
+  settlementSource: OrchestratorMcpThreadSettlementSource,
   snoozed: Schema.Boolean,
   snoozedUntil: Schema.NullOr(IsoDateTime),
   createdAt: IsoDateTime,

@@ -174,6 +174,7 @@ export function decideGuestShareCommand(input: {
             guestShare,
             settledOverride: null,
             settledAt: null,
+            settlementSource: null,
             unsettledAt: now,
             updatedAt: now,
           })

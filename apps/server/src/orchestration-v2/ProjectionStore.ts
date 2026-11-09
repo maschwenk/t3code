@@ -1723,6 +1723,9 @@ export function threadShellFromProjection(
     archivedAt: projection.thread.archivedAt,
     settledOverride: projection.thread.settledOverride,
     settledAt: projection.thread.settledAt,
+    ...(projection.thread.settlementSource == null
+      ? {}
+      : { settlementSource: projection.thread.settlementSource }),
     unsettledAt: projection.thread.unsettledAt ?? null,
     snoozedUntil: projection.thread.snoozedUntil ?? null,
     snoozedAt: projection.thread.snoozedAt ?? null,
@@ -1989,6 +1992,9 @@ function shellFromState(input: {
     archivedAt: input.state.thread.archivedAt,
     settledOverride: input.state.thread.settledOverride,
     settledAt: input.state.thread.settledAt,
+    ...(input.state.thread.settlementSource == null
+      ? {}
+      : { settlementSource: input.state.thread.settlementSource }),
     unsettledAt: input.state.thread.unsettledAt ?? null,
     snoozedUntil: input.state.thread.snoozedUntil ?? null,
     snoozedAt: input.state.thread.snoozedAt ?? null,

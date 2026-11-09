@@ -441,6 +441,37 @@ const LenientThreadOpens = Schema.NullOr(OrchestrationV2ThreadOpens).pipe(
   Schema.catchDecoding(() => Effect.succeedSome(null)),
 );
 
+/**
+ * The auto-settle rule that settled a thread. `auto_pull_request_*` is a pull request linked to
+ * the thread; `auto_branch_pull_request_*` is one found from the thread's branch with none linked.
+ */
+export const OrchestrationV2AutoSettlementSource = Schema.Literals([
+  "auto_pull_request_merged",
+  "auto_pull_request_closed",
+  "auto_branch_pull_request_merged",
+  "auto_branch_pull_request_closed",
+  "auto_inactivity",
+]);
+export type OrchestrationV2AutoSettlementSource = typeof OrchestrationV2AutoSettlementSource.Type;
+
+/**
+ * What settled a thread: `user` is the app's settle action, `agent` an agent's MCP call, and
+ * `auto_*` the auto-settle rule that fired. Threads settled before this was recorded have none.
+ */
+export const OrchestrationV2ThreadSettlementSource = Schema.Literals([
+  "user",
+  "agent",
+  ...OrchestrationV2AutoSettlementSource.literals,
+]);
+export type OrchestrationV2ThreadSettlementSource =
+  typeof OrchestrationV2ThreadSettlementSource.Type;
+
+// Only explains a settlement, so a source this build cannot read (a newer one) becomes null
+// instead of failing the whole thread.
+const LenientThreadSettlementSource = Schema.NullOr(OrchestrationV2ThreadSettlementSource).pipe(
+  Schema.catchDecoding(() => Effect.succeedSome(null)),
+);
+
 export const OrchestrationV2AppThread = Schema.Struct({
   ...OrchestrationV2CreationFields,
   id: ThreadId,
@@ -480,6 +511,7 @@ export const OrchestrationV2AppThread = Schema.Struct({
   settledAt: Schema.NullOr(Schema.DateTimeUtc).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
+  settlementSource: Schema.optional(LenientThreadSettlementSource),
   unsettledAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
   snoozedUntil: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
   snoozedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
@@ -2146,6 +2178,8 @@ export const OrchestrationV2ThreadShell = Schema.Struct({
   archivedAt: Schema.NullOr(Schema.DateTimeUtc),
   settledOverride: Schema.NullOr(Schema.Literals(["settled", "active"])),
   settledAt: Schema.NullOr(Schema.DateTimeUtc),
+  /** Absent when the thread is not settled or its source is unknown. */
+  settlementSource: Schema.optional(LenientThreadSettlementSource),
   unsettledAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
   snoozedUntil: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
   snoozedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
@@ -2992,6 +3026,8 @@ export const OrchestrationV2Command = Schema.Union([
     threadId: ThreadId,
     expectedLatestRunId: Schema.optional(RunId),
     settledAt: Schema.optional(Schema.DateTimeUtc),
+    /** Only the server sets this; a client's settle is recorded as the user's. */
+    settlementSource: Schema.optional(OrchestrationV2ThreadSettlementSource),
   }),
   /** Rejects changes since snapshotAt or any explicit settled override to preserve user actions. */
   Schema.Struct({
@@ -3000,6 +3036,7 @@ export const OrchestrationV2Command = Schema.Union([
     threadId: ThreadId,
     snapshotAt: Schema.DateTimeUtc,
     settledAt: Schema.optional(Schema.DateTimeUtc),
+    settlementSource: Schema.optional(OrchestrationV2AutoSettlementSource),
   }),
   Schema.Struct({
     type: Schema.Literal("thread.unsettle"),
