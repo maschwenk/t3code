@@ -7,7 +7,15 @@ import * as ComputerUse from "./ComputerUse.ts";
 import * as Driver from "./Driver.ts";
 import * as DesktopTelemetryReceiver from "../resourceTelemetry/DesktopTelemetryReceiver.ts";
 import * as ServerSettings from "../serverSettings.ts";
-import { type WorkerRequest, ComputerUseError, type NativeSnapshot } from "./protocol.ts";
+import { backgroundAction } from "./nativeWorker.ts";
+import type { Capture } from "./pointerTarget.ts";
+import {
+  type ComputerAction,
+  type ComputerStep,
+  type WorkerRequest,
+  ComputerUseError,
+  type NativeSnapshot,
+} from "./protocol.ts";
 
 const snapshot: NativeSnapshot = {
   app: "Calculator",
@@ -35,9 +43,9 @@ const snapshot: NativeSnapshot = {
 };
 // Only the OS boundary is substituted. Authorization, settings writes, receipt
 // ownership, expiry and one-shot mutation behavior run through real services.
+const seven = snapshot.elements[0]!;
 
 it("targets steps by exact name only when the name picks one element", () => {
-  const seven = snapshot.elements[0]!;
   const elements = [
     seven,
     { ...seven, ref: 11, name: "1", stableId: "one" },
@@ -50,46 +58,109 @@ it("targets steps by exact name only when the name picks one element", () => {
   expect(ComputerUse.resolveStepTarget(elements, { ref: 12, name: "7" })?.ref).toBe(12);
 });
 
-it("plans coordinate steps and drags only from a capture and one source", () => {
-  const seven = snapshot.elements[0]!;
-  const elements = [seven, { ...seven, ref: 2, name: "8", stableId: "eight" }];
-  const capture = {
-    window: { id: 5, bounds: { x: 100, y: 50, width: 400, height: 300 } },
-    width: 800,
-    height: 600,
-  };
-  const click = { kind: "click_at", x: 400, y: 300, button: "left", count: 2 } as const;
-  expect(ComputerUse.planStep(elements, capture, { action: click })).toMatchObject({
+const nameField = {
+  ...seven,
+  ref: 3,
+  role: "text_field",
+  name: "Name",
+  actions: ["set_value"],
+  editable: true,
+  stableId: "name",
+};
+const capture = {
+  window: { id: 5, bounds: { x: 100, y: 50, width: 400, height: 300 } },
+  width: 800,
+  height: 600,
+};
+const plan = (step: ComputerStep, latest: Capture | null = capture) =>
+  ComputerUse.planStep(
+    [seven, { ...seven, ref: 2, name: "8", stableId: "eight" }, nameField],
+    latest ?? undefined,
+    step,
+  );
+/** The accessibility action the worker runs instead of a posted click. */
+const pressedAs = (planned: ReturnType<typeof plan>) =>
+  typeof planned === "object" && planned.action.kind === "click"
+    ? backgroundAction(planned.action, planned.target?.actions ?? [])
+    : undefined;
+
+it("presses a clicked element that lists press, and clicks exactly at x, y", () => {
+  expect(pressedAs(plan({ action: "click", name: "7" }))).toBe("press");
+  // A double click needs pointer input.
+  expect(pressedAs(plan({ action: "click", ref: 1, clickCount: 2 }))).toBeUndefined();
+  expect(plan({ action: "click", x: 400, y: 300, button: "right" })).toEqual({
+    action: { kind: "click_at", x: 400, y: 300, button: "right", count: 1 },
     target: null,
     screen: { window: capture.window, to: { x: 300, y: 200 } },
   });
-  expect(ComputerUse.planStep(elements, undefined, { action: click })).toBe("invalid_point");
-  expect(ComputerUse.planStep(elements, capture, { action: { ...click, x: 800 } })).toBe(
-    "invalid_point",
-  );
-  expect(ComputerUse.planStep(elements, capture, { ref: 1, action: click })).toBe("invalid_input");
+  expect(plan({ action: "hover", x: 400, y: 300 })).toEqual({
+    action: { kind: "move_at", x: 400, y: 300 },
+    target: null,
+    screen: { window: capture.window, to: { x: 300, y: 200 } },
+  });
+  expect(plan({ action: "click", x: 400, y: 300 }, null)).toBe("invalid_point");
+  expect(plan({ action: "click", x: 800, y: 300 })).toBe("invalid_point");
+});
 
-  const drag = (to: object, from?: object) =>
-    ({ kind: "drag", to, ...(from ? { from } : {}) }) as never;
-  expect(
-    ComputerUse.planStep(elements, undefined, { ref: 1, action: drag({ name: "8" }) }),
-  ).toMatchObject({
+it.each<[string, ComputerStep, ComputerAction]>([
+  ["hover onto an element", { action: "hover", ref: 1 }, { kind: "move" }],
+  ["type", { action: "type", ref: 3, text: "hi" }, { kind: "type", text: "hi", replace: false }],
+  [
+    "type with clear as a value replacement",
+    { action: "type", name: "Name", text: "hi", clear: true },
+    { kind: "type", text: "hi", replace: true },
+  ],
+  [
+    "press as a key on the element",
+    { action: "press", ref: 3, key: "Return" },
+    { kind: "key", key: "Return" },
+  ],
+  [
+    "press with modifiers as one chord",
+    { action: "press", key: "t", modifiers: ["Meta", "Shift"], repeat: 2 },
+    { kind: "key", key: "Meta+Shift+t", repeat: 2 },
+  ],
+  ["scroll", { action: "scroll", ref: 1, deltaY: 100 }, { kind: "scroll", dx: 0, dy: 100 }],
+  [
+    "perform",
+    { action: "perform", ref: 1, perform: "raise" },
+    { kind: "perform", action: "raise" },
+  ],
+  ["menu", { action: "menu", path: ["File", "New"] }, { kind: "menu", path: ["File", "New"] }],
+  ["wait", { action: "wait", ms: 200 }, { kind: "wait", ms: 200 }],
+])("plans %s", (_, step, action) => {
+  expect(plan(step)).toEqual(expect.objectContaining({ action }));
+});
+
+it.each<[string, ComputerStep, ComputerUseError["code"]]>([
+  ["a ref the snapshot lacks", { action: "click", ref: 9 }, "invalid_ref"],
+  ["a click with no target", { action: "click" }, "invalid_ref"],
+  ["both an element and a point", { action: "click", ref: 1, x: 1, y: 1 }, "invalid_input"],
+  ["x without y", { action: "hover", x: 1 }, "invalid_input"],
+  ["type without text", { action: "type", ref: 3 }, "invalid_input"],
+  ["type without an element", { action: "type", text: "hi" }, "invalid_ref"],
+  ["type at a point", { action: "type", x: 1, y: 1, text: "hi" }, "invalid_input"],
+  ["press without a key", { action: "press", ref: 3 }, "invalid_input"],
+  ["press with an unknown key", { action: "press", key: "Hyper" }, "invalid_key"],
+  ["scroll without a delta", { action: "scroll", ref: 1 }, "invalid_input"],
+  ["perform without an action", { action: "perform", ref: 1 }, "invalid_input"],
+])("rejects %s", (_, step, code) => {
+  expect(plan(step)).toBe(code);
+});
+
+it("drags from one element or point to a target element or point", () => {
+  expect(plan({ action: "drag", ref: 1, target: { name: "8" } }, null)).toMatchObject({
     target: { ref: 1 },
     drop: { ref: 2 },
   });
-  expect(
-    ComputerUse.planStep(elements, capture, { action: drag({ x: 0, y: 0 }, { x: 798, y: 2 }) }),
-  ).toMatchObject({ screen: { from: { x: 499, y: 51 }, to: { x: 100, y: 50 } } });
-  expect(ComputerUse.planStep(elements, capture, { action: drag({ ref: 2 }) })).toBe("invalid_ref");
-  expect(
-    ComputerUse.planStep(elements, capture, { ref: 1, action: drag({ ref: 2 }, { x: 1, y: 1 }) }),
-  ).toBe("invalid_input");
-  expect(ComputerUse.planStep(elements, capture, { ref: 1, action: drag({ ref: 9 }) })).toBe(
-    "invalid_ref",
-  );
-  expect(ComputerUse.planStep(elements, undefined, { ref: 1, action: drag({ x: 1, y: 1 }) })).toBe(
-    "invalid_point",
-  );
+  expect(plan({ action: "drag", x: 798, y: 2, target: { x: 0, y: 0 } })).toMatchObject({
+    action: { kind: "drag", from: { x: 798, y: 2 }, to: { x: 0, y: 0 } },
+    screen: { from: { x: 499, y: 51 }, to: { x: 100, y: 50 } },
+  });
+  expect(plan({ action: "drag", target: { ref: 2 } })).toBe("invalid_ref");
+  expect(plan({ action: "drag", ref: 1 })).toBe("invalid_input");
+  expect(plan({ action: "drag", ref: 1, target: { ref: 9 } })).toBe("invalid_ref");
+  expect(plan({ action: "drag", ref: 1, target: { x: 1, y: 1 } }, null)).toBe("invalid_point");
 });
 const setup = (calls: WorkerRequest[], enabled = true, failAction = false) =>
   ComputerUse.layer.pipe(
@@ -161,32 +232,18 @@ it.effect("aims coordinate steps at the latest capture, even after text-only sna
   return Effect.gen(function* () {
     const computer = yield* ComputerUse.ComputerUse;
     const settings = yield* ServerSettings.ServerSettingsService;
-    const click = {
-      kind: "click_at" as const,
-      x: 300,
-      y: 200,
-      button: "left" as const,
-      count: 1 as const,
-    };
+    const click = { action: "click" as const, x: 300, y: 200 };
     const textOnly = yield* computer.snapshot("a", { app: "Calculator", includeImage: false });
     expect(
-      yield* code(
-        computer.act("a", { snapshotId: textOnly.snapshotId, steps: [{ action: click }] }),
-      ),
+      yield* code(computer.act("a", { snapshotId: textOnly.snapshotId, steps: [click] })),
     ).toBe("invalid_point");
     yield* computer.snapshot("a", { app: "Calculator", includeImage: true });
     const later = yield* computer.snapshot("a", { app: "Calculator", includeImage: false });
-    const first = yield* computer.act("a", {
-      snapshotId: later.snapshotId,
-      steps: [{ action: click }],
-    });
+    const first = yield* computer.act("a", { snapshotId: later.snapshotId, steps: [click] });
     expect(first.completed).toEqual(["takeover"]);
     yield* settings.updateSettings({ enableComputerPointerTakeover: false });
     // The snapshot an action returns keeps the capture too.
-    yield* computer.act("a", {
-      snapshotId: first.snapshot!.snapshotId,
-      steps: [{ action: click }],
-    });
+    yield* computer.act("a", { snapshotId: first.snapshot!.snapshotId, steps: [click] });
     const actions = calls.filter((call) => call.kind === "action");
     expect(actions.map((call) => [call.screen, call.takeover])).toEqual([
       [{ window, to: { x: 350, y: 200 } }, true],
@@ -228,7 +285,7 @@ it.effect("tells the agent when the app was sent back, in that operation's resul
     expect(later.sentBack).toBeUndefined();
     const result = yield* computer.act("a", {
       snapshotId: later.snapshotId,
-      steps: [{ ref: 1, action: { kind: "press" } }],
+      steps: [{ ref: 1, action: "click" }],
     });
     expect(result).toMatchObject({ completed: [], error: { code: "failed" }, sentBack: true });
     expect(result.snapshot?.sentBack).toBeUndefined();
@@ -270,7 +327,7 @@ it.effect(
       const opened = yield* computer.open("a", input);
       const result = yield* computer.act("a", {
         snapshotId: opened.snapshotId,
-        steps: [{ ref: 1, action: { kind: "press" } }],
+        steps: [{ ref: 1, action: "click" }],
       });
       expect(result.completed).toEqual(["accessibility"]);
       expect(calls.map((call) => [call.kind, call.app])).toEqual([
@@ -286,7 +343,7 @@ it.effect(
         yield* code(
           computer.act("a", {
             snapshotId: result.snapshot!.snapshotId,
-            steps: [{ ref: 1, action: { kind: "press" } }],
+            steps: [{ ref: 1, action: "click" }],
           }),
         ),
       ).toBe("app_denied");
@@ -321,7 +378,7 @@ it.effect("keeps refs within the issuing provider session and consumes writes ex
       app: "Calculator",
       includeImage: false,
     });
-    const press = { ref: 1, action: { kind: "press" as const } };
+    const press = { ref: 1, action: "click" as const };
     const action = { snapshotId: shot.snapshotId, steps: [press] };
     expect(yield* code(computer.act("claude-work", action))).toBe("snapshot_expired");
     // One unknown ref rejects the whole batch before anything runs.
@@ -331,9 +388,7 @@ it.effect("keeps refs within the issuing provider session and consumes writes ex
       ),
     ).toBe("invalid_ref");
     expect(
-      yield* code(
-        computer.act("claude-personal", { ...action, steps: [{ action: { kind: "press" } }] }),
-      ),
+      yield* code(computer.act("claude-personal", { ...action, steps: [{ action: "click" }] })),
     ).toBe("invalid_ref");
     const result = yield* computer.act("claude-personal", action);
     expect(result.completed).toEqual(["accessibility"]);
@@ -353,7 +408,7 @@ it.effect("checks live settings before an existing session can act", () => {
     yield* settings.updateSettings({ computerUseAllowedApps: [] });
     const action = {
       snapshotId: shot.snapshotId,
-      steps: [{ ref: 1, action: { kind: "press" as const } }],
+      steps: [{ ref: 1, action: "click" as const }],
     };
     expect(yield* code(computer.act("a", action))).toBe("app_denied");
     yield* settings.updateSettings({
@@ -401,7 +456,7 @@ it.effect("stops a batch when computer use is turned off while it runs", () => {
   return Effect.gen(function* () {
     const computer = yield* ComputerUse.ComputerUse;
     const shot = yield* computer.snapshot("a", { app: "Calculator", includeImage: false });
-    const press = { ref: 1, action: { kind: "press" as const } };
+    const press = { ref: 1, action: "click" as const };
     const result = yield* computer.act("a", { snapshotId: shot.snapshotId, steps: [press, press] });
     expect(result.completed).toEqual(["accessibility"]);
     expect(result.error?.code).toBe("disabled");
@@ -452,7 +507,6 @@ const walking = (
     ),
     Layer.provide(NodeServices.layer),
   );
-const seven = snapshot.elements[0]!;
 const allClear = { ...seven, name: "All Clear", stableId: "AllClear", path: [0, 1] };
 const clear = { ...allClear, name: "Clear", stableId: "Clear" };
 const display = {
@@ -474,7 +528,7 @@ it.effect("keeps refs across snapshots and actions, and rejects refs the app rem
     expect(named(shot.elements)).toEqual(["7=1", "All Clear=2"]);
     const pressed = yield* computer.act("a", {
       snapshotId: shot.snapshotId,
-      steps: [{ ref: 1, action: { kind: "press" } }],
+      steps: [{ ref: 1, action: "click" }],
     });
     // The result can be read as changes against the snapshot the batch ran on.
     expect(named(pressed.before?.elements)).toEqual(["7=1", "All Clear=2"]);
@@ -484,7 +538,7 @@ it.effect("keeps refs across snapshots and actions, and rejects refs the app rem
       yield* code(
         computer.act("a", {
           snapshotId: pressed.snapshot!.snapshotId,
-          steps: [{ ref: 2, action: { kind: "press" } }],
+          steps: [{ ref: 2, action: "click" }],
         }),
       ),
     ).toBe("invalid_ref");
@@ -492,7 +546,7 @@ it.effect("keeps refs across snapshots and actions, and rejects refs the app rem
     expect(named(again.elements)).toEqual(["7=1", "Clear=3", "7=4"]);
     yield* computer.act("a", {
       snapshotId: again.snapshotId,
-      steps: [{ ref: 3, action: { kind: "press" } }],
+      steps: [{ ref: 3, action: "click" }],
     });
     const actions = calls.filter((call) => call.kind === "action");
     expect(actions.map((call) => call.target?.name)).toEqual(["7", "Clear"]);
@@ -514,7 +568,7 @@ it.effect("returns no baseline when the batch's view could not be shown again", 
   const acted = () => calls.some((call) => call.kind === "action");
   return Effect.gen(function* () {
     const computer = yield* ComputerUse.ComputerUse;
-    const press = { ref: 1, action: { kind: "press" as const } };
+    const press = { ref: 1, action: "click" as const };
     yield* computer.snapshot("a", { app: "Calculator", includeImage: false });
     const rooted = yield* computer.snapshot("a", {
       app: "Calculator",
@@ -554,7 +608,7 @@ it.effect("expires snapshots and invalidates all observations after an uncertain
       yield* code(
         computer.act("a", {
           snapshotId: old.snapshotId,
-          steps: [{ ref: 1, action: { kind: "press" } }],
+          steps: [{ ref: 1, action: "click" }],
         }),
       ),
     ).toBe("snapshot_expired");
@@ -563,8 +617,8 @@ it.effect("expires snapshots and invalidates all observations after an uncertain
     const failed = yield* computer.act("a", {
       snapshotId: first.snapshotId,
       steps: [
-        { ref: 1, action: { kind: "press" } },
-        { ref: 1, action: { kind: "press" } },
+        { ref: 1, action: "click" },
+        { ref: 1, action: "click" },
       ],
     });
     // The batch stops at the uncertain step and never replays or continues it.
@@ -574,7 +628,7 @@ it.effect("expires snapshots and invalidates all observations after an uncertain
       yield* code(
         computer.act("b", {
           snapshotId: second.snapshotId,
-          steps: [{ ref: 1, action: { kind: "press" } }],
+          steps: [{ ref: 1, action: "click" }],
         }),
       ),
     ).toBe("snapshot_expired");

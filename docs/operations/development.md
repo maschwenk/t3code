@@ -168,7 +168,7 @@ backend's computer tools as the "Dev harness" agent:
 node scripts/computer-use-dev.ts smoke                      # Calculator computes 7 + 8 = 15
 node scripts/computer-use-dev.ts bakeoff                    # 11 tasks on a background Chrome page
 node scripts/computer-use-dev.ts snapshot Calculator
-node scripts/computer-use-dev.ts action '{"steps":[{"ref":12,"action":{"kind":"press"}}]}'
+node scripts/computer-use-dev.ts action '{"steps":[{"ref":12,"action":"click"}]}'
 node scripts/computer-use-dev.ts snapshot TextEdit --image /tmp/textedit.png
 ```
 

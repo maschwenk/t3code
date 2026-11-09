@@ -13,9 +13,8 @@ import { type Capture, captureToScreen } from "./pointerTarget.ts";
 import { carryRefs } from "./snapshotTree.ts";
 import {
   ComputerUseError,
-  COORDINATE_ACTIONS,
-  ELEMENTLESS_ACTIONS,
   type ComputerAction,
+  type ComputerStep,
   type ElementTarget,
   type NativeSnapshot,
   type SnapshotOptions,
@@ -52,18 +51,10 @@ export type SnapshotInput = {
   readonly limit?: number | undefined;
   readonly includeOffscreen?: boolean | undefined;
 };
-/** Targets an element by ref, or by exact name (and role) from the latest snapshot. */
-export type ActionStep = {
-  readonly ref?: number | undefined;
-  readonly name?: string | undefined;
-  readonly role?: string | undefined;
-  readonly action: ComputerAction;
-};
-
 /** The one snapshot element a step names; undefined when absent or ambiguous. */
 export function resolveStepTarget(
   elements: readonly ElementTarget[],
-  step: Pick<ActionStep, "ref" | "name" | "role">,
+  step: Pick<ComputerStep, "ref" | "name" | "role">,
 ): ElementTarget | undefined {
   if (step.ref !== undefined) return elements.find((element) => element.ref === step.ref);
   if (step.name === undefined) return undefined;
@@ -78,53 +69,110 @@ type ActionRequest = Extract<WorkerRequest, { kind: "action" }>;
 export type PlannedStep = Pick<ActionRequest, "action" | "target" | "drop" | "screen">;
 
 /**
- * Checks one step against its snapshot and the latest capture, resolving
- * element names and mapping capture pixels to screen points. Returns the
- * error code that rejects the whole batch when the step cannot run.
+ * Checks one step against its snapshot and the latest capture, maps its verb to
+ * the worker action that performs it, resolves element names and maps capture
+ * pixels to screen points. Returns the error code that rejects the whole batch
+ * when the step cannot run.
  */
 export function planStep(
   elements: readonly ElementTarget[],
   capture: Capture | undefined,
-  step: ActionStep,
+  step: ComputerStep,
 ): PlannedStep | ComputerUseError["code"] {
-  const { action } = step;
   const named = step.ref !== undefined || step.name !== undefined;
-  const target = resolveStepTarget(elements, step);
+  const target = resolveStepTarget(elements, step) ?? null;
   if (named && !target) return "invalid_ref";
-  if (named && COORDINATE_ACTIONS.has(action.kind)) return "invalid_input";
-  if (action.kind === "key" && !parseKeyChord(action.key)) return "invalid_key";
-  if (action.kind === "drag") {
-    // A drag starts from exactly one of the step's element or a capture pixel.
-    if (named && action.from) return "invalid_input";
-    if (!named && !action.from) return "invalid_ref";
-  } else if (!target && !ELEMENTLESS_ACTIONS.has(action.kind)) return "invalid_ref";
+  if ((step.x === undefined) !== (step.y === undefined)) return "invalid_input";
+  const point = step.x !== undefined && step.y !== undefined ? { x: step.x, y: step.y } : null;
+  // A step starts from exactly one of an element or a capture pixel.
+  if (named && point) return "invalid_input";
   const toScreen = (pixel: { readonly x: number; readonly y: number }) =>
     capture ? captureToScreen(capture, pixel) : undefined;
-  const planned = { action, target: target ?? null };
-  if (action.kind === "click_at" || action.kind === "move_at") {
-    const to = toScreen(action);
-    if (!to || !capture) return "invalid_point";
-    return { ...planned, screen: { window: capture.window, to } };
+  const foreground = step.foreground === undefined ? {} : { foreground: step.foreground };
+  const plan = (action: ComputerAction, more?: Pick<PlannedStep, "drop" | "screen">) => ({
+    action,
+    target,
+    ...more,
+  });
+  switch (step.action) {
+    case "click":
+    case "hover": {
+      const click = { button: step.button ?? "left", count: step.clickCount ?? 1, ...foreground };
+      // The worker lands a single click on an element listing press (show_menu for
+      // right) through that accessibility action.
+      if (target)
+        return plan(
+          step.action === "click" ? { kind: "click", ...click } : { kind: "move", ...foreground },
+        );
+      if (!point) return "invalid_ref";
+      const to = toScreen(point);
+      if (!to || !capture) return "invalid_point";
+      return plan(
+        step.action === "click"
+          ? { kind: "click_at", ...point, ...click }
+          : { kind: "move_at", ...point, ...foreground },
+        { screen: { window: capture.window, to } },
+      );
+    }
+    case "drag": {
+      if (!step.target) return "invalid_input";
+      if (!target && !point) return "invalid_ref";
+      const from = point ? toScreen(point) : undefined;
+      if (point && !from) return "invalid_point";
+      let to: ReturnType<typeof toScreen>;
+      let drop: ElementTarget | undefined;
+      if ("x" in step.target) {
+        to = toScreen(step.target);
+        if (!to) return "invalid_point";
+      } else {
+        drop = resolveStepTarget(elements, step.target);
+        if (!drop) return "invalid_ref";
+      }
+      return plan(
+        { kind: "drag", ...(point ? { from: point } : {}), to: step.target, ...foreground },
+        {
+          ...(drop ? { drop } : {}),
+          ...(capture && (from || to)
+            ? {
+                screen: {
+                  window: capture.window,
+                  ...(from ? { from } : {}),
+                  ...(to ? { to } : {}),
+                },
+              }
+            : {}),
+        },
+      );
+    }
   }
-  if (action.kind !== "drag") return planned;
-  const from = action.from && toScreen(action.from);
-  if (action.from && !from) return "invalid_point";
-  let to: ReturnType<typeof toScreen>;
-  let drop: ElementTarget | undefined;
-  if ("x" in action.to) {
-    to = toScreen(action.to);
-    if (!to) return "invalid_point";
-  } else {
-    drop = resolveStepTarget(elements, action.to);
-    if (!drop) return "invalid_ref";
+  if (point) return "invalid_input";
+  switch (step.action) {
+    case "press": {
+      if (step.key === undefined) return "invalid_input";
+      const key = [...(step.modifiers ?? []), step.key].join("+");
+      if (!parseKeyChord(key)) return "invalid_key";
+      return plan({ kind: "key", key, ...(step.repeat ? { repeat: step.repeat } : {}) });
+    }
+    case "menu":
+      return step.path ? plan({ kind: "menu", path: step.path }) : "invalid_input";
+    case "wait":
+      return step.ms === undefined ? "invalid_input" : plan({ kind: "wait", ms: step.ms });
   }
-  return {
-    ...planned,
-    ...(drop ? { drop } : {}),
-    ...(capture && (from || to)
-      ? { screen: { window: capture.window, ...(from ? { from } : {}), ...(to ? { to } : {}) } }
-      : {}),
-  };
+  if (!target) return "invalid_ref";
+  switch (step.action) {
+    case "type":
+      return step.text === undefined
+        ? "invalid_input"
+        : plan({ kind: "type", text: step.text, replace: step.clear ?? false });
+    case "scroll":
+      return step.deltaX === undefined && step.deltaY === undefined
+        ? "invalid_input"
+        : plan({ kind: "scroll", dx: step.deltaX ?? 0, dy: step.deltaY ?? 0, ...foreground });
+    case "perform":
+      return step.perform === undefined
+        ? "invalid_input"
+        : plan({ kind: "perform", action: step.perform });
+  }
 }
 export type Observation = NativeSnapshot & {
   readonly snapshotId: string;
@@ -169,7 +217,7 @@ export class ComputerUse extends Context.Service<
       caller: string,
       input: {
         readonly snapshotId: string;
-        readonly steps: readonly ActionStep[];
+        readonly steps: readonly ComputerStep[];
         readonly includeImage?: boolean | undefined;
       },
     ) => Effect.Effect<ActResult, ComputerUseError>;
