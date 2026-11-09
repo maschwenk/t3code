@@ -86,12 +86,16 @@ function linkTerminalAtMs(link: SettlementPullRequestLink): number {
 }
 
 /**
- * Exclude links added after merge or close, and links closed while one of the thread's runs was
- * working: both record work the thread did rather than outcomes it awaits. A merge during a run
- * still counts. A human closing a link while a run works looks the same and is also ignored.
+ * Exclude links added after merge or close, and links closed while a run the user did not start
+ * was working: both record work the thread did rather than outcomes it awaits. A close during a
+ * run the user's message started, and any merge, still count. A human closing a link while an
+ * automated run works looks the same and is also ignored.
  */
 function settlementPullRequestLinks(
-  thread: Pick<ProjectionStore.ProjectionSettlementCandidate, "pullRequests" | "runWindows">,
+  thread: Pick<
+    ProjectionStore.ProjectionSettlementCandidate,
+    "pullRequests" | "automatedRunWindows"
+  >,
 ): ReadonlyArray<SettlementPullRequestLink> {
   return visibleThreadPullRequests(thread.pullRequests ?? []).filter((link) => {
     if (link.snapshot === null || link.snapshot.state === "open") return true;
@@ -99,7 +103,7 @@ function settlementPullRequestLinks(
     const linkedAtMs = Date.parse(link.linkedAt);
     if (!Number.isNaN(linkedAtMs) && terminalAtMs < linkedAtMs) return false;
     if (link.snapshot.state !== "closed") return true;
-    return !(thread.runWindows ?? []).some(
+    return !(thread.automatedRunWindows ?? []).some(
       (run) =>
         DateTime.toEpochMillis(run.startedAt) <= terminalAtMs &&
         terminalAtMs <= DateTime.toEpochMillis(run.completedAt),

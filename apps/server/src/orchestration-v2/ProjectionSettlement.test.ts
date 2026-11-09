@@ -12,6 +12,7 @@ import {
   ProviderThreadId,
   RunId,
   RuntimeRequestId,
+  ScheduledTaskId,
   ThreadId,
   TurnItemId,
 } from "@t3tools/contracts";
@@ -423,7 +424,7 @@ it.effect("sql: the user-authored message time ignores agent notifications", () 
   }).pipe(Effect.provide(layerSql)),
 );
 
-it.effect("sql: a pull request closed during one of the thread's own runs does not settle it", () =>
+it.effect("sql: a pull request closed during a run the user did not start does not settle", () =>
   Effect.gen(function* () {
     const store = yield* ProjectionStore.ProjectionStoreV2;
     const time = (clock: string) => DateTime.makeUnsafe(`2026-09-04T${clock}:00.000Z`);
@@ -449,44 +450,54 @@ it.effect("sql: a pull request closed during one of the thread's own runs does n
       },
       stack: null,
     });
-    // The user last wrote at 10:00, then background wakes ran 11:00-11:10 and 11:40-11:50. A close
-    // in the first wake must still count as the thread's own after the second wake ends.
-    const createIncidentThread = Effect.fn(function* (name: string, closedAt: string) {
-      const threadId = yield* createThread(name, {
-        pullRequests: [link(1, "merged", "09:00"), link(2, "closed", closedAt)],
-      });
+    type Trigger = "user" | "notice" | "scheduled";
+    const promptedRun = Effect.fn(function* (
+      threadId: ThreadId,
+      ordinal: number,
+      trigger: Trigger,
+      startedAt: string,
+      completedAt: string,
+    ) {
       yield* store.apply({
-        id: EventId.make(`event:settlement:${name}:message`),
+        id: EventId.make(`event:prompt:${threadId}:${ordinal}`),
         type: "message.updated",
         threadId,
-        occurredAt: time("10:00"),
+        occurredAt: time(startedAt),
         payload: {
-          createdBy: "user",
-          creationSource: "web",
-          id: MessageId.make(`message:settlement:${name}`),
+          createdBy: trigger === "notice" ? "agent" : "user",
+          creationSource: trigger === "notice" ? "provider" : "web",
+          // Scheduled prompts carry the user who created the task.
+          ...(trigger === "scheduled" ? { scheduledTaskId: ScheduledTaskId.make("nightly") } : {}),
+          id: MessageId.make(`message:run:${threadId}:${ordinal}`),
           threadId,
           runId: null,
           nodeId: null,
           role: "user",
-          text: "Speed up checkout",
+          text: trigger,
           attachments: [],
           streaming: false,
-          createdAt: time("10:00"),
-          updatedAt: time("10:00"),
+          createdAt: time(startedAt),
+          updatedAt: time(startedAt),
         },
       });
-      yield* createRun(threadId, "completed", 1, {
-        startedAt: time("10:00"),
-        completedAt: time("10:20"),
+      yield* createRun(threadId, "completed", ordinal, {
+        startedAt: time(startedAt),
+        completedAt: time(completedAt),
       });
-      yield* createRun(threadId, "completed", 2, {
-        startedAt: time("11:00"),
-        completedAt: time("11:10"),
+    });
+    // The user's message starts the 10:00 run and a background notice the 11:00 one. A close in
+    // that wake must still count as the thread's own after the 11:40 run ends.
+    const createThreadWithRuns = Effect.fn(function* (
+      name: string,
+      closedAt: string,
+      lastRun: Trigger,
+    ) {
+      const threadId = yield* createThread(name, {
+        pullRequests: [link(1, "merged", "09:00"), link(2, "closed", closedAt)],
       });
-      yield* createRun(threadId, "completed", 3, {
-        startedAt: time("11:40"),
-        completedAt: time("11:50"),
-      });
+      yield* promptedRun(threadId, 1, "user", "10:00", "10:20");
+      yield* promptedRun(threadId, 2, "notice", "11:00", "11:10");
+      yield* promptedRun(threadId, 3, lastRun, "11:40", "11:50");
       const [candidate] = yield* store.getSettlementCandidates(threadId);
       assert.isDefined(candidate);
       return candidate;
@@ -503,19 +514,25 @@ it.effect("sql: a pull request closed during one of the thread's own runs does n
         autoSettleOnMerge: true,
       });
 
-    const selfClosed = yield* createIncidentThread("self-closed", "11:05");
-    // Only runs that could contain the close are read.
+    const wakeClosed = yield* createThreadWithRuns("wake-closed", "11:05", "notice");
+    // Only automated runs that could contain the close are read.
     assert.deepEqual(
-      selfClosed.runWindows?.map((run) => DateTime.formatIso(run.completedAt)).toSorted(),
+      wakeClosed.automatedRunWindows?.map((run) => DateTime.formatIso(run.completedAt)).toSorted(),
       [DateTime.formatIso(time("11:10")), DateTime.formatIso(time("11:50"))],
     );
-    assert.isNull(settle(selfClosed));
+    assert.isNull(settle(wakeClosed));
     assert.deepEqual(
-      settle(selfClosed, DateTime.toEpochMillis(DateTime.add(now, { days: 3 }))),
+      settle(wakeClosed, DateTime.toEpochMillis(DateTime.add(now, { days: 3 }))),
       time("11:50"),
     );
 
-    const closedBetweenRuns = yield* createIncidentThread("closed-between-runs", "11:20");
+    const scheduledClosed = yield* createThreadWithRuns("scheduled-closed", "11:45", "scheduled");
+    assert.isNull(settle(scheduledClosed));
+
+    const askedToClose = yield* createThreadWithRuns("asked-to-close", "11:45", "user");
+    assert.deepEqual(settle(askedToClose), time("11:50"));
+
+    const closedBetweenRuns = yield* createThreadWithRuns("closed-between-runs", "11:20", "notice");
     assert.deepEqual(settle(closedBetweenRuns), time("11:50"));
   }).pipe(Effect.provide(layerSql)),
 );

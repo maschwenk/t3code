@@ -227,9 +227,10 @@ export type ProjectionSettlementCandidate = Pick<
     readonly latestUserAuthoredMessageAt: DateTime.Utc | null;
     /**
      * Set only when a pull request link closed after the user last wrote: every started run that
-     * ended at or after that close.
+     * ended at or after that close and was not started by a message the user wrote. Scheduled
+     * tasks, notices, and other agents' messages start such runs.
      */
-    readonly runWindows?: ReadonlyArray<{
+    readonly automatedRunWindows?: ReadonlyArray<{
       readonly startedAt: DateTime.Utc;
       readonly completedAt: DateTime.Utc;
     }>;
@@ -6757,6 +6758,16 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 AND json_extract(r.payload_json, '$.startedAt') IS NOT NULL
                 AND julianday(r.completed_at) >= julianday(${DateTime.formatIso(DateTime.makeUnsafe(earliestCloseMs))})
                 AND NOT ${isSilentShellRun("r")}
+                -- Scheduled task prompts carry their creator, so a user-created one is still
+                -- automated. A run whose prompt message is gone counts as the user's.
+                AND EXISTS (
+                  SELECT 1 FROM orchestration_v2_projection_messages prompt
+                  WHERE prompt.message_id = json_extract(r.payload_json, '$.userMessageId')
+                    AND (
+                      json_extract(prompt.payload_json, '$.createdBy') IS NOT 'user'
+                      OR json_extract(prompt.payload_json, '$.scheduledTaskId') IS NOT NULL
+                    )
+                )
             `;
             const windowsByThreadId = Map.groupBy(windowRows, (row) => row.thread_id);
             return candidates.map((candidate) => {
@@ -6765,7 +6776,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 ? candidate
                 : {
                     ...candidate,
-                    runWindows: windows.map((row) => ({
+                    automatedRunWindows: windows.map((row) => ({
                       startedAt: DateTime.makeUnsafe(row.started_at),
                       completedAt: DateTime.makeUnsafe(row.completed_at),
                     })),
