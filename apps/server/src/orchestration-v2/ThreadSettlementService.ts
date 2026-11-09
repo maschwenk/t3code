@@ -85,14 +85,25 @@ function linkTerminalAtMs(link: SettlementPullRequestLink): number {
   return Number.isNaN(timestamp) ? Number.NEGATIVE_INFINITY : timestamp;
 }
 
-/** Exclude links added after merge or close; they record completed work rather than outcomes this thread awaits. */
+/**
+ * Exclude links added after merge or close, and links closed while one of the thread's runs was
+ * working: both record work the thread did rather than outcomes it awaits. A merge during a run
+ * still counts. A human closing a link while a run works looks the same and is also ignored.
+ */
 function settlementPullRequestLinks(
-  links: ReadonlyArray<SettlementPullRequestLink>,
+  thread: Pick<ProjectionStore.ProjectionSettlementCandidate, "pullRequests" | "runWindows">,
 ): ReadonlyArray<SettlementPullRequestLink> {
-  return visibleThreadPullRequests(links).filter((link) => {
+  return visibleThreadPullRequests(thread.pullRequests ?? []).filter((link) => {
     if (link.snapshot === null || link.snapshot.state === "open") return true;
+    const terminalAtMs = linkTerminalAtMs(link);
     const linkedAtMs = Date.parse(link.linkedAt);
-    return Number.isNaN(linkedAtMs) || linkTerminalAtMs(link) >= linkedAtMs;
+    if (!Number.isNaN(linkedAtMs) && terminalAtMs < linkedAtMs) return false;
+    if (link.snapshot.state !== "closed") return true;
+    return !(thread.runWindows ?? []).some(
+      (run) =>
+        DateTime.toEpochMillis(run.startedAt) <= terminalAtMs &&
+        terminalAtMs <= DateTime.toEpochMillis(run.completedAt),
+    );
   });
 }
 
@@ -203,7 +214,7 @@ export function resolveAutoSettlementAt(input: {
 }): DateTime.Utc | null {
   const { thread } = input;
   let pullRequest = input.pullRequest;
-  const links = settlementPullRequestLinks(thread.pullRequests ?? []);
+  const links = settlementPullRequestLinks(thread);
   if (links.some((link) => link.snapshot === null)) return null;
   // An open link means the pull request has not finished, so only inactivity
   // can settle the thread, never a merged or closed lookup.

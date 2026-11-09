@@ -77,6 +77,10 @@ const createRun = Effect.fn(function* (
   threadId: ThreadId,
   status: OrchestrationV2Run["status"] = "completed",
   ordinal = 1,
+  window: { readonly startedAt: DateTime.Utc; readonly completedAt: DateTime.Utc } = {
+    startedAt: old,
+    completedAt: old,
+  },
 ) {
   const store = yield* ProjectionStore.ProjectionStoreV2;
   const runId = RunId.make(`run:${threadId}:${ordinal}`);
@@ -96,9 +100,11 @@ const createRun = Effect.fn(function* (
       rootNodeId: null,
       activeAttemptId: null,
       status,
-      requestedAt: old,
-      startedAt: status === "queued" ? null : old,
-      completedAt: ["completed", "rolled_back", "failed"].includes(status) ? old : null,
+      requestedAt: window.startedAt,
+      startedAt: status === "queued" ? null : window.startedAt,
+      completedAt: ["completed", "rolled_back", "failed"].includes(status)
+        ? window.completedAt
+        : null,
       checkpointId: null,
       contextHandoffId: null,
     },
@@ -414,6 +420,103 @@ it.effect("sql: the user-authored message time ignores agent notifications", () 
       DateTime.formatIso(shellThread!.latestUserAuthoredMessageAt!),
       DateTime.formatIso(written),
     );
+  }).pipe(Effect.provide(layerSql)),
+);
+
+it.effect("sql: a pull request closed during one of the thread's own runs does not settle it", () =>
+  Effect.gen(function* () {
+    const store = yield* ProjectionStore.ProjectionStoreV2;
+    const time = (clock: string) => DateTime.makeUnsafe(`2026-09-04T${clock}:00.000Z`);
+    const link = (number: number, state: "merged" | "closed", finishedAt: string) => ({
+      host: "github.com",
+      repository: "owner/repository",
+      number,
+      url: `https://github.com/owner/repository/pull/${number}`,
+      source: "agent" as const,
+      linkedAt: DateTime.formatIso(time("08:00")),
+      snapshot: {
+        state,
+        title: "Pull request",
+        headBranch: `feature-${number}`,
+        baseBranch: "main",
+        isDraft: false,
+        updatedAt: null,
+        syncedAt: DateTime.formatIso(time("11:55")),
+        // Hosts report whole seconds without milliseconds.
+        ...(state === "merged"
+          ? { mergedAt: `2026-09-04T${finishedAt}:00Z` }
+          : { closedAt: `2026-09-04T${finishedAt}:00Z` }),
+      },
+      stack: null,
+    });
+    // The user last wrote at 10:00, then background wakes ran 11:00-11:10 and 11:40-11:50. A close
+    // in the first wake must still count as the thread's own after the second wake ends.
+    const createIncidentThread = Effect.fn(function* (name: string, closedAt: string) {
+      const threadId = yield* createThread(name, {
+        pullRequests: [link(1, "merged", "09:00"), link(2, "closed", closedAt)],
+      });
+      yield* store.apply({
+        id: EventId.make(`event:settlement:${name}:message`),
+        type: "message.updated",
+        threadId,
+        occurredAt: time("10:00"),
+        payload: {
+          createdBy: "user",
+          creationSource: "web",
+          id: MessageId.make(`message:settlement:${name}`),
+          threadId,
+          runId: null,
+          nodeId: null,
+          role: "user",
+          text: "Speed up checkout",
+          attachments: [],
+          streaming: false,
+          createdAt: time("10:00"),
+          updatedAt: time("10:00"),
+        },
+      });
+      yield* createRun(threadId, "completed", 1, {
+        startedAt: time("10:00"),
+        completedAt: time("10:20"),
+      });
+      yield* createRun(threadId, "completed", 2, {
+        startedAt: time("11:00"),
+        completedAt: time("11:10"),
+      });
+      yield* createRun(threadId, "completed", 3, {
+        startedAt: time("11:40"),
+        completedAt: time("11:50"),
+      });
+      const [candidate] = yield* store.getSettlementCandidates(threadId);
+      assert.isDefined(candidate);
+      return candidate;
+    });
+    const settle = (
+      thread: ProjectionStore.ProjectionSettlementCandidate,
+      nowMs = DateTime.toEpochMillis(now),
+    ) =>
+      resolveAutoSettlementAt({
+        thread,
+        pullRequest: null,
+        nowMs,
+        autoSettleAfterDays: 3,
+        autoSettleOnMerge: true,
+      });
+
+    const selfClosed = yield* createIncidentThread("self-closed", "11:05");
+    // Only runs that could contain the close are read.
+    assert.deepEqual(
+      selfClosed.runWindows?.map((run) => DateTime.formatIso(run.completedAt)).toSorted(),
+      [DateTime.formatIso(time("11:10")), DateTime.formatIso(time("11:50"))],
+    );
+    assert.isNull(settle(selfClosed));
+    assert.deepEqual(
+      settle(selfClosed, DateTime.toEpochMillis(DateTime.add(now, { days: 3 }))),
+      time("11:50"),
+    );
+
+    const closedBetweenRuns = yield* createIncidentThread("closed-between-runs", "11:20");
+    assert.deepEqual(settle(closedBetweenRuns), time("11:50"));
   }).pipe(Effect.provide(layerSql)),
 );
 
