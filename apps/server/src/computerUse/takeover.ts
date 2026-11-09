@@ -35,18 +35,10 @@ export type PointerOutcome =
   | { readonly ok: false; readonly code: "input_requires_foreground" | "user_active" };
 
 /**
- * Runs real pointer input whose points must land on `pid`.
- *
- * When the app is already in front and owns every point, input runs as is.
- * Otherwise, if takeover is allowed and the user has been idle for
- * USER_IDLE_SECONDS, the app is brought forward just for this gesture, then
- * the user's pointer and frontmost app are restored. Any user input during
- * the takeover aborts it before the gesture, or skips putting the pointer
- * back after it, so the agent never fights the user for the mouse.
- *
- * `ownInputAt` is when an earlier gesture of the agent's ended. macOS may
- * count synthesized events as input, so a user who has not touched anything
- * since then is still idle, and a batch can run several pointer steps.
+ * Runs real pointer input on `pid`: as is when the app is in front and owns every point, else, with
+ * takeover allowed and the user idle USER_IDLE_SECONDS, it brings the app forward for this gesture and
+ * restores the user's pointer and front app. User input aborts it, so the agent never fights the user.
+ * `ownInputAt` (the agent's last gesture) keeps macOS's count of synthesized input from ending idle.
  */
 export async function deliverPointer(
   desktop: Desktop,

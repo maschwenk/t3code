@@ -18,11 +18,9 @@ const sameBytes = (left: Uint8Array, right: Uint8Array) =>
   left.length === right.length && left.every((byte, index) => byte === right[index]);
 
 /**
- * Development only. scripts/dev-electron.mjs rebuilds the server bundle in watch
- * mode; this restarts just the backend child once the bundle entry changes and
- * has held still for one poll, so a server edit costs a backend restart instead
- * of relaunching Electron and reloading the window. Rebuilds that produce
- * identical output, such as the watcher's first build, are ignored.
+ * Development only. Restarts just the backend child once scripts/dev-electron.mjs's
+ * watch rebuild changes the bundle entry and it holds still for one poll, instead of
+ * relaunching Electron. Identical rebuilds, such as the watcher's first, are ignored.
  */
 export const restartBackendOnServerRebuild = Effect.fn("desktop.dev.restartBackendOnServerRebuild")(
   function* (backend: DesktopBackendInstance, entryPath: string) {

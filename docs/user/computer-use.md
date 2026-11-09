@@ -4,7 +4,7 @@ Computer use lets Claude Code and other agents inspect and operate native macOS 
 machine running your T3 environment, while you keep working in other apps. It works through the
 same agent connection when you send instructions from another computer or your phone.
 
-In **Settings → Integrations → Computer use**, select the environment and enable **Agent computer
+In **Settings → Devices → Computer use**, select the environment and enable **Agent computer
 access**. Enable **Allow all computer apps** to let agents use any app without per-app approval,
 including apps you install later. To limit access, leave it off and add exact names to **Allowed
 computer apps**. macOS must grant Accessibility permission to the host runtime; T3 does not

@@ -11,6 +11,7 @@ export interface CrxPackage {
   readonly archive: Uint8Array;
 }
 
+// @effect-diagnostics-next-line extendsNativeError:off - a synchronous parser with no Effect runtime; callers wrap the throw.
 export class CrxFormatError extends Error {}
 
 const readUint32 = (bytes: Uint8Array, offset: number): number => {

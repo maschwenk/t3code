@@ -1,11 +1,15 @@
 import {
   type EnvironmentId,
   type ModelSelection,
+  type ServerSettings,
+  type ProjectId,
+  resolveProjectProviderInstanceEnabled,
   type UsageLimitsReport,
   type ProviderInstanceId,
   type ProviderConsumeResetCreditInput,
   type ServerProviderSlashCommand,
   isProviderAvailable,
+  PROVIDER_DISPLAY_NAMES,
   type ServerProvider,
   type ServerProviderUsageLimits,
   type ServerProviderUsageWindow,
@@ -17,6 +21,85 @@ import * as DateTime from "effect/DateTime";
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
+
+export function exhaustedUsageWindow(
+  provider: ServerProvider | undefined,
+  now: number,
+  model?: string,
+) {
+  const exhausted = (provider?.usageLimits?.windows ?? []).filter(
+    (window) =>
+      (window.usedPercent ?? 0) >= 100 &&
+      (!window.resetsAt ||
+        !Number.isFinite(Date.parse(window.resetsAt)) ||
+        Date.parse(window.resetsAt) > now),
+  );
+  if (model === undefined) return exhausted[0];
+  switch (provider?.driver) {
+    case "cursor": {
+      const api = exhausted.find((window) => window.id === "apiPercentUsed");
+      const auto = exhausted.find((window) => window.id === "autoPercentUsed");
+      return /^(auto|default|grok|composer)/.test(model) ? auto && api : api;
+    }
+    case "antigravity": {
+      const family = model.match(/^(gemini|claude|gpt)-/)?.[1];
+      return exhausted.find((window) => {
+        const pool = window.id.match(/^(gemini|claude|gpt|3p)-/)?.[1];
+        return (
+          pool === undefined ||
+          family === undefined ||
+          pool === family ||
+          (pool === "3p" && (family === "claude" || family === "gpt"))
+        );
+      });
+    }
+    case "opencode":
+      return exhausted.find(
+        (window) => !window.id.startsWith("go_") || model.startsWith("opencode-go/"),
+      );
+    default:
+      return exhausted[0];
+  }
+}
+
+export function resolveNewThreadModelSelection(input: {
+  readonly defaultSelection: ModelSelection | null;
+  readonly explicitSelection?: ModelSelection | null;
+  readonly fallbackSelection: ModelSelection | null;
+  readonly providers: readonly ServerProvider[];
+  readonly now: number;
+  readonly settings?: ServerSettings;
+  readonly projectId?: ProjectId | null;
+}) {
+  const selection = input.explicitSelection ?? input.defaultSelection;
+  const unchanged = { selection, fallback: null };
+  if (input.explicitSelection || !selection || !input.fallbackSelection) return unchanged;
+  const provider = input.providers.find((entry) => entry.instanceId === selection.instanceId);
+  const window = exhaustedUsageWindow(provider, input.now, selection.model);
+  const fallback = input.providers.find(
+    (entry) => entry.instanceId === input.fallbackSelection?.instanceId,
+  );
+  if (
+    !provider ||
+    !window ||
+    !fallback?.enabled ||
+    !fallback.installed ||
+    fallback.auth.status === "unauthenticated" ||
+    !isProviderAvailable(fallback) ||
+    exhaustedUsageWindow(fallback, input.now, input.fallbackSelection.model) ||
+    (input.settings &&
+      !resolveProjectProviderInstanceEnabled(
+        input.settings,
+        input.projectId ?? null,
+        fallback.instanceId,
+      ))
+  )
+    return unchanged;
+  return {
+    selection: input.fallbackSelection,
+    fallback: { provider, resetsAt: window.resetsAt ?? null },
+  };
+}
 
 export const CHATGPT_USAGE_URL = "https://chatgpt.com/#settings/Usage";
 export const CHATGPT_USAGE_LIMIT_CODE = "subscription_sharing_usage_limit_exceeded";
@@ -131,10 +214,7 @@ const nativeReport = (provider: ServerProvider): AccountReport => ({
   usageLimits: provider.usageLimits,
 });
 
-/**
- * Pass every enabled login, read or not, so an unreadable workspace still
- * counts as one.
- */
+// Include every enabled login, even unreadable workspaces.
 function accountKeyResolver(reports: Iterable<AccountReport>) {
   const workspaces = new Map<string, Set<string>>();
   for (const report of reports) {
@@ -152,6 +232,8 @@ function accountKeyResolver(reports: Iterable<AccountReport>) {
     return known.size === 1 ? `${key}:${[...known][0]}` : null;
   };
 }
+
+const hubAccountName = (account: { readonly id: string }) => account.id.replace(/\.json$/i, "");
 
 export interface LimitAccount {
   readonly key: string;
@@ -176,12 +258,9 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
   const accounts = new Map<string, LimitAccount>();
   const creditSources = new Map<string, LimitAccount>();
   const hubRedeems = new Map<string, LimitAccount>();
+  const planSources = new Map<string, LimitAccount>();
   const merge = (key: string, next: LimitAccount) => {
-    // Redeeming through a hub also clears the routing cooldown that hub holds
-    // for the account. Redeeming natively against the same subscription resets
-    // it upstream but leaves the hub refusing to route to the account until
-    // its own cooldown expires, so a hub target wins the redemption outright
-    // while the displayed balance still follows the freshest read.
+    // Prefer hub redemption to clear its routing cooldown too; displayed balance still follows the freshest read.
     const previousHub = hubRedeems.get(key);
     if (
       next.redeem &&
@@ -198,6 +277,14 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
     ) {
       creditSources.set(key, next);
     }
+    const previousPlan = planSources.get(key);
+    if (
+      next.plan &&
+      (!previousPlan ||
+        Date.parse(next.limits.checkedAt) > Date.parse(previousPlan.limits.checkedAt))
+    ) {
+      planSources.set(key, next);
+    }
     const previous = accounts.get(key);
     if (!previous) {
       accounts.set(key, next);
@@ -213,10 +300,19 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
     ];
     const winner = fresher ? next : previous;
     const creditSource = creditSources.get(key);
+    // A hub e-mail names the account better than the driver's default instance name.
+    const hubEmail = [previous, next].some(
+      (account) => account.environments.length === 0 && account.email,
+    );
+    const displayName = previous.displayName ?? next.displayName;
     accounts.set(key, {
       ...previous,
-      displayName: previous.displayName ?? next.displayName,
-      plan: previous.plan ?? next.plan,
+      displayName:
+        hubEmail &&
+        displayName?.toLowerCase() === PROVIDER_DISPLAY_NAMES[previous.driver]?.toLowerCase()
+          ? null
+          : displayName,
+      plan: planSources.get(key)?.plan ?? previous.plan ?? next.plan,
       accentColor: previous.accentColor ?? next.accentColor,
       environments,
       sourceLabel: environments.length > 0 ? null : (previous.sourceLabel ?? next.sourceLabel),
@@ -269,7 +365,7 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
         merge(resolveKey(account) ?? key, {
           key,
           driver: account.driver,
-          displayName: account.email ? null : account.id.replace(/\.json$/i, ""),
+          displayName: account.email ? null : hubAccountName(account),
           email: account.email,
           plan: account.plan,
           accentColor: undefined,
@@ -410,11 +506,7 @@ function accountSortName(account: LimitAccount): string {
   return (account.displayName ?? account.email ?? account.key).toLowerCase();
 }
 
-/**
- * Codex ids are slots, not allowances: a weekly-only plan reports its weekly
- * window as `primary`, other plans as `secondary`. Its windows pool by kind;
- * other drivers' ids name distinct allowances.
- */
+// Codex ids name slots, so pool by kind; other drivers' ids identify distinct allowances.
 function poolKey(driver: ServerProvider["driver"], window: ServerProviderUsageWindow): string {
   return driver === "codex" ? window.kind : `${window.kind}:${window.id}`;
 }
@@ -483,9 +575,7 @@ function poolWindows(accounts: readonly LimitAccount[], now: number): readonly L
     const first = members[0]!.window;
     const id = members[0]!.account.driver === "codex" ? key : first.id;
     const usedPercent = members.reduce((sum, m) => sum + m.window.usedPercent, 0) / members.length;
-    // Pace compares spend against the clock, so it is judged only over the
-    // members that have a clock; a window with no reset would otherwise
-    // count as spend with no time elapsed and skew the verdict.
+    // Judge pace only for windows with reset clocks; others add spend without elapsed time.
     const timed = members.flatMap((m) => {
       const share = elapsedShare(m.window, now);
       return share === null ? [] : [{ used: m.window.usedPercent, elapsed: share }];
@@ -655,11 +745,9 @@ export function claudeWeeklyWindowId(
 }
 
 /**
- * The model picker's usage line for a Claude account: the weekly window that
- * governs `model`, falling back to the five-hour window. The other windows
- * follow as detail: the account-wide weekly when a per-model window was used,
- * then the five-hour window. Null for other drivers and for accounts that
- * report neither a weekly nor a five-hour window (API keys, a failed probe).
+ * The picker's usage line for a Claude account: the weekly window governing `model`, else the
+ * five-hour one, with the account-wide weekly (after a per-model window) and five-hour as detail.
+ * Null for other drivers and accounts reporting neither window (API keys, a failed probe).
  */
 export function claudeUsageSummary(
   provider: ServerProvider,
@@ -684,18 +772,18 @@ export function claudeUsageSummary(
 }
 
 /**
- * The Claude instance a new thread on `selection.model` should start on: among
- * ready instances serving that model with more than 5% left in their five-hour
- * window, their account-wide weekly window, and their weekly window for the
- * model, the one whose weekly window for the model resets soonest, so accounts
- * nearest a reset are used up first. A window that has not started resets
- * last. Ties keep the current instance. Returns `selection.instanceId` for
- * non-Claude selections or when nothing qualifies.
+ * Of the ready Claude instances `project` allows for `selection.model` with over 5% left in their
+ * five-hour, weekly and model weekly windows, the one whose model weekly window resets soonest
+ * (unstarted last), so near-reset accounts are spent first. Ties and no match keep the current one.
  */
 export function selectClaudeInstanceClosestToReset(
   providers: ReadonlyArray<ServerProvider>,
   selection: Pick<ModelSelection, "instanceId" | "model">,
   now: number,
+  project?: {
+    readonly settings: Pick<ServerSettings, "providerInstances" | "projectSettingsOverrides">;
+    readonly projectId: ProjectId | null;
+  },
 ): ProviderInstanceId {
   const current = providers.find((provider) => provider.instanceId === selection.instanceId);
   if (current?.driver !== CLAUDE_DRIVER) return selection.instanceId;
@@ -708,7 +796,13 @@ export function selectClaudeInstanceClosestToReset(
       !provider.installed ||
       provider.status !== "ready" ||
       !isProviderAvailable(provider) ||
-      !provider.models.some((model) => model.slug === selection.model)
+      !provider.models.some((model) => model.slug === selection.model) ||
+      (project !== undefined &&
+        !resolveProjectProviderInstanceEnabled(
+          project.settings,
+          project.projectId,
+          provider.instanceId,
+        ))
     ) {
       continue;
     }
@@ -782,8 +876,15 @@ export function withUsageLimitsCommands(
   providers: readonly ServerProvider[],
   sources: UsageLimitSourceSnapshots,
 ): ServerProvider[] {
+  const supportedDrivers = new Set([
+    ...providersWithLimits(providers).map((provider) => provider.driver),
+    ...sources.flatMap((source) => source.accounts.map((account) => account.driver)),
+  ]);
+  const unreadableSource = sources.some(
+    (source) => source.error !== undefined && source.accounts.length === 0,
+  );
   return providers.map((provider) => {
-    if (!hasProviderUsageLimits(provider.driver, providers, sources)) return provider;
+    if (!unreadableSource && !supportedDrivers.has(provider.driver)) return provider;
     const commands = (items: readonly ServerProviderSlashCommand[]) => [
       ...items.filter((command) => command.name !== USAGE_LIMITS_COMMAND.name),
       USAGE_LIMITS_COMMAND,
@@ -908,7 +1009,7 @@ export function collectProviderUsageLimits(
       accounts.push({
         id: `${source.id}:${account.id}`,
         driver: account.driver,
-        label: `${source.label} · ${account.id}`,
+        label: `${source.label} · ${hubAccountName(account)}`,
         sourceLabel: "CLI Proxy",
         ...(account.usageLimits.resetCredits?.nextCreditId
           ? {

@@ -25,6 +25,7 @@ export function usePreviewExtensions(
 ): ReadonlyArray<PreviewExtension> | null {
   const bridge = previewBridge?.extensions;
   const [extensions, setExtensions] = useState<ReadonlyArray<PreviewExtension> | null>(null);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- mirrors the desktop extension registry for this tab and follows its change events
   useEffect(() => {
     if (!bridge) return;
     let current = true;

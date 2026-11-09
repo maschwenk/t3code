@@ -1,12 +1,6 @@
 /**
- * Browser extensions for the in-app preview browser.
- *
- * Extensions are installed once and load into every persistent browser
- * profile; each profile keeps its own extension data (a password manager's
- * sign-in, for example). Incognito profiles run without extensions, as in
- * Chrome by default.
- *
- * @module PreviewExtensions
+ * Preview browser extensions load into every persistent profile, each with its own extension
+ * data (a password manager's sign-in); incognito profiles run without them, as in Chrome.
  */
 import * as Schema from "effect/Schema";
 import { TrimmedNonEmptyString } from "./baseSchemas.ts";

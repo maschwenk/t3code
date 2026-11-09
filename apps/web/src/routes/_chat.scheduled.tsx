@@ -1,5 +1,6 @@
 import {
   scheduledTaskLifecycle,
+  scheduledTaskThreadMode,
   type EnvironmentId,
   type ScheduledTask,
   type TimestampFormat,
@@ -41,8 +42,8 @@ import { WorkspaceBreadcrumb, WorkspaceBreadcrumbItem } from "../components/Work
 import { WorkspacePageContainer } from "../components/WorkspacePageContainer";
 import { WorkspacePageHeader } from "../components/WorkspacePageHeader";
 import { isElectron } from "../env";
+import { useNowMinute } from "../hooks/useNowMinute";
 import { useEnvironmentSettings } from "../hooks/useSettings";
-import { useEscapeToGoBack } from "../hooks/useNavigateBack";
 import { useProjects, useThreadShell } from "../state/entities";
 import {
   useEnvironments,
@@ -61,7 +62,6 @@ export const Route = createFileRoute("/_chat/scheduled")({
 
 /** Every schedule across connected environments, soonest first, like Codex's Scheduled view. */
 function ScheduledRouteView() {
-  useEscapeToGoBack();
   const { environments } = useEnvironments();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const connected = environments.filter(
@@ -137,9 +137,11 @@ function EnvironmentSchedules({
     serverEnvironment.scheduledTasksLive({ environmentId: environment.environmentId, input: {} }),
   );
   const timestampFormat = useEnvironmentSettings(environment.environmentId).timestampFormat;
-  const tasks = sortScheduledTasksByUpcoming(tasksQuery.data?.tasks ?? [], Date.now());
-  const upcoming = tasks.filter((task) => scheduledTaskLifecycle(task, Date.now()) === "active");
-  const inactive = tasks.filter((task) => scheduledTaskLifecycle(task, Date.now()) !== "active");
+  const nowMinute = useNowMinute();
+  const nowMs = Date.parse(`${nowMinute}:00.000Z`);
+  const tasks = sortScheduledTasksByUpcoming(tasksQuery.data?.tasks ?? [], nowMs);
+  const upcoming = tasks.filter((task) => scheduledTaskLifecycle(task, nowMs) === "active");
+  const inactive = tasks.filter((task) => scheduledTaskLifecycle(task, nowMs) !== "active");
   return (
     <section className="flex flex-col gap-4">
       {showHeading ? (
@@ -225,7 +227,9 @@ function ScheduleRow({
   const project = useProjects().find(
     (candidate) => candidate.environmentId === environmentId && candidate.id === task.projectId,
   );
-  const lifecycle = scheduledTaskLifecycle(task, Date.now());
+  const nowMinute = useNowMinute();
+  const nowMs = Date.parse(`${nowMinute}:00.000Z`);
+  const lifecycle = scheduledTaskLifecycle(task, nowMs);
   const formatTime = (iso: string) => formatUpcomingTimestamp(iso, timestampFormat);
   const [busy, setBusy] = useState(false);
   const setEnabled = useAtomCommand(serverEnvironment.setScheduledTaskEnabled, {
@@ -257,9 +261,12 @@ function ScheduleRow({
       );
     }
   };
+  const inProject = project ? ` in ${project.title}` : "";
   const where = threadRef
     ? (thread?.title ?? "A chat")
-    : `New chat each run${project ? ` in ${project.title}` : ""}`;
+    : scheduledTaskThreadMode(task) === "new_thread"
+      ? `New chat each run${inProject}`
+      : `One chat, started by the first run${inProject}`;
   return (
     <li className="group flex items-center gap-3 rounded-lg px-2 py-2 hover:bg-accent/50">
       <button
@@ -269,10 +276,10 @@ function ScheduleRow({
       >
         <span className="w-full truncate text-sm font-medium text-foreground">{task.title}</span>
         <span className="w-full truncate text-xs text-muted-foreground">
-          {lifecycle === "active" && task.nextRunAt !== null
+          {lifecycle === "active" && task.nextRunAt !== null && task.schedule.type !== "once"
             ? `${formatTime(task.nextRunAt)} · `
             : ""}
-          {scheduledTaskStatusText(task, formatTime, Date.now())} · {where}
+          {scheduledTaskStatusText(task, formatTime, nowMs)} · {where}
         </span>
       </button>
       {threadRef ? (

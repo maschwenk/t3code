@@ -1,17 +1,8 @@
 // @effect-diagnostics nodeBuiltinImport:off globalDate:off globalConsole:off - Dependency-free host-side cutover tool with no Effect runtime, like setup-worktree.ts.
 /**
- * Move a dev server's T3 home (its `.t3/userdata`) under `~/.t3`, where an
- * installed desktop build looks for it. One-time cutover from running the dev
- * runner as the daily app to running an installed fork build
- * (scripts/install-fork-desktop.ts).
- *
- *   node scripts/migrate-fork-userdata.ts [--from <t3 home>] [--to <t3 home>]
- *
- * `--from` defaults to the main checkout's `.t3`, `--to` to `~/.t3`. Refuses to
- * run while something holds the source database open, renames the existing
- * destination userdata aside instead of deleting it, and skips server logs.
- * Claude config directories are outside the T3 home and are not touched.
- */
+ * One-time move of a dev server's `.t3/userdata` to `~/.t3`, where installed builds read it.
+ *   node scripts/migrate-fork-userdata.ts [--from <main checkout .t3>] [--to <~/.t3>]
+ * Refuses while the source database is open; renames existing destination data aside. */
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
@@ -73,11 +64,8 @@ if (NodeFS.existsSync(destinationUserdata)) {
   console.log(`[fork-migrate] Moved the existing ${destinationUserdata} to ${backup}`);
 }
 
-// Everything the app needs lives in userdata: settings and provider
-// instances (settings.json), client and desktop settings, keybindings,
-// themes, the thread database, attachments, browser extensions, and the
-// mode-0600 secrets, which are raw bytes rather than app-bound ciphertext.
-// Server logs are the one large directory nothing reads back.
+// Everything the app needs lives in userdata, including the mode-0600 secrets, which are
+// raw bytes rather than app-bound ciphertext. Logs are the one large directory nothing reads.
 const copy = NodeChildProcess.spawnSync(
   "rsync",
   ["-a", "--exclude", "logs/", `${sourceUserdata}/`, `${destinationUserdata}/`],

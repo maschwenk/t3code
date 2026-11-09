@@ -13,7 +13,7 @@ export function ComputerUseSettings() {
         {...searchableSetting("agent-computer-access")}
         serverScoped
         settingKeys={["enableAgentComputerAccess"]}
-        description="Let agents inspect and operate allowed macOS apps on this environment's machine, including when you connect remotely. Accessibility controls work in the background with an agent cursor. Other gestures follow the pointer setting below. Requires macOS Accessibility permission. Turning this off stops further actions."
+        description="Let agents operate allowed macOS apps on this machine, also when you connect remotely. They work in the background with an agent cursor. Needs macOS Accessibility permission."
         control={
           <ScopedSwitch
             settingKeys={["enableAgentComputerAccess"]}
@@ -87,7 +87,7 @@ export function ComputerUseSettings() {
         {...searchableSetting("computer-pointer-takeover")}
         serverScoped
         settingKeys={["enableComputerPointerTakeover"]}
-        description="Pointer steps normally reach the app in the background without moving your mouse. For the rare control that ignores them, an agent may ask for the real pointer: when you have not touched the mouse or keyboard for a few seconds, it brings the app forward for that one gesture, then puts your pointer and front app back. If you are active, the agent waits and asks instead."
+        description="For the rare control that ignores background input, an agent may use your real pointer for one gesture after you idle a few seconds, then restore your pointer and front app. If you're active, it asks."
         control={
           <ScopedSwitch
             settingKeys={["enableComputerPointerTakeover"]}
