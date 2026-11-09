@@ -1,4 +1,10 @@
-import { CommandId, type OrchestrationV2ThreadShell, type ThreadId } from "@t3tools/contracts";
+import {
+  CommandId,
+  isDelegatedAppThread,
+  isListedThreadLineage,
+  type OrchestrationV2ThreadShell,
+  type ThreadId,
+} from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
@@ -18,10 +24,9 @@ const TITLE_REFRESH_CONCURRENCY = 2;
 const TITLE_REFRESH_SETTLE_TIMEOUT = Duration.minutes(4);
 
 /**
- * Threads whose latest user message or agent turn falls inside the activity
- * window, newest first, each once, with that activity time. A thread with a
- * title generation already in flight is left to that request, and one with no
- * activity after the time recorded in `refreshedActivityMs` is skipped.
+ * Listed threads with a user message or agent turn inside the activity window, newest first,
+ * each once. Threads with a title generation in flight, or no activity since
+ * `refreshedActivityMs`, are skipped; subagents, delegated tasks and side chats are never renamed.
  */
 export function threadsDueForTitleRefresh(
   threads: ReadonlyArray<
@@ -35,6 +40,8 @@ export function threadsDueForTitleRefresh(
       | "latestRunRequestedAt"
       | "latestRunStartedAt"
       | "latestRunCompletedAt"
+      | "lineage"
+      | "delegatedFrom"
     >
   >,
   nowMs: number,
@@ -43,7 +50,13 @@ export function threadsDueForTitleRefresh(
   const windowStartMs = nowMs - Duration.toMillis(TITLE_REFRESH_ACTIVITY_WINDOW);
   const due = new Map<ThreadId, number>();
   for (const thread of threads) {
-    if (thread.archivedAt !== null || thread.deletedAt !== null || thread.titleRegeneration) {
+    if (
+      thread.archivedAt !== null ||
+      thread.deletedAt !== null ||
+      thread.titleRegeneration ||
+      !isListedThreadLineage(thread.lineage) ||
+      isDelegatedAppThread(thread)
+    ) {
       continue;
     }
     const activityMs = Math.max(
