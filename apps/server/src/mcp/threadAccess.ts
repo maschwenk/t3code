@@ -139,7 +139,7 @@ export const isLiveCallerShell = (
 
 /** Thread callers need a live run or its background subagent in an unarchived thread. OAuth clients rely on their session and ceiling. */
 export function assertLiveCaller({ caller, scope }: Caller) {
-  if (caller === undefined) return Effect.void;
+  if (caller === undefined || scope.thread?.devHarness === true) return Effect.void;
   return isLiveCallerShell(caller, scope.thread?.providerInstanceId)
     ? Effect.void
     : Effect.fail(

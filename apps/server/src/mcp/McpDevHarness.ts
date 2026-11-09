@@ -18,6 +18,9 @@ import type * as McpInvocationContext from "./McpInvocationContext.ts";
 /** The provider instance id the harness acts as; the agent cursor labels it "Dev harness". */
 const DEV_HARNESS_ID = "dev-harness";
 
+/** Preview tools act as a real thread, so the harness names one it started. */
+const DEV_HARNESS_THREAD_HEADER = "x-t3-dev-harness-thread";
+
 const LOOPBACK_ADDRESSES = new Set(["127.0.0.1", "::1"]);
 const FORWARDING_HEADERS = ["forwarded", "x-forwarded-for", "x-real-ip"];
 
@@ -25,25 +28,27 @@ const devHarnessScope = (
   environmentId: EnvironmentId,
   sessionId: string,
   issuedAt: number,
+  threadId: string,
 ): McpInvocationContext.McpThreadInvocationScope => ({
   environmentId,
   requestNamespace: `${DEV_HARNESS_ID}:${sessionId}`,
   thread: {
-    threadId: ThreadId.make(DEV_HARNESS_ID),
+    threadId: ThreadId.make(threadId),
     providerSessionId: sessionId,
     providerInstanceId: ProviderInstanceId.make(DEV_HARNESS_ID),
+    devHarness: true,
   },
   client: undefined,
   // Computer use is reached through the orchestration capability.
-  capabilities: new Set(["orchestration"]),
+  capabilities: new Set(["orchestration", "preview"]),
   issuedAt,
 });
 
 /**
- * Dev servers only: lets `scripts/computer-use-dev.ts` call `/mcp` with an admin environment
- * token, so an agent outside the app drives computer use through the backend holding the macOS
- * grants. Loopback only: a proxy such as `tailscale serve` adds forwarding headers and is refused.
- * Each environment session is its own caller, so its snapshot receipts carry over.
+ * Dev servers only: lets `scripts/computer-use-dev.ts` drive computer use and preview tabs over
+ * `/mcp` with an admin environment token. Loopback only: a proxy such as `tailscale serve` adds
+ * forwarding headers and is refused. Each environment session is its own caller, so its
+ * snapshot receipts carry over.
  */
 export const makeResolve = Effect.gen(function* () {
   // Optional so upstream's transport tests, which build the middleware without them, need no harness wiring.
@@ -76,6 +81,11 @@ export const makeResolve = Effect.gen(function* () {
       .authenticateHttpRequest(request)
       .pipe(Effect.orElseSucceed(() => undefined));
     if (!session?.scopes.includes(AuthAccessWriteScope)) return undefined;
-    return devHarnessScope(environmentId, session.sessionId, yield* Clock.currentTimeMillis);
+    return devHarnessScope(
+      environmentId,
+      session.sessionId,
+      yield* Clock.currentTimeMillis,
+      request.headers[DEV_HARNESS_THREAD_HEADER] || DEV_HARNESS_ID,
+    );
   });
 });

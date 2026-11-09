@@ -267,11 +267,14 @@ node scripts/computer-use-dev.ts bakeoff                    # 11 tasks on a back
 node scripts/computer-use-dev.ts snapshot Calculator
 node scripts/computer-use-dev.ts action '{"steps":[{"ref":12,"action":"click"}]}'
 node scripts/computer-use-dev.ts snapshot TextEdit --image /tmp/textedit.png
+node scripts/computer-use-dev.ts preview --thread <id> preview_open '{"url":"https://example.com"}'
 ```
 
 It reads the server origin from the main checkout's `.t3` (override with `--home`), issues a
 day-long admin session for itself, and keeps the token in the system temp directory.
-`action` defaults to the latest snapshot the harness took. Only development servers accept
+`action` defaults to the latest snapshot the harness took. `preview` calls one `preview_*` or
+`t3_preview_*` tool as the dev database thread `--thread` names, with no run in progress, and
+the dev desktop app draws those tabs like any thread's. Only development servers accept
 the harness, and only over direct loopback requests. Computer access must be enabled in the
 app's settings, with the target app allowed. A `vp run dev:server` started from a T3 Code
 terminal also has the grants, since macOS credits them to the app that started the shell; pass

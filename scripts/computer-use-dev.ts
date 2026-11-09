@@ -126,6 +126,7 @@ const run = Effect.fn("computerUseDev.run")(function* (program: string, args: st
 
 const makeHarness = Effect.fn("computerUseDev.makeHarness")(function* (
   homeFlag: Option.Option<string>,
+  threadId?: string,
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -191,6 +192,7 @@ const makeHarness = Effect.fn("computerUseDev.makeHarness")(function* (
         authorization: `Bearer ${token}`,
         accept: "application/json, text/event-stream",
         ...(sessionId ? { "mcp-session-id": sessionId, "mcp-protocol-version": "2025-06-18" } : {}),
+        ...(threadId ? { "x-t3-dev-harness-thread": threadId } : {}),
       }),
       HttpClientRequest.bodyJson(body),
       Effect.flatMap(httpClient.execute),
@@ -364,6 +366,32 @@ const action = Command.make(
       ...(Option.isSome(image) ? { includeImage: true } : {}),
     });
     yield* report(result, image);
+  }),
+);
+
+const preview = Command.make(
+  "preview",
+  {
+    home,
+    image,
+    thread: Flag.String("thread").pipe(
+      Flag.withDescription(
+        "Thread the tool acts as, such as one from `t3 thread start --provider devReplay`.",
+      ),
+    ),
+    tool: Argument.String("tool").pipe(
+      Argument.withDescription("A preview tool, such as preview_open or t3_preview_list."),
+    ),
+    input: Argument.String("input").pipe(
+      Argument.withDescription("The tool's input as JSON. Defaults to {}."),
+      Argument.optional,
+    ),
+  },
+  Effect.fn(function* ({ home, image, thread, tool, input }) {
+    if (!/^(?:t3_)?preview_\w+$/.test(tool)) return yield* fail(`${tool} is not a preview tool.`);
+    const harness = yield* makeHarness(home, thread);
+    const args = Option.isSome(input) ? yield* decodeJson(input.value) : {};
+    yield* report(yield* harness.call(tool, args), image);
   }),
 );
 
@@ -817,8 +845,10 @@ const bakeoff = Command.make(
 );
 
 const main = Command.make("computer-use-dev").pipe(
-  Command.withDescription("Call the running dev app's computer-use tools as the Dev harness."),
-  Command.withSubcommands([status, open, snapshot, action, smoke, bakeoff]),
+  Command.withDescription(
+    "Call the running dev app's computer-use and preview tools as the Dev harness.",
+  ),
+  Command.withSubcommands([status, open, snapshot, action, preview, smoke, bakeoff]),
 );
 
 if (import.meta.main) {
