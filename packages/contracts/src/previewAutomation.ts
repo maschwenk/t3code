@@ -86,6 +86,22 @@ export const PreviewAutomationObserveInput = Schema.Struct({
 });
 export type PreviewAutomationObserveInput = typeof PreviewAutomationObserveInput.Type;
 
+export const PreviewAutomationPopup = Schema.Struct({
+  url: Schema.String,
+  openerTabId: PreviewTabId,
+  tabId: Schema.optional(PreviewTabId),
+  error: Schema.optional(Schema.String),
+});
+export type PreviewAutomationPopup = typeof PreviewAutomationPopup.Type;
+
+/** Windows the tab's page opened since an earlier result last named one. */
+export const PreviewAutomationPopups = Schema.optional(
+  Schema.Array(PreviewAutomationPopup),
+).annotate({
+  description:
+    "Windows the page opened. Act on one by its tabId; `error` says why one is not a tab.",
+});
+
 const ObservationFields = {
   revision: Schema.String,
   refPrefix: Schema.String,
@@ -94,6 +110,7 @@ const ObservationFields = {
   loading: Schema.Boolean,
   readiness: Schema.Literals(["dom_quiet", "budget_exhausted"]),
   truncated: Schema.Boolean,
+  popups: PreviewAutomationPopups,
 };
 export const PreviewAutomationObservation = Schema.Union([
   Schema.Struct({ ...ObservationFields, mode: Schema.Literal("full"), tree: Schema.String }),
@@ -606,6 +623,7 @@ export const PreviewAutomationSnapshot = Schema.Struct({
   fullScreenshot: Schema.optional(
     Schema.Struct({ data: Schema.String, width: Schema.Int, height: Schema.Int }),
   ),
+  popups: PreviewAutomationPopups,
 });
 export type PreviewAutomationSnapshot = typeof PreviewAutomationSnapshot.Type;
 

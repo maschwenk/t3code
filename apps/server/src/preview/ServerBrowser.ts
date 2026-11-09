@@ -10,6 +10,7 @@ import {
   INCOGNITO_BROWSER_PROFILE_ID,
   resolveBrowserProfiles,
   type BrowserProfile,
+  type DesktopPopupBlockReason,
   type PreviewReportProfilesInput,
   PREVIEW_AUTOMATION_SERVER_OPERATIONS,
   PreviewViewportSetting as PreviewViewportSettingSchema,
@@ -24,6 +25,7 @@ import {
   type PreviewAutomationNavigateInput,
   type PreviewAutomationNetworkEntry,
   type PreviewAutomationOpenInput,
+  type PreviewAutomationPopup,
   type PreviewAutomationPressInput,
   type PreviewAutomationRequest,
   type PreviewAutomationResizeInput,
@@ -99,6 +101,29 @@ const SCREENCAST_MOTION_WINDOW_MS = 300;
 const SCREENCAST_MOTION_QUALITY = 50;
 const HOST_RECONNECT_DELAY = "1 second";
 const DESKTOP_ATTACH_TIMEOUT = "10 seconds";
+const POPUP_REPORT_LIMIT = 8;
+const POPUP_BLOCK_REASONS = {
+  scheme: "T3 opens popups only for web pages and about:blank, so the page got null.",
+  nested: "A popup cannot open another window, so the page got null.",
+} as const;
+/**
+ * Results that name the windows a tab's page opened: actions, and the reads that follow one,
+ * since sign-in SDKs often call `window.open` after an await, once the click has returned.
+ */
+const POPUP_REPORTING_OPERATIONS: ReadonlySet<PreviewAutomationRequest["operation"]> = new Set([
+  "click",
+  "hover",
+  "select",
+  "drag",
+  "upload",
+  "type",
+  "press",
+  "scroll",
+  "observe",
+  "snapshot",
+  "waitFor",
+]);
+const POPUP_URL_CHARS = 500;
 const VIEWER_OUTPUT_LIMIT = 64;
 const RECORDING_SCREENCAST = { format: "jpeg", quality: 90, everyNthFrame: 1 } as const;
 const decodeViewportSetting = Schema.decodeUnknownSync(PreviewViewportSettingSchema);
@@ -312,6 +337,10 @@ interface ServerTab {
   readonly desktop: { readonly close: () => Promise<void> } | null;
   readonly profileId: string | undefined;
   readonly openerTabId: string | undefined;
+  /** A desktop popup's own window draws it, and nothing reconnects it, so it ends with its tab. */
+  readonly desktopPopup: boolean;
+  /** Windows this tab's page opened that no result has named yet. */
+  readonly popupReports: Array<PopupReport>;
 
   readonly downloads: Array<ServerDownload>;
   fileChooser: {
@@ -344,6 +373,12 @@ interface ServerTab {
   recordingStart: Promise<Recording> | null;
   captureLock: Promise<void>;
   capturing: number;
+}
+
+interface PopupReport {
+  readonly url: string;
+  /** Settles once the popup is a tab or has failed to become one. */
+  readonly settled: Promise<PreviewAutomationPopup>;
 }
 
 interface ServerDownload {
@@ -497,7 +532,9 @@ const make = Effect.gen(function* () {
   >();
 
   const closedPendingTabs = new Set<string>();
-  const adoptedPages = new Map<string, { readonly page: Page; readonly openerTabId: string }>();
+  const adoptedPages = new Map<string, Page>();
+  /** Opened for a desktop popup window, which must attach rather than fall back to headless. */
+  const desktopPopupTabs = new Set<string>();
   const closedSessions = new Set<string>();
   let hostConnectionId: string | null = null;
   let viewerResizeOrder = 0;
@@ -744,12 +781,16 @@ const make = Effect.gen(function* () {
 
   const sessionOpen = (tab: ServerTab) => !closedSessions.has(tabKey(tab.threadId, tab.tabId));
 
-  const dropTab = (tab: ServerTab, closeSession: boolean) => {
+  const dropTab = (tab: ServerTab, closeSessionRequested: boolean) => {
     const key = tabKey(tab.threadId, tab.tabId);
     if (tabs.get(key) !== tab) return;
     tabs.delete(key);
     tab.closing = true;
     clearAbortedNavigation(tab);
+    const closeSession = closeSessionRequested || tab.desktopPopup;
+    if (tab.desktopPopup) {
+      runFork(desktopChannel.closePopup({ threadId: tab.threadId, tabId: tab.tabId }));
+    }
     // A desktop page outlives the connection unless its session closed with it.
     const end = tab.desktop && !closeSession && sessionOpen(tab) ? "reconnect" : "gone";
     for (const viewer of tab.viewers) viewer.push({ _tag: end });
@@ -812,13 +853,17 @@ const make = Effect.gen(function* () {
     snapshot: PreviewSessionSnapshot,
     opened: Array<() => Promise<void>>,
   ): Promise<ServerTab> => {
-    const adopted = adoptedPages.get(tabKey(snapshot.threadId, snapshot.tabId));
-    adoptedPages.delete(tabKey(snapshot.threadId, snapshot.tabId));
+    const key = tabKey(snapshot.threadId, snapshot.tabId);
+    const adopted = adoptedPages.get(key);
+    adoptedPages.delete(key);
+    const desktopPopup = desktopPopupTabs.delete(key);
     const desktop =
       adopted === undefined && (await desktopRenders(snapshot))
         ? await connectDesktop(snapshot)
         : null;
     if (desktop) opened.push(desktop.close);
+    // A headless copy would load the page without its opener.
+    if (desktopPopup && !desktop) throw new Error("The popup window closed before it opened.");
     // Otherwise a desktop that attaches late shows its own page, and the agent drives another.
     if (!desktop && desktopChannel.available) {
       await runPromise(
@@ -833,16 +878,16 @@ const make = Effect.gen(function* () {
       ((snapshot.automationOwner !== undefined && snapshot.profileId === undefined) ||
         snapshot.profileId === INCOGNITO_BROWSER_PROFILE_ID);
     const context =
-      adopted?.page.context() ??
+      adopted?.context() ??
       desktop?.page.context() ??
       (await contexts.contextFor(
         snapshot.profileId ?? "default",
         isolatedContext ? tabKey(snapshot.threadId, snapshot.tabId) : undefined,
       ));
     if (isolatedContext) opened.push(() => context.close());
-    if (adopted?.page.isClosed()) throw new Error("The popup closed before it opened.");
+    if (adopted?.isClosed()) throw new Error("The popup closed before it opened.");
     if (!desktop) await prepareContext(context);
-    const page = adopted?.page ?? desktop?.page ?? (await context.newPage());
+    const page = adopted ?? desktop?.page ?? (await context.newPage());
     if (!desktop) opened.push(() => page.close());
     const cdp = await context.newCDPSession(page);
     await installPdfDocumentNavigation(cdp);
@@ -879,7 +924,9 @@ const make = Effect.gen(function* () {
       isolatedContext,
       desktop: desktop === null ? null : { close: desktop.close },
       profileId: snapshot.profileId,
-      openerTabId: adopted?.openerTabId,
+      openerTabId: snapshot.openerTabId,
+      desktopPopup: desktop !== null && snapshot.openerTabId !== undefined,
+      popupReports: [],
       downloads: [],
       fileChooser: null,
       dialog: null,
@@ -1014,7 +1061,6 @@ const make = Effect.gen(function* () {
     // Popups become tabs and keep `window.opener`, so sign-in popups can report back.
     page.on("popup", (popup) => void adoptPopup(tab, popup));
     // Playwright cannot reload a crashed page, so it must leave the tab list.
-    const key = tabKey(tab.threadId, tab.tabId);
     if (closedPendingTabs.delete(key)) {
       await control.close().catch(constVoid);
       throw new ServerBrowserTabNotFoundError({ threadId: tab.threadId, tabId: tab.tabId });
@@ -1338,6 +1384,69 @@ const make = Effect.gen(function* () {
     return copies.flat().find((text) => text.length > 0);
   };
 
+  /** The next result for the opener names the popup: its tab, or why it is not one. */
+  const reportPopup = (opener: ServerTab, url: string, opening: Promise<ServerTab>) => {
+    const reported = { url: ServerBrowserPage.withoutDataPayload(url).slice(0, POPUP_URL_CHARS) };
+    pushBounded(
+      opener.popupReports,
+      {
+        ...reported,
+        settled: opening.then(
+          (tab) => ({ ...reported, openerTabId: opener.tabId, tabId: tab.tabId }),
+          (cause: unknown) => ({
+            ...reported,
+            openerTabId: opener.tabId,
+            error: `The popup could not become a tab: ${ServerBrowserPage.toOperationError(cause).message}`,
+          }),
+        ),
+      },
+      POPUP_REPORT_LIMIT,
+    );
+  };
+
+  const reportBlockedPopup = (opener: ServerTab, url: string, reason: DesktopPopupBlockReason) => {
+    const error = POPUP_BLOCK_REASONS[reason];
+    const shownUrl = ServerBrowserPage.withoutDataPayload(url).slice(0, POPUP_URL_CHARS);
+    pushBounded(opener.consoleEntries, {
+      level: "warning",
+      text: `T3 blocked window.open(${JSON.stringify(shownUrl)}). ${error}`,
+      timestamp: new Date().toISOString(),
+      source: "t3",
+    });
+    const blocked = { url: shownUrl, openerTabId: opener.tabId, error };
+    pushBounded(
+      opener.popupReports,
+      { url: shownUrl, settled: Promise.resolve(blocked) },
+      POPUP_REPORT_LIMIT,
+    );
+  };
+
+  /** The desktop keeps the window, with its opener, and drives it as a new tab once attached. */
+  const adoptDesktopPopup = async (opener: ServerTab, popupId: string, url: string) => {
+    const opening = runPromise(
+      openTab(
+        {
+          threadId: opener.threadId,
+          ...(/^https?:/i.test(url) ? { url } : {}),
+          runtime: "server",
+          ...(opener.profileId === undefined ? {} : { profileId: opener.profileId }),
+          ...(opener.control.agentId === null ? {} : { automationOwner: opener.control.agentId }),
+          // Its own window shows it; switching the panel to a stream of it would only repeat it.
+          reveal: false,
+          openerTabId: opener.tabId,
+          beforePublish: (snapshot) => {
+            const key = { threadId: snapshot.threadId, tabId: snapshot.tabId };
+            desktopPopupTabs.add(tabKey(key.threadId, key.tabId));
+            runFork(desktopChannel.adoptPopup(key, popupId));
+          },
+        },
+        { reclaimIdleSlot: true },
+      ),
+    );
+    reportPopup(opener, url, opening);
+    await opening.catch(constVoid);
+  };
+
   const adoptPopup = async (opener: ServerTab, popup: Page) => {
     if (opener.closing) {
       await popup.close().catch(constVoid);
@@ -1348,7 +1457,7 @@ const make = Effect.gen(function* () {
     const controller = [...opener.viewers].find(
       (viewer) => viewer.id === opener.control.controller,
     );
-    await runPromise(
+    const opening = runPromise(
       openTab(
         {
           threadId: opener.threadId,
@@ -1358,16 +1467,16 @@ const make = Effect.gen(function* () {
           ...(opener.control.agentId === null
             ? {}
             : { automationOwner: opener.control.agentId, reveal: false }),
+          openerTabId: opener.tabId,
           beforePublish: (snapshot) =>
-            adoptedPages.set(tabKey(snapshot.threadId, snapshot.tabId), {
-              page: popup,
-              openerTabId: opener.tabId,
-            }),
+            adoptedPages.set(tabKey(snapshot.threadId, snapshot.tabId), popup),
         },
         // An agent's popup is an open it asked for, so it may reclaim an idle slot too.
         { reclaimIdleSlot: true },
       ),
-    ).then(
+    );
+    reportPopup(opener, url, opening);
+    await opening.then(
       (tab) => {
         if (opener.control.agentId === null) controller?.push({ _tag: "popup", tabId: tab.tabId });
       },
@@ -2184,7 +2293,7 @@ const make = Effect.gen(function* () {
         return executeTabOperation(tab, request);
       });
     }
-    return tab.control.agent(
+    const result = await tab.control.agent(
       agentSessionId,
       async () => {
         if (tab.dialog)
@@ -2206,6 +2315,33 @@ const make = Effect.gen(function* () {
       },
       deadlineMs,
     );
+    return POPUP_REPORTING_OPERATIONS.has(request.operation)
+      ? withPopupReports(tab, result, deadlineMs)
+      : result;
+  };
+
+  /** Outside the opener's queue: a popup's tab sets up on its own connection. */
+  const withPopupReports = async (tab: ServerTab, result: unknown, deadlineMs: number) => {
+    const reports = tab.popupReports.splice(0);
+    if (reports.length === 0) return result;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    // Leaves the broker time to deliver the reply before its own timeout.
+    const late = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, Math.max(0, deadlineMs - performance.now() - 500));
+    });
+    const popups = await Promise.all(
+      reports.map((report) =>
+        Promise.race([
+          report.settled,
+          late.then((): PreviewAutomationPopup => ({
+            url: report.url,
+            openerTabId: tab.tabId,
+            error: "It was still opening; its tab will show in preview_status tabs.",
+          })),
+        ]),
+      ),
+    ).finally(() => clearTimeout(timer));
+    return { ...(typeof result === "object" && result !== null ? result : {}), popups };
   };
 
   const executeTabOperation = async (tab: ServerTab, request: PreviewAutomationRequest) => {
@@ -2789,6 +2925,20 @@ const make = Effect.gen(function* () {
       Effect.sync(() => {
         const tab = tabs.get(tabKey(key.threadId, key.tabId));
         if (tab?.desktop) dropTab(tab, false);
+      }),
+    ),
+    Effect.forkScoped,
+  );
+  // With no tab for its opener, a popup stays a plain window that only the user can use.
+  yield* desktopChannel.popups.pipe(
+    Stream.runForEach((event) =>
+      Effect.promise(async () => {
+        const key = tabKey(event.opener.threadId, event.opener.tabId);
+        const opener =
+          tabs.get(key) ?? (await pendingTabs.get(key)?.promise?.catch(constVoid)) ?? undefined;
+        if (!opener || opener.closing) return;
+        if ("blocked" in event) reportBlockedPopup(opener, event.url, event.blocked);
+        else void adoptDesktopPopup(opener, event.popupId, event.url);
       }),
     ),
     Effect.forkScoped,

@@ -32,6 +32,7 @@ import {
   type Session,
   clipboard,
   nativeImage,
+  screen,
   shell,
   webContents,
 } from "electron";
@@ -409,6 +410,14 @@ interface PickSession {
   readonly cancel: Effect.Effect<void>;
 }
 
+/** The window can be created before or after the server names its tab; it attaches once both exist. */
+interface PopupWindow {
+  window: BrowserWindow | null;
+  webContentsId: number | null;
+  key: DesktopBrowserHost.DesktopBrowserTabKey | null;
+  attached: boolean;
+}
+
 const decodeAnnotationVoiceEvent = Schema.decodeUnknownOption(
   DesktopPreviewAnnotationVoiceEventSchema,
 );
@@ -434,7 +443,7 @@ type PointerEventListener = (event: DesktopPreviewPointerEvent) => Effect.Effect
 
 type OpenLinkListener = (event: DesktopPreviewOpenLinkEvent) => Effect.Effect<void>;
 
-// about:blank inherits relaxed guest preferences; external editor schemes must reach the OS handler.
+// External editor schemes must reach the OS handler.
 const POPUP_PROTOCOLS = new Set(["http:", "https:"]);
 
 // Main-process loadURL bypasses Chromium's renderer-side restrictions on local and inline URLs.
@@ -467,8 +476,9 @@ export const previewWindowOpenAction = (details: {
   readonly disposition: Electron.HandlerDetails["disposition"];
   readonly postBody?: Electron.PostBody;
 }): "popup" | "new-tab" | "navigate" | "deny" => {
+  // Sign-in SDKs open a blank popup inside the click, then set its location; null reads as blocked.
+  if (details.url === "about:blank" && !details.postBody) return "popup";
   const protocol = URL.parse(details.url)?.protocol;
-  // MSAL redirects on a denied blank popup; navigating the tab would destroy that fallback.
   if (protocol === undefined || IN_PLACE_DENIED_PROTOCOLS.has(protocol)) return "deny";
   if (!POPUP_PROTOCOLS.has(protocol)) return "navigate";
   if (details.disposition === "new-window") return "popup";
@@ -476,6 +486,32 @@ export const previewWindowOpenAction = (details: {
     (details.disposition === "foreground-tab" || details.disposition === "background-tab")
     ? "new-tab"
     : "navigate";
+};
+
+/** Electron's size for a `window.open` that names none. */
+const DEFAULT_POPUP_SIZE = { width: 800, height: 600 };
+
+/** Centres a popup over the window that hosts its opener, inside that window's display. */
+export const popupWindowBounds = (input: {
+  readonly host: Electron.Rectangle;
+  readonly workArea: Electron.Rectangle;
+  readonly features: string;
+}): Electron.Rectangle => {
+  const feature = (name: "width" | "height") => {
+    const value = new RegExp(`(?:^|,)\\s*${name}\\s*=\\s*(\\d+)`, "i").exec(input.features)?.[1];
+    return value === undefined ? DEFAULT_POPUP_SIZE[name] : Number(value);
+  };
+  const { host, workArea } = input;
+  const width = Math.min(feature("width"), workArea.width);
+  const height = Math.min(feature("height"), workArea.height);
+  const centre = (start: number, span: number, size: number, min: number, room: number) =>
+    Math.round(Math.min(Math.max(start + (span - size) / 2, min), min + room - size));
+  return {
+    x: centre(host.x, host.width, width, workArea.x, workArea.width),
+    y: centre(host.y, host.height, height, workArea.y, workArea.height),
+    width,
+    height,
+  };
 };
 
 const isPreviewRefreshShortcut = (input: Electron.Input, platform: NodeJS.Platform): boolean =>
@@ -581,6 +617,10 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     { readonly semaphore: Semaphore.Semaphore; users: number }
   >();
   const tabLifecycleGenerations = new Map<string, number>();
+  /** Popup windows of server-driven tabs, by the id the server echoes back to adopt one. */
+  const popupWindows = new Map<string, PopupWindow>();
+  let popupSequence = 0;
+  const runSync = Effect.runSyncWith(context);
 
   const attempt = <A>(errorContext: PreviewOperationContext, evaluate: () => A) =>
     Effect.try({
@@ -1016,8 +1056,90 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         browserHost.detach(tab.serverTab);
       }
     }
+    for (const popup of popupWindows.values()) {
+      if (popup.attached && popup.key && popup.webContentsId === control.webContentsId) {
+        popup.attached = false;
+        browserHost.detach(popup.key);
+      }
+    }
     yield* Scope.close(control.scope, Exit.void).pipe(Effect.ignore);
   });
+
+  const attachPopupWindow = Effect.fn("PreviewManager.attachPopupWindow")(
+    function* (popup: PopupWindow) {
+      const { window, key } = popup;
+      if (!window || !key || popup.attached || window.isDestroyed()) return;
+      const control = yield* ensureControlSession(window.webContents);
+      if (window.isDestroyed()) return;
+      popup.attached = true;
+      browserHost.attach(key, { webContents: window.webContents, debugger: control.debugger });
+    },
+    (effect, popup) =>
+      effect.pipe(
+        Effect.catch((error) =>
+          Effect.logWarning("Could not drive a preview popup window.", { error }).pipe(
+            Effect.andThen(Effect.sync(() => popup.key && browserHost.popupGone(popup.key))),
+          ),
+        ),
+      ),
+  );
+
+  const adoptPopupWindow = Effect.fn("PreviewManager.adoptPopupWindow")(function* (
+    key: DesktopBrowserHost.DesktopBrowserTabKey,
+    popupId: string,
+  ) {
+    const popup = popupWindows.get(popupId);
+    if (!popup) {
+      browserHost.popupGone(key);
+      return;
+    }
+    popup.key = key;
+    yield* attachPopupWindow(popup);
+  });
+
+  const closePopupWindow = (key: DesktopBrowserHost.DesktopBrowserTabKey) => {
+    for (const popup of popupWindows.values()) {
+      if (popup.key?.threadId !== key.threadId || popup.key.tabId !== key.tabId) continue;
+      if (popup.window && !popup.window.isDestroyed()) popup.window.close();
+    }
+  };
+
+  const popupHostWindow = (guest: Electron.WebContents) => {
+    const host = guest.hostWebContents;
+    const window =
+      (host && !host.isDestroyed() ? BrowserWindow.fromWebContents(host) : null) ??
+      currentMainWindow;
+    return window && !window.isDestroyed() ? window : undefined;
+  };
+
+  /** Runs as Electron creates the window, so it is placed and hardened before it first shows. */
+  const createPopupWindow = (
+    options: Electron.BrowserWindowConstructorOptions,
+    popupId: string | undefined,
+  ) => {
+    const window = new BrowserWindow(options);
+    const contents = window.webContents;
+    const popup = popupId === undefined ? undefined : popupWindows.get(popupId);
+    contents.setIgnoreMenuShortcuts(true);
+    // Without a handler, Electron allows every window a popup opens; denying bounds the chain.
+    contents.setWindowOpenHandler((details) => {
+      if (popup?.attached && popup.key) browserHost.popupBlocked(popup.key, details.url, "nested");
+      return { action: "deny" };
+    });
+    if (popup && popupId !== undefined) {
+      popup.window = window;
+      popup.webContentsId = contents.id;
+      window.once("closed", () => {
+        popupWindows.delete(popupId);
+        if (popup.key && popup.attached) browserHost.detach(popup.key);
+        else if (popup.key) browserHost.popupGone(popup.key);
+        popup.attached = false;
+        if (popup.webContentsId !== null) runFork(detachControlSession(popup.webContentsId));
+      });
+      if (popup.key) runFork(attachPopupWindow(popup));
+    }
+    return { window, contents };
+  };
 
   const ensureControlSession = Effect.fn("PreviewManager.ensureControlSession")(function* (
     wc: Electron.WebContents,
@@ -1450,13 +1572,43 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         !isPreviewEditingShortcut(input, hostPlatform) || !holdsKeyboardFocus(contents),
       );
     };
-    // Popups inherit Electron's unrestricted window handler; block nested popups to bound the chain.
-    const windowCreated = (window: Electron.BrowserWindow): void => {
-      window.webContents.setIgnoreMenuShortcuts(true);
-      window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
-      window.webContents.on("before-input-event", (_event, input) => {
-        syncMenuShortcuts(window.webContents, input);
-      });
+    const serverTabOf = () => runSync(SynchronizedRef.get(tabsRef)).get(tabId)?.serverTab;
+    // The page's own position is for its screen; centred over T3, the user sees what the agent drives.
+    const openPopup = (details: Electron.HandlerDetails): Electron.WindowOpenHandlerResponse => {
+      const opener = serverTabOf();
+      const popupId = opener === undefined ? undefined : `popup-${++popupSequence}`;
+      if (opener !== undefined && popupId !== undefined) {
+        popupWindows.set(popupId, {
+          window: null,
+          webContentsId: null,
+          key: null,
+          attached: false,
+        });
+        browserHost.popupOpened(opener, popupId, details.url);
+      }
+      const host = popupHostWindow(wc);
+      const hostBounds = host?.getBounds();
+      return {
+        action: "allow",
+        overrideBrowserWindowOptions: {
+          ...POPUP_WINDOW_OPTIONS,
+          ...(host && hostBounds
+            ? {
+                parent: host,
+                ...popupWindowBounds({
+                  host: hostBounds,
+                  workArea: screen.getDisplayMatching(hostBounds).workArea,
+                  features: details.features,
+                }),
+              }
+            : {}),
+        },
+        createWindow: (options) => {
+          const { contents } = createPopupWindow(options, popupId);
+          contents.on("before-input-event", (_event, input) => syncMenuShortcuts(contents, input));
+          return contents;
+        },
+      };
     };
     const beforeInput = (event: Electron.Event, input: Electron.Input): void => {
       syncMenuShortcuts(wc, input);
@@ -1526,7 +1678,6 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         wc.off("dom-ready", restoreRecordingCursor);
         wc.off("did-fail-load", failed as never);
         wc.off("audio-state-changed", audioStateChanged);
-        wc.off("did-create-window", windowCreated);
         wc.off("before-input-event", beforeInput);
         wc.ipc.off(HUMAN_INPUT_CHANNEL, humanInput);
         wc.ipc.off(RECORDING_INPUT_CHANNEL, recordingInput);
@@ -1553,10 +1704,12 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         detachPasskeys = passkeys.attachGuest(wc);
         wc.setWindowOpenHandler((details) => {
           const action = previewWindowOpenAction(details);
-          if (action === "popup") {
-            return { action: "allow", overrideBrowserWindowOptions: POPUP_WINDOW_OPTIONS };
+          if (action === "popup") return openPopup(details);
+          if (action === "deny") {
+            const opener = serverTabOf();
+            if (opener) browserHost.popupBlocked(opener, details.url, "scheme");
+            return { action: "deny" };
           }
-          if (action === "deny") return { action: "deny" };
           if (action === "new-tab") {
             runFork(
               emitOpenLink({
@@ -1574,7 +1727,6 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           );
           return { action: "deny" };
         });
-        wc.on("did-create-window", windowCreated);
         wc.on("before-input-event", beforeInput);
       });
       yield* Ref.update(attachedRef, (attached) =>
@@ -3312,6 +3464,14 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       [
         browserHost.pointers.pipe(Stream.runForEach(emitAgentPointer), listen),
         browserHost.painting.pipe(Stream.runForEach(updateServerTabCapturing), listen),
+        browserHost.popupCommands.pipe(
+          Stream.runForEach((command) =>
+            command.type === "adopt"
+              ? adoptPopupWindow(command.key, command.popupId)
+              : Effect.sync(() => closePopupWindow(command.key)),
+          ),
+          listen,
+        ),
       ],
       { discard: true },
     );

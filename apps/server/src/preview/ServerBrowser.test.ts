@@ -219,6 +219,7 @@ function makeContext(onClose?: (context: BrowserContext) => void, initialUrl = "
       interactiveElements: [],
     })),
     ariaSnapshot: vi.fn(async () => '- button "delete" [ref=e1]'),
+    keyboard: { press: vi.fn(async (_key: string) => {}) },
     locator: vi.fn(() => {
       throw new Error("Unexpected locator action");
     }),
@@ -324,6 +325,8 @@ const desktopRenders = (tabId: string) => {
 const shownDesktopTabs = new Set<string>();
 const releasedDesktopTabs: Array<string> = [];
 const desktopTurns = new NodeEvents.EventEmitter();
+/** `popup` events from the desktop; `adopt` and `close` commands back to it. */
+const desktopPopups = new NodeEvents.EventEmitter();
 const desktopConnections: Array<{ endpoint: string; context: ReturnType<typeof makeContext> }> = [];
 const testThread = {
   threadId: ThreadId.make("browser-test-thread"),
@@ -391,6 +394,24 @@ const dependencies = Layer.mergeAll(
       ),
     pointer: () => Effect.void,
     turn: (threadId, active) => Effect.sync(() => desktopTurns.emit("turn", threadId, active)),
+    popups: Stream.callback<DesktopChannel.DesktopPopupEvent>((queue) =>
+      Effect.acquireRelease(
+        Effect.sync(() => {
+          const onPopup = (event: DesktopChannel.DesktopPopupEvent) =>
+            Queue.offerUnsafe(queue, event);
+          desktopPopups.on("popup", onPopup);
+          return onPopup;
+        }),
+        (onPopup) => Effect.sync(() => desktopPopups.off("popup", onPopup)),
+      ),
+    ),
+    // The desktop attaches the adopted window, so the popup's tab renders on the desktop.
+    adoptPopup: (key, popupId) =>
+      Effect.sync(() => {
+        desktopTabs.add(key.tabId);
+        desktopPopups.emit("adopt", { tabId: key.tabId, popupId });
+      }),
+    closePopup: (key) => Effect.sync(() => desktopPopups.emit("close", key.tabId)),
   }),
   PreviewAgentActivity.layer,
 ).pipe(
@@ -696,6 +717,116 @@ it.effect("a tab the desktop does not draw is marked headless, so the desktop st
 
       expect(headlessOf(tabId)).toBe(true);
       expect(headlessOf(desktopTab.tabId)).toBeUndefined();
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.live("a desktop tab's popup window becomes a tab, named by the action that opened it", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { broker } = yield* ready;
+      const manager = yield* Manager.PreviewManager;
+      desktopRendersNext = true;
+      const opened = yield* broker.invoke<PreviewAutomationStatus>({
+        scope,
+        operation: "open",
+        input: { reuseExistingTab: false, show: false },
+      });
+      const openerTabId = PreviewTabId.make(opened.tabId!);
+      const opener = { threadId: scope.thread.threadId, tabId: openerTabId };
+      const adoptions: Array<{ tabId: string; popupId: string }> = [];
+      const adopted = (popupId: string) =>
+        new Promise<string>((resolve) => {
+          const onAdopt = (adoption: { tabId: string; popupId: string }) => {
+            adoptions.push(adoption);
+            if (adoption.popupId !== popupId) return;
+            desktopPopups.off("adopt", onAdopt);
+            resolve(adoption.tabId);
+          };
+          desktopPopups.on("adopt", onAdopt);
+        });
+      const signIn = adopted("popup-1");
+      desktopConnections[0]!.context.page.keyboard.press.mockImplementationOnce(async () => {
+        desktopPopups.emit("popup", { opener, url: "data:text/html,<p>hi</p>", blocked: "scheme" });
+        desktopPopups.emit("popup", { opener, url: "https://idp.example/sso", popupId: "popup-1" });
+        // The desktop announces a window before the input that opened it settles.
+        await signIn;
+      });
+
+      const pressed = yield* broker.invoke<{ popups?: ReadonlyArray<unknown> }>({
+        scope,
+        tabId: openerTabId,
+        operation: "press",
+        input: { key: "Enter" },
+      });
+      const popupTabId = yield* Effect.promise(() => signIn);
+
+      expect(pressed.popups).toEqual([
+        { url: "data:text/html,…", openerTabId, error: expect.stringContaining("got null") },
+        { url: "https://idp.example/sso", openerTabId, tabId: popupTabId },
+      ]);
+      expect(adoptions).toEqual([{ tabId: popupTabId, popupId: "popup-1" }]);
+      const listed = (yield* manager.list({ threadId: scope.thread.threadId })).sessions;
+      const openerSession = listed.find((session) => session.tabId === openerTabId);
+      expect(listed.find((session) => session.tabId === popupTabId)).toMatchObject({
+        openerTabId,
+        reveal: false,
+        automationOwner: openerSession?.automationOwner,
+      });
+      expect(listed.find((session) => session.tabId === popupTabId)).not.toHaveProperty("headless");
+      const status = yield* broker.invoke<PreviewAutomationStatus>({
+        scope,
+        tabId: openerTabId,
+        operation: "status",
+        input: {},
+      });
+      expect(status.tabs).toContainEqual(
+        expect.objectContaining({ tabId: popupTabId, openerTabId }),
+      );
+      // The popup's tab runs through its own window's debugger.
+      yield* broker.invoke({ scope, tabId: popupTabId, operation: "snapshot", input: {} });
+      expect(desktopConnections.map(({ endpoint }) => endpoint)).toContain(
+        `ws://desktop/${popupTabId}`,
+      );
+      const snapshot = yield* broker.invoke<PreviewAutomationSnapshot>({
+        scope,
+        tabId: openerTabId,
+        operation: "snapshot",
+        input: {},
+      });
+      expect(snapshot.consoleEntries).toContainEqual(
+        expect.objectContaining({ level: "warning", source: "t3" }),
+      );
+
+      // The page calls window.close() after signing in: its tab ends and the opener stays.
+      const events = yield* manager.subscribeEvents;
+      desktopDetaches.emit("detach", { threadId: scope.thread.threadId, tabId: popupTabId });
+      let event = yield* PubSub.take(events);
+      while (event.type !== "closed" || event.tabId !== popupTabId) {
+        event = yield* PubSub.take(events);
+      }
+      const remaining = yield* broker.invoke<PreviewAutomationStatus>({
+        scope,
+        tabId: openerTabId,
+        operation: "status",
+        input: {},
+      });
+      expect(remaining.tabs?.map((tab) => tab.tabId)).toContain(openerTabId);
+      expect(remaining.tabs?.map((tab) => tab.tabId)).not.toContain(popupTabId);
+
+      // Closing a popup's tab closes its window.
+      const second = adopted("popup-2");
+      desktopPopups.emit("popup", { opener, url: "https://idp.example/sso", popupId: "popup-2" });
+      const secondTabId = yield* Effect.promise(() => second);
+      const closed = Promise.withResolvers<string>();
+      desktopPopups.once("close", closed.resolve);
+      yield* broker.invoke({
+        scope,
+        tabId: PreviewTabId.make(secondTabId),
+        operation: "close",
+        input: {},
+      });
+      expect(yield* Effect.promise(() => closed.promise)).toBe(secondTabId);
     }),
   ).pipe(Effect.provide(layer)),
 );
