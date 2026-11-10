@@ -329,8 +329,12 @@ vp run fork:migrate
 Then iterate in linked worktrees, whose dev servers keep their own `.t3`, and rerun
 `fork:install` from `main` to pick up merged work.
 
-`--build-only` followed by `--skip-build` splits building from installing, so an agent running
-inside the fork can build while the app is open and install from a detached script. T3 Connect's
+Quitting the app ends every agent turn and terminal inside it, so when the app is running the
+install step moves to a detached process and the command returns. That process waits until no
+agent turn is working, then quits, replaces, and relaunches the app; turns waiting on an answer or
+approval don't hold it up. Its log is `release/fork/install.log`. `--now` skips the wait, and a
+later run replaces an install still waiting. `--build-only` followed by `--skip-build` splits
+building from installing. T3 Connect's
 public identifiers are compiled in, from `.env.example` when the shell and `.env` don't set them;
 the install refuses a bundle without them unless `--allow-no-connect` is passed, and after
 relaunching it waits for Connect to report reachable. Ad-hoc signed builds re-prompt for Keychain
