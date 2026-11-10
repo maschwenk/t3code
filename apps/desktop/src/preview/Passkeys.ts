@@ -8,7 +8,12 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
-import { PASSKEY_CREATE_CHANNEL, PASSKEY_GET_CHANNEL } from "./GuestProtocol.ts";
+import {
+  PASSKEY_BRIDGE_ARGUMENT,
+  PASSKEY_CREATE_CHANNEL,
+  PASSKEY_GET_CHANNEL,
+  PASSKEY_REFUSE_ARGUMENT,
+} from "./GuestProtocol.ts";
 import type { PasskeyBackend, PasskeyCeremonyContext } from "./PasskeyBackend.ts";
 import { macPasskeyBackend } from "./PasskeyBackendMac.ts";
 import type { PasskeyCeremonyResult } from "./PasskeyBridge.ts";
@@ -40,7 +45,8 @@ export class PreviewPasskeysConfigureError extends Schema.TaggedError<PreviewPas
 export class PreviewPasskeys extends Context.Service<
   PreviewPasskeys,
   {
-    readonly bridgeEnabled: boolean;
+    /** The preload argument that sets up passkeys in browser tabs; none leaves them to Chromium. */
+    readonly guestArgument: string | undefined;
     /** Runs after app ready. */
     readonly configure: Effect.Effect<void>;
     readonly installSessionHandlers: (session: Session) => void;
@@ -129,11 +135,17 @@ const make = Effect.gen(function* () {
       : undefined;
   const keychainAccessGroup = metadata?.touchIdKeychainAccessGroup;
   const backend = metadata?.browserPasskeys === true ? backendFor(environment.platform) : undefined;
-  const bridgeEnabled = backend !== undefined;
+  // With neither the system sheet nor Touch ID, Chromium holds a ceremony forever with no UI.
+  const guestArgument =
+    backend !== undefined
+      ? PASSKEY_BRIDGE_ARGUMENT
+      : environment.platform === "darwin" && keychainAccessGroup === undefined
+        ? PASSKEY_REFUSE_ARGUMENT
+        : undefined;
   const sessionsWithHandlers = new WeakSet<Session>();
 
   return PreviewPasskeys.of({
-    bridgeEnabled,
+    guestArgument,
     configure: Effect.gen(function* () {
       if (keychainAccessGroup === undefined) return;
       yield* Effect.try({

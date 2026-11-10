@@ -197,7 +197,52 @@ const credentialFromGetResult = (data: Extract<GetCredentialResult, { success: t
 const abortReason = (signal: AbortSignal) =>
   signal.reason ?? new DOMException("The operation was aborted.", "AbortError");
 
+const define = (target: object, key: string, value: unknown) =>
+  Object.defineProperty(target, key, { value, configurable: true, writable: true });
+
+type ModalCeremony = (
+  channel: PasskeyChannel,
+  publicKey: unknown,
+  signal: AbortSignal | undefined,
+) => Promise<PublicKeyCredential>;
+
 /** Keep conditional requests native so autofill and upgrades cannot open a modal sheet unprompted. */
+const overrideModalCeremonies = (ceremony: ModalCeremony) => {
+  const container = CredentialsContainer.prototype;
+  const nativeCreate = container.create;
+  const nativeGet = container.get;
+  define(
+    container,
+    "create",
+    function create(this: CredentialsContainer, options?: CreationOptions) {
+      return options?.publicKey && options.mediation !== "conditional"
+        ? ceremony(PASSKEY_CREATE_CHANNEL, options.publicKey, options.signal)
+        : Reflect.apply(nativeCreate, this, [options]);
+    },
+  );
+  define(
+    container,
+    "get",
+    function get(this: CredentialsContainer, options?: CredentialRequestOptions) {
+      return options?.publicKey && options.mediation !== "conditional"
+        ? ceremony(PASSKEY_GET_CHANNEL, options.publicKey, options.signal)
+        : Reflect.apply(nativeGet, this, [options]);
+    },
+  );
+};
+
+/**
+ * For builds with no passkey backend, where Chromium would hold a modal ceremony forever with no
+ * UI. Password manager extensions hand requests back to the browser when their own prompt closes,
+ * so refuse at once, as a dismissed browser sheet would, and let the page offer a retry.
+ */
+export function refuseModalPasskeys() {
+  if (typeof CredentialsContainer === "undefined") return;
+  overrideModalCeremonies(async (_channel, _publicKey, signal) => {
+    throw signal?.aborted ? abortReason(signal) : ceremonyError("NotAllowedError");
+  });
+}
+
 export function installPasskeyBridge(invoke: InvokePasskeyCeremony) {
   if (typeof CredentialsContainer === "undefined" || typeof PublicKeyCredential === "undefined") {
     return;
@@ -230,30 +275,7 @@ export function installPasskeyBridge(invoke: InvokePasskeyCeremony) {
     });
   };
 
-  const container = CredentialsContainer.prototype;
-  const nativeCreate = container.create;
-  const nativeGet = container.get;
-  const define = (target: object, key: string, value: unknown) =>
-    Object.defineProperty(target, key, { value, configurable: true, writable: true });
-
-  define(
-    container,
-    "create",
-    function create(this: CredentialsContainer, options?: CreationOptions) {
-      return options?.publicKey && options.mediation !== "conditional"
-        ? run(PASSKEY_CREATE_CHANNEL, options.publicKey, options.signal)
-        : Reflect.apply(nativeCreate, this, [options]);
-    },
-  );
-  define(
-    container,
-    "get",
-    function get(this: CredentialsContainer, options?: CredentialRequestOptions) {
-      return options?.publicKey && options.mediation !== "conditional"
-        ? run(PASSKEY_GET_CHANNEL, options.publicKey, options.signal)
-        : Reflect.apply(nativeGet, this, [options]);
-    },
-  );
+  overrideModalCeremonies(run);
 
   define(PublicKeyCredential, "isUserVerifyingPlatformAuthenticatorAvailable", async () => true);
   define(PublicKeyCredential, "isConditionalMediationAvailable", async () => false);

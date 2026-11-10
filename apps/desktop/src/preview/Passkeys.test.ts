@@ -21,7 +21,12 @@ vi.mock("electron", () => ({
 vi.mock("electron-webauthn", () => webauthn);
 
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
-import { PASSKEY_CREATE_CHANNEL, PASSKEY_GET_CHANNEL } from "./GuestProtocol.ts";
+import {
+  PASSKEY_BRIDGE_ARGUMENT,
+  PASSKEY_CREATE_CHANNEL,
+  PASSKEY_GET_CHANNEL,
+  PASSKEY_REFUSE_ARGUMENT,
+} from "./GuestProtocol.ts";
 import * as PreviewPasskeys from "./Passkeys.ts";
 
 const layerFor = (packageJson: object, isPackaged = true) =>
@@ -285,11 +290,18 @@ describe("PreviewPasskeys", () => {
       assert.deepStrictEqual(electron.configureWebAuthn.mock.calls, [
         [{ touchID: { keychainAccessGroup: "ABC1234567.com.t3tools.t3code.webauthn" } }],
       ]);
-      assert.isFalse(entitled.bridgeEnabled);
+      // Chromium's own Touch ID authenticator serves these pages.
+      assert.isUndefined(entitled.guestArgument);
       const { guest, handlers } = makeGuest();
       entitled.attachGuest(guest);
       assert.strictEqual(handlers.size, 0);
 
+      const sheet = yield* PreviewPasskeys.PreviewPasskeys.pipe(Effect.provide(bridgeLayer));
+      assert.strictEqual(sheet.guestArgument, PASSKEY_BRIDGE_ARGUMENT);
+
+      // Nothing could answer a ceremony here, so pages are refused instead of left waiting.
+      const unsigned = yield* PreviewPasskeys.PreviewPasskeys.pipe(Effect.provide(layerFor({})));
+      assert.strictEqual(unsigned.guestArgument, PASSKEY_REFUSE_ARGUMENT);
       const unpackaged = yield* PreviewPasskeys.PreviewPasskeys.pipe(
         Effect.provide(
           layerFor(
@@ -300,7 +312,7 @@ describe("PreviewPasskeys", () => {
       );
       yield* unpackaged.configure;
       assert.strictEqual(electron.configureWebAuthn.mock.calls.length, 1);
-      assert.isFalse(unpackaged.bridgeEnabled);
+      assert.strictEqual(unpackaged.guestArgument, PASSKEY_REFUSE_ARGUMENT);
     }),
   );
 
