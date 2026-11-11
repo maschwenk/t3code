@@ -15,6 +15,13 @@ import { HttpClient, HttpClientError, HttpClientRequest, HttpClientResponse } fr
 
 import { codexPlanLabel } from "../provider/CodexProvider.ts";
 import { codexRateLimitsToLimits } from "../provider/codexUsageLimits.ts";
+import {
+  CLAUDE_RESET_CLAIM_OUTCOMES,
+  CLAUDE_RESET_PROGRAM,
+  ClaudeResetClaimResponse,
+  claudeCliUserAgent,
+  claudeResetCreditsToContract,
+} from "../provider/claudeResetCredits.ts";
 import { claudeUsageResponseToLimits } from "../provider/claudeUsageLimits.ts";
 import { makeUnavailableUsageLimits } from "@t3tools/provider-core/server/usageLimits";
 
@@ -22,6 +29,8 @@ import { makeUnavailableUsageLimits } from "@t3tools/provider-core/server/usageL
 export interface CliproxyHub {
   readonly url: UsageLimitSourceConfig["url"];
   readonly managementKey: string;
+  /** Installed Claude Code version; without it Claude accounts report no reset credits. */
+  readonly claudeCliVersion?: string | undefined;
 }
 
 const AuthFile = Schema.Struct({
@@ -62,6 +71,7 @@ const ClaudeUsage = Schema.Struct({
   five_hour: Schema.optional(Schema.NullOr(ClaudeWindow)),
   seven_day: Schema.optional(Schema.NullOr(ClaudeWindow)),
   spend: Schema.optional(Schema.Unknown),
+  cedar_ember: Schema.optional(Schema.Unknown),
   extra_usage: Schema.optional(
     Schema.NullOr(
       Schema.Struct({
@@ -89,6 +99,9 @@ const ClaudeUsage = Schema.Struct({
     ),
   ),
 });
+const ClaudeProfile = Schema.Struct({
+  organization: Schema.Struct({ uuid: Schema.String }),
+});
 const CreditList = Schema.Struct({
   credits: Schema.Array(
     Schema.Struct({
@@ -105,6 +118,10 @@ const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const decodeApiResponse = Schema.decodeUnknownEffect(ApiResponse);
 const decodeCreditList = Schema.decodeUnknownEffect(Schema.fromJsonString(CreditList));
 const decodeClaudeUsage = Schema.decodeUnknownEffect(Schema.fromJsonString(ClaudeUsage));
+const decodeClaudeProfile = Schema.decodeUnknownEffect(Schema.fromJsonString(ClaudeProfile));
+const decodeClaudeResetClaim = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(ClaudeResetClaimResponse),
+);
 const decodeCodexUsage = Schema.decodeUnknownEffect(Schema.fromJsonString(CodexUsage));
 const isUsageLimitSourceError = Schema.is(UsageLimitSourceError);
 
@@ -152,6 +169,7 @@ const decodeConsumeResponse = Schema.decodeUnknownEffect(
 
 const CODEX_BASE = "https://chatgpt.com/backend-api/wham";
 const CREDIT_URL = `${CODEX_BASE}/rate-limit-reset-credits`;
+const ANTHROPIC_BASE = "https://api.anthropic.com";
 
 const CREDIT_REDEEM_NAMESPACE = new Uint8Array([
   0x6f, 0x1c, 0x2a, 0x9e, 0x2d, 0x4b, 0x4c, 0x1e, 0x9a, 0x7f, 0x3b, 0x8d, 0x5e, 0x0c, 0x1a, 0x42,
@@ -232,9 +250,12 @@ export const makeCliproxyApi = Effect.gen(function* () {
           }
         : {
             Authorization: "Bearer $TOKEN$",
+            "Content-Type": "application/json",
             "anthropic-beta": "oauth-2025-04-20",
             // The OAuth usage endpoint can return 429 without a Claude Code user agent.
-            "User-Agent": "claude-code/2.1.273",
+            "User-Agent": hub.claudeCliVersion
+              ? claudeCliUserAgent(hub.claudeCliVersion)
+              : "claude-code/2.1.273",
           };
     const raw = yield* management(hub, "api-call", {
       auth_index: account.auth_index,
@@ -284,8 +305,16 @@ export const makeCliproxyApi = Effect.gen(function* () {
     };
     const read = Effect.gen(function* () {
       if (account.provider === "claude") {
-        const body = yield* apiCall(hub, account, "https://api.anthropic.com/api/oauth/usage");
+        const body = yield* apiCall(
+          hub,
+          account,
+          `${ANTHROPIC_BASE}/api/oauth/usage?cedar_ember=1`,
+        );
         const usage = yield* decodeClaudeUsage(body);
+        const resetCredits = claudeResetCreditsToContract(
+          usage.cedar_ember,
+          DateTime.toEpochMillis(yield* DateTime.now),
+        );
         const model_scoped = (usage.limits ?? []).flatMap((limit) =>
           limit.kind === "weekly_scoped" && limit.scope?.model && typeof limit.percent === "number"
             ? [
@@ -307,13 +336,16 @@ export const makeCliproxyApi = Effect.gen(function* () {
         return {
           ...base,
           plan: "Claude Subscription",
-          usageLimits: claudeUsageResponseToLimits({
-            checkedAt,
-            response: {
-              rate_limits_available: true,
-              rate_limits: rateLimits,
-            },
-          }).limits,
+          usageLimits: {
+            ...claudeUsageResponseToLimits({
+              checkedAt,
+              response: {
+                rate_limits_available: true,
+                rate_limits: rateLimits,
+              },
+            }).limits,
+            ...(resetCredits ? { resetCredits } : {}),
+          },
         };
       }
       const body = yield* apiCall(hub, account, `${CODEX_BASE}/usage`);
@@ -392,6 +424,65 @@ export const makeCliproxyApi = Effect.gen(function* () {
     );
   });
 
+  const redeemCodex = Effect.fn("CliproxyApi.redeemCodex")(function* (
+    hub: CliproxyHub,
+    account: typeof AuthFile.Type,
+    creditId: string,
+  ) {
+    const body = yield* apiCall(hub, account, `${CREDIT_URL}/consume`, {
+      redeem_request_id: yield* creditRedeemRequestId(
+        account.id_token?.chatgpt_account_id ?? account.id,
+        creditId,
+      ).pipe(Effect.provideService(Digest.Digest, digest)),
+      credit_id: creditId,
+    });
+    const response = yield* decodeConsumeResponse(body);
+    return (
+      {
+        reset: "reset",
+        nothing_to_reset: "nothingToReset",
+        no_credit: "noCredit",
+        already_redeemed: "alreadyRedeemed",
+      } as const
+    )[response.code];
+  });
+
+  const redeemClaude = Effect.fn("CliproxyApi.redeemClaude")(function* (
+    hub: CliproxyHub,
+    account: typeof AuthFile.Type,
+    grantId: string,
+  ) {
+    const profile = yield* decodeClaudeProfile(
+      yield* apiCall(hub, account, `${ANTHROPIC_BASE}/api/oauth/profile`),
+    );
+    const organization = encodeURIComponent(profile.organization.uuid);
+    const body = yield* apiCall(
+      hub,
+      account,
+      `${ANTHROPIC_BASE}/api/organizations/${organization}/reset_rate_limits`,
+      {
+        program: CLAUDE_RESET_PROGRAM,
+        grant_id: grantId,
+        request_id: yield* creditRedeemRequestId(account.email ?? account.id, grantId).pipe(
+          Effect.provideService(Digest.Digest, digest),
+        ),
+      },
+    );
+    const { result } = yield* decodeClaudeResetClaim(body);
+    if (result === "cooldown") {
+      return yield* new UsageLimitSourceError({
+        detail: "Claude resets are cooling down. Try again later.",
+      });
+    }
+    if (result === "unavailable") {
+      return yield* new UsageLimitSourceError({
+        detail:
+          "Claude could not confirm the reset. If you are still limited in a moment, try again.",
+      });
+    }
+    return CLAUDE_RESET_CLAIM_OUTCOMES[result];
+  });
+
   const consume = Effect.fn("CliproxyApi.consume")(function* (
     hub: CliproxyHub,
     accountId: string,
@@ -399,27 +490,19 @@ export const makeCliproxyApi = Effect.gen(function* () {
   ): Effect.fn.Return<ProviderConsumeResetCreditResult, UsageLimitSourceError> {
     const operation = Effect.gen(function* () {
       const account = (yield* authFiles(hub)).find((account) => account.id === accountId);
-      if (!account || account.disabled || account.provider !== "codex") {
+      if (
+        !account ||
+        account.disabled ||
+        (account.provider !== "codex" && account.provider !== "claude")
+      ) {
         return yield* new UsageLimitSourceError({
-          detail: "The Codex hub account is missing or disabled.",
+          detail: "The hub account is missing or disabled.",
         });
       }
-      const body = yield* apiCall(hub, account, `${CREDIT_URL}/consume`, {
-        redeem_request_id: yield* creditRedeemRequestId(
-          account.id_token?.chatgpt_account_id ?? account.id,
-          creditId,
-        ).pipe(Effect.provideService(Digest.Digest, digest)),
-        credit_id: creditId,
-      });
-      const response = yield* decodeConsumeResponse(body);
-      const outcome = (
-        {
-          reset: "reset",
-          nothing_to_reset: "nothingToReset",
-          no_credit: "noCredit",
-          already_redeemed: "alreadyRedeemed",
-        } as const
-      )[response.code];
+      const outcome =
+        account.provider === "claude"
+          ? yield* redeemClaude(hub, account, creditId)
+          : yield* redeemCodex(hub, account, creditId);
       if (outcome !== "reset" && outcome !== "alreadyRedeemed") return { outcome };
       const cleared = yield* management(hub, "reset-quota", {
         auth_index: account.auth_index,
