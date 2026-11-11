@@ -84,7 +84,10 @@ function resolveSigningIdentity(): string | undefined {
   if (identityArg === "none") return undefined;
   if (identityArg) return identityArg;
   const identities = capture("security", ["find-identity", "-v", "-p", "codesigning"]);
-  const match = /"(Apple Development: [^"]+)"/.exec(identities);
+  // Password managers such as 1Password only connect to browsers with a Developer ID signature.
+  const match =
+    /"(Developer ID Application: [^"]+)"/.exec(identities) ??
+    /"(Apple Development: [^"]+)"/.exec(identities);
   return match?.[1];
 }
 
