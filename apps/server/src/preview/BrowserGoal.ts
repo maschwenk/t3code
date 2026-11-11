@@ -10,21 +10,7 @@ import * as Path from "effect/Path";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
-
-export const GoalInput = Schema.Struct({
-  goal: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(1000)),
-  maxSteps: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 30 }))),
-  // Lower it for low-stakes picks where several options are fine, such as a game move.
-  minConfidence: Schema.optional(
-    Schema.Number.check(Schema.isBetween({ minimum: 0.1, maximum: 0.95 })),
-  ),
-  deny: Schema.optional(
-    Schema.Array(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(100))).check(
-      Schema.isMaxLength(50),
-    ),
-  ),
-});
-export type GoalInput = typeof GoalInput.Type;
+import type { GoalInput } from "./goalInput.ts";
 
 export class GoalDecisionError extends Schema.TaggedError<GoalDecisionError>()(
   "GoalDecisionError",
@@ -180,7 +166,7 @@ const ELEMENT = new RegExp(
 );
 const STATES = /\[(checked|checked=mixed|expanded|pressed|selected)\]/g;
 // Jev answers at most 255 choices: these controls, two scrolls, DONE, BLOCKED and WAIT.
-const MAX_OPTIONS = 250;
+export const MAX_OPTIONS = 250;
 /** Goal runs read past the 16 KB agent default: what Jev cannot see, it cannot click. */
 export const OBSERVE_BYTES = 64_000;
 // When a page has more controls than MAX_OPTIONS, an open dialog's come first, and the rest is
@@ -215,7 +201,8 @@ const LINE = /^(\s*)- '?(\w+)/;
 const forDecider = (tree: string) => tree.replace(/ \[(?:box=[^\]]*|cursor=pointer)\]/g, "");
 const MIN_CONFIDENCE = 0.55;
 const SCROLL_PX = 600;
-const STALE_REF = "PreviewAutomationInvalidSelectorError";
+// A ref or element from the read just taken that is already gone: nothing ran.
+const STALE = new Set(["PreviewAutomationInvalidSelectorError", "target_changed"]);
 
 export interface GoalAction {
   readonly kind: "click" | "scroll";
@@ -280,6 +267,47 @@ export interface GoalTab<E> {
   readonly scroll: (deltaY: number, timeoutMs: number) => Effect.Effect<unknown, E>;
 }
 
+/** One read of the screen: the text the decider sees, and what it may do there. */
+export interface GoalView<A> {
+  readonly page: string;
+  /** Names the screen in history, so a repeat of an earlier action on a new screen is not a loop. */
+  readonly screen: string;
+  readonly actions: ReadonlyArray<A>;
+}
+
+/** What a goal drives: a browser tab or a native app. */
+export interface GoalSurface<A extends { readonly description: string }, E> {
+  readonly observe: (timeoutMs: number) => Effect.Effect<GoalView<A>, E>;
+  readonly act: (action: A, timeoutMs: number) => Effect.Effect<unknown, E>;
+}
+
+/** Drives a preview tab through its accessibility tree, clicking by ref and scrolling the page. */
+export const tabSurface = <E>(
+  tab: GoalTab<E>,
+  deny: ReadonlyArray<string> = [],
+): GoalSurface<GoalAction, E | { readonly _tag: "observe_delta" }> => ({
+  observe: (timeoutMs) =>
+    tab.observe(timeoutMs).pipe(
+      Effect.flatMap((page) => {
+        if (page.mode !== "full") return Effect.fail({ _tag: "observe_delta" } as const);
+        const content = forDecider(page.tree);
+        return Effect.succeed({
+          // The URL and title count as progress even when the tree is unchanged, such as a Slack
+          // channel switch whose message pane falls past the tree budget.
+          page: `Page: ${page.title}\nURL: ${page.url}\n${content}`,
+          screen: /heading "((?:[^"\\]|\\.)*)"/.exec(page.tree)?.[1] ?? page.title,
+          actions: goalActions(page.tree, deny).map((action) =>
+            action.ref ? { ...action, ref: `aria-ref=${page.refPrefix}${action.ref}` } : action,
+          ),
+        });
+      }),
+    ),
+  act: (action, timeoutMs) =>
+    action.kind === "click"
+      ? tab.click(action.ref!, timeoutMs)
+      : tab.scroll(action.deltaY!, timeoutMs),
+});
+
 export interface GoalOutcome {
   readonly status: BrowserGoalStatus;
   readonly actions: ReadonlyArray<string>;
@@ -289,14 +317,19 @@ export interface GoalOutcome {
 }
 
 const errorCode = (cause: unknown) =>
-  typeof cause === "object" && cause !== null && "_tag" in cause ? String(cause._tag) : "failed";
+  typeof cause !== "object" || cause === null
+    ? "failed"
+    : "code" in cause && typeof cause.code === "string"
+      ? cause.code
+      : "_tag" in cause
+        ? String(cause._tag)
+        : "failed";
 
 /** Observes, asks the decider for one action, and runs it until the decider says DONE or stops. */
-export const runGoal = Effect.fn("BrowserGoal.run")(function* <E>(
-  input: GoalInput,
-  tab: GoalTab<E>,
-  deadline: number,
-) {
+export const runGoal = Effect.fn("BrowserGoal.run")(function* <
+  A extends { readonly description: string },
+  E,
+>(input: GoalInput, surface: GoalSurface<A, E>, deadline: number) {
   const decider = yield* GoalDecider;
   const startedAt = yield* Clock.currentTimeMillis;
   const maxSteps = input.maxSteps ?? 15;
@@ -306,7 +339,7 @@ export const runGoal = Effect.fn("BrowserGoal.run")(function* <E>(
   let waits = 0;
   let stale = 0;
   let retried = false;
-  let before: { seen: string; action: GoalAction } | undefined;
+  let before: { page: string; action: A } | undefined;
   const finish = (status: BrowserGoalStatus, message?: string) =>
     Clock.currentTimeMillis.pipe(
       Effect.map((now): GoalOutcome => ({
@@ -322,24 +355,18 @@ export const runGoal = Effect.fn("BrowserGoal.run")(function* <E>(
     if (remaining <= 0) return yield* finish("deadline_exceeded");
     // A click that navigates can race the snapshot; the next read usually lands on the new page.
     const observed = yield* Effect.result(
-      tab
+      surface
         .observe(Math.min(remaining, 12_000))
         .pipe(Effect.retry({ times: 2, schedule: Schedule.spaced("300 millis") })),
     );
     if (observed._tag === "Failure")
       return yield* finish("action_error", `observe: ${errorCode(observed.failure)}`);
-    const page = observed.success;
-    if (page.mode !== "full") return yield* finish("action_error", "observe returned a delta");
-    const content = forDecider(page.tree);
-    // A new URL or title is progress even when the tree is unchanged, such as a Slack channel
-    // switch whose message pane falls past the tree budget.
-    const seen = `${page.url}\n${page.title}\n${content}`;
-    if (before?.seen === seen)
+    const view = observed.success;
+    if (before?.page === view.page)
       return yield* finish("no_progress", `${before.action.description} changed nothing`);
     if (actions.length >= maxSteps) return yield* finish("step_limit");
-    const available = goalActions(page.tree, input.deny);
     const options: Record<string, string> = Object.fromEntries(
-      available.map((action, index) => [`a${index}`, action.description]),
+      view.actions.map((action, index) => [`a${index}`, action.description]),
     );
     options.DONE = "Goal fully achieved; stop for verification";
     options.BLOCKED = "Cannot complete with the allowed actions; hand back";
@@ -347,7 +374,7 @@ export const runGoal = Effect.fn("BrowserGoal.run")(function* <E>(
     const decided = yield* Effect.result(
       decider.decide({
         goal: input.goal,
-        page: `Page: ${page.title}\nURL: ${page.url}\n${content}`,
+        page: view.page,
         history,
         options,
         timeoutMs: Math.max(1, Math.min(20_000, deadline - (yield* Clock.currentTimeMillis))),
@@ -375,25 +402,18 @@ export const runGoal = Effect.fn("BrowserGoal.run")(function* <E>(
       continue;
     }
     waits = 0;
-    const action = available[Number(choice.slice(1))]!;
+    const action = view.actions[Number(choice.slice(1))]!;
     const timeoutMs = Math.max(1, Math.min(15_000, deadline - (yield* Clock.currentTimeMillis)));
-    const acted = yield* Effect.result(
-      action.kind === "click"
-        ? tab.click(`aria-ref=${page.refPrefix}${action.ref}`, timeoutMs)
-        : tab.scroll(action.deltaY!, timeoutMs),
-    );
-    // Refs come from the read just taken, so a rejected one means the page moved first; nothing ran.
-    if (acted._tag === "Failure" && errorCode(acted.failure) === STALE_REF && ++stale <= 2) {
+    const acted = yield* Effect.result(surface.act(action, timeoutMs));
+    if (acted._tag === "Failure" && STALE.has(errorCode(acted.failure)) && ++stale <= 2) {
       yield* Effect.sleep("300 millis");
       continue;
     }
     if (acted._tag === "Failure")
       return yield* finish("action_error", `${action.description}: ${errorCode(acted.failure)}`);
     stale = 0;
-    // Naming the screen keeps a repeat of an earlier click on a new screen from reading as a loop.
-    const screen = /heading "((?:[^"\\]|\\.)*)"/.exec(page.tree)?.[1] ?? page.title;
-    history.push(`On "${screen}": ${action.description}`);
+    history.push(`On "${view.screen}": ${action.description}`);
     actions.push(`${action.description} (${confidence.toFixed(2)})`);
-    before = { seen, action };
+    before = { page: view.page, action };
   }
 });

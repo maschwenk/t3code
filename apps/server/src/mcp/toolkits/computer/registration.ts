@@ -52,6 +52,10 @@ function actionContent(result: ComputerUse.ActResult, full: boolean): Content[] 
       result.completed.length ? ` (${result.completed.join(", ")})` : ""
     }.`,
     ...(result.sentBack ? [SENT_BACK] : []),
+    ...(result.goals ?? []).map(
+      (run) =>
+        `Goal ${JSON.stringify(run.goal)}: ${run.status} after ${run.decisions} decisions in ${(run.elapsedMs / 1000).toFixed(1)} s${run.message ? ` (${run.message})` : ""}. Clicked: ${run.actions.join("; ") || "nothing"}.`,
+    ),
   ];
   if (result.error)
     lines.push(`Step ${result.completed.length + 1} stopped the batch: ${result.error.message}`);

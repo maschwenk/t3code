@@ -2,10 +2,12 @@ import { expect, it } from "@effect/vitest";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as TestClock from "effect/testing/TestClock";
 import * as ComputerUse from "./ComputerUse.ts";
 import * as Driver from "./Driver.ts";
+import * as BrowserGoal from "../preview/BrowserGoal.ts";
 import * as DesktopTelemetryReceiver from "../resourceTelemetry/DesktopTelemetryReceiver.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { backgroundAction } from "./nativeWorker.ts";
@@ -81,7 +83,7 @@ const plan = (step: ComputerStep, latest: Capture | null = capture) =>
   );
 /** The accessibility action the worker runs instead of a posted click. */
 const pressedAs = (planned: ReturnType<typeof plan>) =>
-  typeof planned === "object" && planned.action.kind === "click"
+  typeof planned === "object" && "action" in planned && planned.action.kind === "click"
     ? backgroundAction(planned.action, planned.target?.actions ?? [])
     : undefined;
 
@@ -168,8 +170,24 @@ it("drags from one element or point to a target element or point", () => {
   expect(plan({ action: "drag", ref: 1, target: { ref: 9 } })).toBe("invalid_ref");
   expect(plan({ action: "drag", ref: 1, target: { x: 1, y: 1 } }, null)).toBe("invalid_point");
 });
+/** A goal decider that answers `choices` in turn, then BLOCKED, recording each request. */
+const decider = (
+  choices: readonly string[] = [],
+  requests: Parameters<BrowserGoal.GoalDecider["Service"]["decide"]>[0][] = [],
+) =>
+  Layer.succeed(
+    BrowserGoal.GoalDecider,
+    BrowserGoal.GoalDecider.of({
+      decide: (request) =>
+        Effect.sync(() => ({
+          choice: choices[requests.push(request) - 1] ?? "BLOCKED",
+          confidence: 0.9,
+        })),
+    }),
+  );
 const setup = (calls: WorkerRequest[], enabled = true, failAction = false) =>
   ComputerUse.layer.pipe(
+    Layer.provide(decider()),
     Layer.provide(
       Layer.succeed(Driver.Driver, {
         withSession: (effect) => effect,
@@ -205,6 +223,7 @@ it.effect("aims coordinate steps at the latest capture, even after text-only sna
   const calls: WorkerRequest[] = [];
   const window = { id: 77, bounds: { x: 200, y: 100, width: 300, height: 200 } };
   const layer = ComputerUse.layer.pipe(
+    Layer.provide(decider()),
     Layer.provide(
       Layer.succeed(Driver.Driver, {
         withSession: (effect) => effect,
@@ -265,6 +284,7 @@ it.effect("aims coordinate steps at the latest capture, even after text-only sna
 
 it.effect("tells the agent when the app was sent back, in that operation's result only", () => {
   const layer = ComputerUse.layer.pipe(
+    Layer.provide(decider()),
     Layer.provide(
       Layer.succeed(Driver.Driver, {
         withSession: (effect) => effect,
@@ -440,6 +460,7 @@ it.effect("stops a batch when computer use is turned off while it runs", () => {
   const calls: WorkerRequest[] = [];
   // The user turns computer use off while the first step's native work runs.
   const layer = ComputerUse.layer.pipe(
+    Layer.provide(decider()),
     Layer.provide(
       Layer.effect(
         Driver.Driver,
@@ -486,8 +507,10 @@ const walking = (
   walks: readonly (readonly NativeSnapshot["elements"][number][])[],
   calls: WorkerRequest[],
   snapshotFails?: (request: Extract<WorkerRequest, { kind: "snapshot" }>) => boolean,
+  goals = decider(),
 ) =>
   ComputerUse.layer.pipe(
+    Layer.provide(goals),
     Layer.provide(
       Layer.succeed(Driver.Driver, {
         withSession: (effect) => effect,
@@ -578,6 +601,90 @@ it.effect("keeps refs across snapshots and actions, and rejects refs the app rem
     ),
   );
 });
+
+it("offers a goal step the enabled pressable elements whose role and name pick out one", () => {
+  const element = (role: string, name: string, more: Partial<typeof seven> = {}) => ({
+    ...seven,
+    role,
+    name,
+    stableId: `${role}:${name}`,
+    ...more,
+  });
+  const view = ComputerUse.appGoalView({
+    ...snapshot,
+    elements: [
+      element("window", "Home - Slack", { actions: ["raise"] }),
+      element("tab", "Channels"),
+      element("tree_item", "Channels", { states: ["expanded"] }),
+      element("button", "Reply"),
+      element("button", "Reply"),
+      element("button", "Archived", { enabled: false }),
+    ],
+  });
+  expect(view.actions.map((action) => action.description)).toEqual([
+    'Click tab "Channels"',
+    'Click tree_item "Channels" (expanded)',
+  ]);
+  expect(view.screen).toBe("Home - Slack");
+  expect(view.page).not.toContain("@0,0");
+});
+
+it.effect(
+  "runs a goal step's clicks until the decider is done, and stops a batch it cannot finish",
+  () => {
+    const calls: WorkerRequest[] = [];
+    const requests: Parameters<BrowserGoal.GoalDecider["Service"]["decide"]>[0][] = [];
+    const clicked = () =>
+      calls.flatMap((call) => (call.kind === "action" ? [call.target?.name] : []));
+    return Effect.gen(function* () {
+      const computer = yield* ComputerUse.ComputerUse;
+      const shot = yield* computer.snapshot("a", { app: "Calculator", includeImage: false });
+      const running = yield* computer
+        .act("a", {
+          snapshotId: shot.snapshotId,
+          steps: [
+            { action: "goal", goal: "Enter 7", deny: ["clear"] },
+            { ref: 2, action: "click" },
+          ],
+        })
+        .pipe(Effect.forkChild);
+      // The step re-reads the app after its click until two reads agree.
+      yield* TestClock.adjust("1 second");
+      const done = yield* Fiber.join(running);
+      expect(done.completed).toEqual(["goal", "accessibility"]);
+      expect(done.goals).toMatchObject([
+        { goal: "Enter 7", status: "needs_verification", actions: ['Click button "7" (0.90)'] },
+      ]);
+      expect(clicked()).toEqual(["7", "All Clear"]);
+      expect(Object.values(requests[0]!.options)).not.toContain('Click button "All Clear"');
+      expect(requests[1]!.history).toEqual(['On "Calculator": Click button "7"']);
+
+      const blocked = yield* computer.act("a", {
+        snapshotId: done.snapshot!.snapshotId,
+        steps: [
+          { action: "goal", goal: "Divide by zero" },
+          { ref: 1, action: "click" },
+        ],
+      });
+      expect(blocked.error?.code).toBe("goal_incomplete");
+      expect(blocked.goals).toMatchObject([{ status: "blocked", actions: [] }]);
+      expect(clicked()).toEqual(["7", "All Clear"]);
+    }).pipe(
+      Effect.provide(
+        walking(
+          [
+            [seven, allClear],
+            [seven, allClear],
+            [seven, allClear, display],
+          ],
+          calls,
+          undefined,
+          decider(["a0", "DONE"], requests),
+        ),
+      ),
+    );
+  },
+);
 
 it.effect("returns no baseline when the batch's view could not be shown again", () => {
   const calls: WorkerRequest[] = [];

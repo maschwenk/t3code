@@ -12,6 +12,7 @@ import * as DesktopTelemetryReceiver from "../../../resourceTelemetry/DesktopTel
 import * as ServerSettings from "../../../serverSettings.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpHttpServer from "../../McpHttpServer.ts";
+import * as BrowserGoal from "../../../preview/BrowserGoal.ts";
 
 const invocation: McpInvocationContext.McpInvocationScope = {
   environmentId: EnvironmentId.make("computer-test"),
@@ -44,6 +45,12 @@ const layerTest = (calls: WorkerRequest[]) =>
     Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
     Layer.provide(
       ComputerUse.layer.pipe(
+        Layer.provide(
+          Layer.succeed(
+            BrowserGoal.GoalDecider,
+            BrowserGoal.GoalDecider.of({ decide: () => Effect.die("unused") }),
+          ),
+        ),
         Layer.provide(
           Layer.succeed(Driver.Driver, {
             withSession: (effect) => effect,

@@ -1254,7 +1254,9 @@ export const layerComputerTools = Layer.mergeAll(
 );
 
 const layerComputerToolkit = layerComputerTools.pipe(
-  Layer.provide(ComputerUse.layer.pipe(Layer.provide(ComputerDriver.layer))),
+  Layer.provide(
+    ComputerUse.layer.pipe(Layer.provide([ComputerDriver.layer, BrowserGoal.layerJev])),
+  ),
 );
 
 export const layerPreviewToolkit = Layer.mergeAll(

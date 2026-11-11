@@ -28,6 +28,7 @@ import * as Semaphore from "effect/Semaphore";
 import type { McpThreadInvocationScope } from "../mcp/McpInvocationContext.ts";
 import * as Broker from "../mcp/PreviewAutomationBroker.ts";
 import * as BrowserGoal from "./BrowserGoal.ts";
+import { GoalInput } from "./goalInput.ts";
 
 export class BrowserExecutor extends Context.Service<
   BrowserExecutor,
@@ -58,7 +59,7 @@ const decodeSteps = Schema.decodeUnknownResult(
       step("dialog", PreviewAutomationDialogInput),
       step("waitFor", PreviewAutomationWaitForInput),
       step("close", Schema.Struct({})),
-      step("goal", BrowserGoal.GoalInput),
+      step("goal", GoalInput),
     ]),
   ),
 );
@@ -197,22 +198,27 @@ const make = Effect.gen(function* () {
               ) => broker.invoke({ scope, operation, input, tabId: target, timeoutMs });
               const run = yield* BrowserGoal.runGoal(
                 item.input,
-                {
-                  observe: (timeoutMs) =>
-                    invoke(
-                      "observe",
-                      { maxBytes: BrowserGoal.OBSERVE_BYTES, compact: true },
-                      timeoutMs,
-                    ).pipe(
-                      Effect.flatMap((value) =>
-                        Effect.fromResult(decodeObservation(value)).pipe(
-                          Effect.mapError(() => ({ _tag: "invalid_observation_response" })),
+                BrowserGoal.tabSurface(
+                  {
+                    observe: (timeoutMs) =>
+                      invoke(
+                        "observe",
+                        { maxBytes: BrowserGoal.OBSERVE_BYTES, compact: true },
+                        timeoutMs,
+                      ).pipe(
+                        Effect.flatMap((value) =>
+                          Effect.fromResult(decodeObservation(value)).pipe(
+                            Effect.mapError(() => ({ _tag: "invalid_observation_response" })),
+                          ),
                         ),
                       ),
-                    ),
-                  click: (locator, timeoutMs) => invoke("click", { locator, timeoutMs }, timeoutMs),
-                  scroll: (deltaY, timeoutMs) => invoke("scroll", { deltaY, timeoutMs }, timeoutMs),
-                },
+                    click: (locator, timeoutMs) =>
+                      invoke("click", { locator, timeoutMs }, timeoutMs),
+                    scroll: (deltaY, timeoutMs) =>
+                      invoke("scroll", { deltaY, timeoutMs }, timeoutMs),
+                  },
+                  item.input.deny,
+                ),
                 deadline,
               ).pipe(Effect.provideService(BrowserGoal.GoalDecider, decider));
               goals.push({ step: completed, tab: item.tab, ...run });
