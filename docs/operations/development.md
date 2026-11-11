@@ -318,7 +318,8 @@ vp run fork:install
 ```
 
 This builds the current checkout as `T3 Code (Fork)` with its own bundle id and no update
-feed, signs it with an `Apple Development` identity when one is in the keychain, replaces
+feed, signs it with a `Developer ID Application` identity from the keychain (or an `Apple
+Development` one when that is all there is), replaces
 `/Applications/T3 Code (Fork).app`, and relaunches it. It reads `~/.t3/userdata` like any
 installed build. To carry a dev server's data over once, quit that dev app and run:
 
@@ -338,7 +339,10 @@ building from installing. T3 Connect's
 public identifiers are compiled in, from `.env.example` when the shell and `.env` don't set them;
 the install refuses a bundle without them unless `--allow-no-connect` is passed, and after
 relaunching it waits for Connect to report reachable. Ad-hoc signed builds re-prompt for Keychain
-and privacy permissions after every install, which an `Apple Development` identity avoids.
+and privacy permissions after every install, which a keychain identity avoids. The 1Password app
+connects to T3 as a browser only with a Developer ID signature, after adding the app under
+1Password Settings → Browser → Add Browser; its extension then unlocks with the app instead of
+locking on every restart.
 
 ### Prepared server bytecode
 
