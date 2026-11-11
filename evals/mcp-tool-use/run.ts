@@ -1500,6 +1500,8 @@ type Config = {
   readonly apiKey: string;
   readonly model: Model;
   readonly proxy?: { readonly url: string; readonly headers: Readonly<Record<string, string>> };
+  /** EVAL_ANTHROPIC_URL: a Messages API gateway that takes the ANTHROPIC_API_KEY. */
+  readonly anthropic?: Config["proxy"];
   readonly effort: string;
   readonly maxSteps: number;
   readonly shellModel: ShellModel;
@@ -1525,7 +1527,7 @@ const simulate = Effect.fn("evaluateMcpToolUse.simulate")(function* (
   if (output === undefined) {
     const body = shellRequest(sample, call, config.shellModel);
     const response = isPricedModel(config.shellModel)
-      ? yield* callModel(config.apiKey, body, config.apiKey ? undefined : config.proxy)
+      ? yield* callModel(config.apiKey, body, config.apiKey ? config.anthropic : config.proxy)
       : yield* callCodex(config, shellResponsesRequest(body));
     addUsage(sample.shellUsage, response.usage);
     output = shellOutput(response.content);
@@ -2090,7 +2092,11 @@ const runSample = Effect.fn("evaluateMcpToolUse.runSample")(function* (
   for (let step = 0; step < maxSteps; step++) {
     const response = input
       ? yield* callCodex(config, codexRequest(base, input))
-      : yield* callModel(config.apiKey, requestBody(sample, config.effort, messages));
+      : yield* callModel(
+          config.apiKey,
+          requestBody(sample, config.effort, messages),
+          config.anthropic,
+        );
     addUsage(usage, response.usage);
     if ("raw" in response) {
       input?.push(...response.raw);
@@ -2499,6 +2505,7 @@ const main = Effect.gen(function* () {
     return;
   }
   const apiKey = yield* Config.String("ANTHROPIC_API_KEY").pipe(Config.withDefault(""));
+  const anthropicUrl = yield* Config.String("EVAL_ANTHROPIC_URL").pipe(Config.withDefault(""));
   const out = flags.out;
   if ((!apiKey && !codex) || out === undefined) {
     const message =
@@ -2507,6 +2514,7 @@ const main = Effect.gen(function* () {
   }
   const config: Config = {
     apiKey,
+    ...(anthropicUrl ? { anthropic: { url: anthropicUrl.replace(/\/$/, ""), headers: {} } } : {}),
     model: flags.model,
     ...(codex || !isPricedModel(flags["shell-model"]) ? { proxy: proxyConfig() } : {}),
     effort,

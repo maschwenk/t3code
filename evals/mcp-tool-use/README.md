@@ -12,7 +12,7 @@ pnpm mcp-tool-use --case review-round-uses-thread-send --samples 1 --out runs/ch
 pnpm mcp-tool-use --model claude-opus-5-5 --out runs/opus
 ```
 
-- `ANTHROPIC_API_KEY` in the repo root `.env` pays for Claude models and the Haiku shell simulator.
+- `ANTHROPIC_API_KEY` in the repo root `.env` pays for Claude models and the Haiku shell simulator. `EVAL_ANTHROPIC_URL` sends those Messages API calls to a gateway instead, such as `https://owner-poros.com/v1` with its key as `ANTHROPIC_API_KEY`.
 - Codex models (`gpt-*` in `MODELS` in `run.ts`) go through a CLIProxyAPI server, set up as the `vibeproxy` model provider in `~/.codex/config.toml`. Keep the proxy under about 12 samples in flight across all runs.
 - `--shell-model` picks the model that plays the shell: `claude-haiku-5-5` by default, or `gpt-6.1-terra` / `gpt-6-luna` through the same proxy, so Codex runs need no Anthropic key. Prefer Terra: Luna often contradicts the case's world (it calls named checkouts missing or files empty). Compare runs only when they used the same shell model.
 - Flags: `--case <ids>`, `--cases <file.ndjson>`, `--samples <n>` (default 2, and a 3rd when the first 2 disagree), `--concurrency <n>` (samples in flight, default 8), `--max-steps <n>`, `--effort <level>`, `--dry-run` (prints request bodies, no model calls), and `--context` (prints the size of T3's text and schemas, no key needed).
@@ -31,6 +31,20 @@ Cases are JSON lines in `cases/`, one file per area. The case schema in `run.ts`
 - `expect`: the checks, such as `calls`, `callsMustNot`, `maxCalls`, `order`, `shellMust`, `textMust`, `finalTextMust` (the last text, once the turn ended), and `linked`. A call's `args` match partially: `~text` is a case-insensitive substring, `"<=N"` / `">=N"` bound a number, `null` matches a missing key, and keys may be dotted paths. Device cases also use `device` to check every child brief, forbid raw UI commands, bound failed device actions per user turn, and require artifact paths in completed final answers. Secrets cases use `secret` (see [Secrets cases](#secrets-cases)).
 
 Check that the case builds with `--dry-run --case <id>`. Then run it on the text before your fix, where it must fail, and on the text after, where it must pass.
+
+## Browser goal cases
+
+`cases/browser-goal.ndjson` checks when agents hand click-through navigation to a `preview_execute` `goal` step. `browser-goal-unknown-menus` asks for a page several unknown menus deep. The two controls, `browser-goal-control-visible-field` and `browser-goal-control-known-url`, must not use one. The cases use authored Acme pages.
+
+Passes of 3 per model, run through `EVAL_ANTHROPIC_URL` (Poros) on 2026-11-10. "Before" is the text that shipped the goal step; "after" adds the guidance sentence.
+
+| Case                               | Opus 5.5 before → after | Sonnet 5.5 before → after |
+| ---------------------------------- | ----------------------- | ------------------------- |
+| browser-goal-unknown-menus         | 0/3 → 3/3               | 0/3 → 3/3                 |
+| browser-goal-control-visible-field | 3/3 → 3/3               | 3/3 → 3/3                 |
+| browser-goal-control-known-url     | 3/3 → 3/3               | 3/3 → 3/3                 |
+
+Before the guidance sentence, both models loaded the preview tools without `preview_execute` and clicked one turn at a time. A first wording ("menus you haven't seen") fixed Opus but not Sonnet, which clicked the first visible link by hand.
 
 ## Device manager cases
 

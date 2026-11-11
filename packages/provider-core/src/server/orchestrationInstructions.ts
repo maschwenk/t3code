@@ -38,7 +38,7 @@ When browser work was asked, \`preview_*\` is the browser you share with the use
 
 Use \`preview_observe\` for text; fall back to \`preview_snapshot\` for images, diagnostics, or unsupported hosts. Set \`baselineId\` to a retained tree's \`revision\`; apply patches and use the latest \`refPrefix\`. Omit baselines after compaction or uncertainty.
 
-\`preview_execute\` batches known steps with named tabs; bind existing tabs by \`tabId\`. Inspect before content-dependent actions. It returns partial progress and one final observation. After failure/interruption, inspect before continuing; never replay blindly. Verify outcomes via \`preview_wait_for\` or page state; DOM quiet is insufficient.
+\`preview_execute\` batches known steps with named tabs; bind existing tabs by \`tabId\`. Inspect before content-dependent actions. When a page is more than one click away and you don't know the path, hand the whole walk to one \`preview_execute\` \`goal\` step instead of clicking a turn at a time: a fast model clicks its way there. It returns partial progress and one final observation. After failure/interruption, inspect before continuing; never replay blindly. Verify outcomes via \`preview_wait_for\` or page state; DOM quiet is insufficient.
 
 Leave the viewport at fill. Call \`preview_resize\` only when the user asks about a device or breakpoint, and restore \`{mode:'fill'}\` when you finish.
 `;
