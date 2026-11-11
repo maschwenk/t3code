@@ -217,11 +217,12 @@ const scriptedDecider = (confidence: number, offered: string[]) =>
   );
 
 it.live.each([
-  { confidence: 0.9, status: "needs_verification", heading: "Security" },
-  { confidence: 0.3, status: "low_confidence", heading: "Settings" },
+  { confidence: 0.9, minConfidence: undefined, status: "needs_verification", heading: "Security" },
+  { confidence: 0.3, minConfidence: undefined, status: "low_confidence", heading: "Settings" },
+  { confidence: 0.3, minConfidence: 0.25, status: "needs_verification", heading: "Security" },
 ] as const)(
-  "a goal step clicks through real pages until the decider is done or unsure ($status)",
-  ({ confidence, status, heading }) => {
+  "a goal step clicks through real pages until the decider is done or unsure ($status, $minConfidence)",
+  ({ confidence, minConfidence, status, heading }) => {
     const offered: string[] = [];
     return Effect.gen(function* () {
       const { page } = yield* hostPage(SETTINGS);
@@ -232,7 +233,11 @@ it.live.each([
       const result = yield* executor.execute(scope, {
         sessionId: bound.sessionId,
         steps: [
-          { op: "goal", tab: "app", input: { goal: "Open security settings", deny: ["delete"] } },
+          {
+            op: "goal",
+            tab: "app",
+            input: { goal: "Open security settings", deny: ["delete"], minConfidence },
+          },
         ],
       });
       expect(yield* Effect.promise(() => page.locator("#title").textContent())).toBe(heading);
@@ -240,7 +245,10 @@ it.live.each([
         [
           status,
           status === "needs_verification"
-            ? ['Click button "Account" (0.90)', 'Click button "Security" (0.90)']
+            ? [
+                `Click button "Account" (${confidence.toFixed(2)})`,
+                `Click button "Security" (${confidence.toFixed(2)})`,
+              ]
             : [],
         ],
       ]);
