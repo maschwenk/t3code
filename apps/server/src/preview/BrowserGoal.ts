@@ -306,7 +306,7 @@ export const runGoal = Effect.fn("BrowserGoal.run")(function* <E>(
   let waits = 0;
   let stale = 0;
   let retried = false;
-  let before: { content: string; action: GoalAction } | undefined;
+  let before: { seen: string; action: GoalAction } | undefined;
   const finish = (status: BrowserGoalStatus, message?: string) =>
     Clock.currentTimeMillis.pipe(
       Effect.map((now): GoalOutcome => ({
@@ -331,7 +331,10 @@ export const runGoal = Effect.fn("BrowserGoal.run")(function* <E>(
     const page = observed.success;
     if (page.mode !== "full") return yield* finish("action_error", "observe returned a delta");
     const content = forDecider(page.tree);
-    if (before?.content === content)
+    // A new URL or title is progress even when the tree is unchanged, such as a Slack channel
+    // switch whose message pane falls past the tree budget.
+    const seen = `${page.url}\n${page.title}\n${content}`;
+    if (before?.seen === seen)
       return yield* finish("no_progress", `${before.action.description} changed nothing`);
     if (actions.length >= maxSteps) return yield* finish("step_limit");
     const available = goalActions(page.tree, input.deny);
@@ -391,6 +394,6 @@ export const runGoal = Effect.fn("BrowserGoal.run")(function* <E>(
     const screen = /heading "((?:[^"\\]|\\.)*)"/.exec(page.tree)?.[1] ?? page.title;
     history.push(`On "${screen}": ${action.description}`);
     actions.push(`${action.description} (${confidence.toFixed(2)})`);
-    before = { content, action };
+    before = { seen, action };
   }
 });

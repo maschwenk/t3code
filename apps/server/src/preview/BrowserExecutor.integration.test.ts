@@ -262,3 +262,44 @@ it.live.each([
     }).pipe(Effect.scoped, Effect.provide(executorLayer(scriptedDecider(confidence, offered))));
   },
 );
+
+it.live("a goal step counts a new title or URL as progress when the tree stays the same", () =>
+  Effect.gen(function* () {
+    // Like a Slack channel switch whose message pane falls past the tree budget.
+    const { page } = yield* hostPage(
+      `<title>Inbox</title><nav><button onmousedown="event.preventDefault()" onclick="document.title='zeus'; location.hash='zeus'">zeus</button></nav>`,
+    );
+    const executor = yield* BrowserExecutor.BrowserExecutor;
+    const bound = yield* executor.execute(scope, {
+      steps: [{ op: "bind", tab: "app", input: { tabId } }],
+    });
+    const result = yield* executor.execute(scope, {
+      sessionId: bound.sessionId,
+      steps: [{ op: "goal", tab: "app", input: { goal: "Open the zeus channel" } }],
+    });
+    expect(yield* Effect.promise(() => page.title())).toBe("zeus");
+    expect(result.goals?.map((goal) => goal.status)).toEqual(["needs_verification"]);
+  }).pipe(
+    Effect.scoped,
+    Effect.provide(
+      executorLayer(
+        Layer.succeed(
+          BrowserGoal.GoalDecider,
+          BrowserGoal.GoalDecider.of({
+            decide: ({ page, options }) =>
+              Effect.sync(() =>
+                page.startsWith("Page: zeus")
+                  ? { choice: "DONE", confidence: 1 }
+                  : {
+                      choice: Object.keys(options).find(
+                        (id) => options[id] === 'Click button "zeus"',
+                      )!,
+                      confidence: 1,
+                    },
+              ),
+          }),
+        ),
+      ),
+    ),
+  ),
+);
