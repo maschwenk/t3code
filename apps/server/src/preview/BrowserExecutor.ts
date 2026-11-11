@@ -1,6 +1,7 @@
 import {
   type BrowserExecutorInput,
   type BrowserExecutorResult,
+  type BrowserGoalRun,
   OrchestratorMcpFailure,
   PreviewAutomationClickInput,
   PreviewAutomationDialogInput,
@@ -26,6 +27,7 @@ import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import type { McpThreadInvocationScope } from "../mcp/McpInvocationContext.ts";
 import * as Broker from "../mcp/PreviewAutomationBroker.ts";
+import * as BrowserGoal from "./BrowserGoal.ts";
 
 export class BrowserExecutor extends Context.Service<
   BrowserExecutor,
@@ -56,6 +58,7 @@ const decodeSteps = Schema.decodeUnknownResult(
       step("dialog", PreviewAutomationDialogInput),
       step("waitFor", PreviewAutomationWaitForInput),
       step("close", Schema.Struct({})),
+      step("goal", BrowserGoal.GoalInput),
     ]),
   ),
 );
@@ -86,6 +89,7 @@ type Session = {
 const make = Effect.gen(function* () {
   const broker = yield* Broker.PreviewAutomationBroker;
   const random = yield* SecureRandom.SecureRandom;
+  const decider = yield* BrowserGoal.GoalDecider;
   const sessions = new Map<string, Session>();
   const execute = Effect.fn("BrowserExecutor.execute")(function* (
     scope: McpThreadInvocationScope,
@@ -170,6 +174,7 @@ const make = Effect.gen(function* () {
           let error: BrowserExecutorResult["error"];
           let observation: BrowserExecutorResult["observation"];
           let observationError: BrowserExecutorResult["observationError"];
+          const goals: BrowserGoalRun[] = [];
           for (const item of decoded.success) {
             const remaining = deadline - (yield* Clock.currentTimeMillis);
             if (remaining <= 0) {
@@ -183,6 +188,41 @@ const make = Effect.gen(function* () {
                   ? item.input.tabId
                   : state.tabs.get(item.tab)!;
             if (tabId) state.current = item.tab;
+            if (item.op === "goal") {
+              const target = state.tabs.get(item.tab)!;
+              const invoke = (
+                operation: "observe" | "click" | "scroll",
+                input: object,
+                timeoutMs: number,
+              ) => broker.invoke({ scope, operation, input, tabId: target, timeoutMs });
+              const run = yield* BrowserGoal.runGoal(
+                item.input,
+                {
+                  observe: (timeoutMs) =>
+                    invoke("observe", { maxBytes: BrowserGoal.OBSERVE_BYTES }, timeoutMs).pipe(
+                      Effect.flatMap((value) =>
+                        Effect.fromResult(decodeObservation(value)).pipe(
+                          Effect.mapError(() => ({ _tag: "invalid_observation_response" })),
+                        ),
+                      ),
+                    ),
+                  click: (locator, timeoutMs) => invoke("click", { locator, timeoutMs }, timeoutMs),
+                  scroll: (deltaY, timeoutMs) => invoke("scroll", { deltaY, timeoutMs }, timeoutMs),
+                },
+                deadline,
+              ).pipe(Effect.provideService(BrowserGoal.GoalDecider, decider));
+              goals.push({ step: completed, tab: item.tab, ...run });
+              if (run.status !== "needs_verification") {
+                error = {
+                  step: completed,
+                  code: `goal_${run.status}`,
+                  actionMayHaveRun: run.actions.length > 0,
+                };
+                break;
+              }
+              completed++;
+              continue;
+            }
             const timeoutMs = Math.min(
               remaining,
               item.op === "open"
@@ -274,6 +314,7 @@ const make = Effect.gen(function* () {
             ...(error ? { error } : {}),
             ...(observation ? { observation } : {}),
             ...(observationError ? { observationError } : {}),
+            ...(goals.length ? { goals } : {}),
           };
         }),
       )

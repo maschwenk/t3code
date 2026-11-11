@@ -17,6 +17,7 @@ import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import * as Broker from "../mcp/PreviewAutomationBroker.ts";
 import * as BrowserExecutor from "./BrowserExecutor.ts";
+import * as BrowserGoal from "./BrowserGoal.ts";
 
 const scope = {
   environmentId: EnvironmentId.make("executor-env"),
@@ -33,6 +34,7 @@ const scope = {
 const tabId = PreviewTabId.make("executor-tab");
 const layer = BrowserExecutor.layer.pipe(
   Layer.provideMerge(Broker.layer),
+  Layer.provide(BrowserGoal.layerJev),
   Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
 );
 const setup = Effect.fn("BrowserExecutorTest.setup")(function* (
