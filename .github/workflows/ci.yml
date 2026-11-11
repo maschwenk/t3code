@@ -327,12 +327,17 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    name: Test Web
+    name: Test Web${{ strategy.job-total > 1 && format(' {0}', matrix.shard) || '' }}
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.test_web != 'false' }}
     runs-on: ${{ github.repository_owner == 'pingdotgg' && 'blacksmith-8vcpu-ubuntu-2404' || 'ubuntu-24.04' }}
-    # Forks on the 4 vCPU ubuntu-24.04 runner take 7.5-13 minutes; Blacksmith 8 vCPU takes ~3.
-    timeout-minutes: ${{ github.repository_owner == 'pingdotgg' && 10 || 20 }}
+    timeout-minutes: 10
+    # The whole suite takes 7-13 minutes on a fork's 4 vCPU runner and ~3 on Blacksmith's 8,
+    # so forks split it into Vitest shards across runners. pingdotgg keeps one job.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(github.repository_owner == 'pingdotgg' && '[1]' || '[1, 2, 3]') }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -374,7 +379,7 @@ jobs:
           fi
 
       - name: Test
-        run: vp run --filter @t3tools/web test
+        run: vp run --filter @t3tools/web test --shard=${{ matrix.shard }}/${{ strategy.job-total }}
 
   # apps/server sets `fileParallelism: false`, so its test files run strictly
   # one at a time. Sharding spreads them over separate runners instead of
