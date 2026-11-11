@@ -8,7 +8,9 @@ In **Settings → Devices → Computer use**, select the environment and enable 
 access**. Enable **Allow all computer apps** to let agents use any app without per-app approval,
 including apps you install later. To limit access, leave it off and add exact names to **Allowed
 computer apps**. macOS must grant Accessibility permission to the host runtime; T3 does not
-grant or bypass operating-system permissions for you. The native accessibility library may also
+grant or bypass operating-system permissions for you. If agents still report missing
+Accessibility permission after a T3 update while System Settings shows it on, remove T3 from
+**Privacy & Security → Accessibility** and add it again. The native accessibility library may also
 require macOS Screen & System Audio Recording permission for text-only snapshots. This OS
 permission does not enable T3's separate screen-capture setting.
 

@@ -121,6 +121,34 @@ export function backgroundAction(
   return name !== undefined && available.includes(name) ? name : undefined;
 }
 
+// Chromium answers an accessibility press on these roles by selecting the item, where a click
+// opens it: pressing a Slack sidebar channel highlights it and leaves the old channel open.
+const SELECTED_BY_PRESS = new Set(["tree_item", "row", "cell", "list_item"]);
+
+/** Whether a click on `role` must be a posted click because pressing it would only select it. */
+export function clickNeedsPointer(
+  action: Extract<ComputerAction, { kind: "press" | "move" | "click" | "scroll" | "perform" }>,
+  role: string,
+  inWebContent: boolean,
+): boolean {
+  return (
+    action.kind === "click" &&
+    action.button === "left" &&
+    action.count === 1 &&
+    inWebContent &&
+    SELECTED_BY_PRESS.has(role)
+  );
+}
+
+async function insideWebArea(element: Element): Promise<boolean> {
+  let ancestor = await element.parent();
+  for (let level = 0; ancestor && level < 64; level++) {
+    if (ancestor.role === "web_area") return true;
+    ancestor = await ancestor.parent();
+  }
+  return false;
+}
+
 /** Positive dy scrolls down, positive dx scrolls right. */
 const scrollPageAction = (dx: number, dy: number) =>
   Math.abs(dy) >= Math.abs(dx)
@@ -173,6 +201,21 @@ async function appByName(App: Xa11y["App"], name: string): Promise<App | undefin
 }
 
 type Resolved = { readonly element: Element; readonly window: Element | undefined };
+/** The element at `target`'s tree path as it is now, when it still has the same role and name. */
+async function reread(app: App, target: ElementTarget): Promise<Resolved | undefined> {
+  let element = app.asElement();
+  let window: Element | undefined;
+  for (const index of target.path) {
+    const child = (await element.children())[index];
+    if (!child) return undefined;
+    element = child;
+    if (element.role === "window") window ??= element;
+  }
+  return element.role === target.role && element.name === target.name
+    ? { element, window }
+    : undefined;
+}
+
 /** Finds a snapshot's element again: by tree path first, then by unique identity in its window. */
 async function resolve(app: App, target: ElementTarget): Promise<Resolved | undefined> {
   let element = app.asElement();
@@ -649,8 +692,10 @@ async function postPointer(
     | { readonly kind: "move" }
     | { readonly kind: "click"; readonly button: "left" | "right"; readonly count: 1 | 2 }
     | { readonly kind: "scroll"; readonly dx: number; readonly dy: number },
+  pressFirst = true,
 ): Promise<WorkerResponse> {
   if (
+    pressFirst &&
     action.kind === "click" &&
     action.button === "left" &&
     action.count === 1 &&
@@ -942,15 +987,32 @@ async function act(
       return pressKey(native, app.pid, action);
     });
   }
+  if (action.kind === "type" && !request.target) {
+    // Like press: keys go to whatever has focus. A value can only be replaced on a target.
+    if (action.replace) return { ok: false, code: "unsupported_action" };
+    postText(native, app.pid, action.text);
+    return { ok: true, via: "keyboard_event" };
+  }
   if (action.kind === "click_at" || action.kind === "move_at" || action.kind === "drag")
     return pointerGesture(xa11y, native, app, request, resolved);
   if (!resolved) return { ok: false, code: "target_changed" };
   const { element, window } = resolved;
   if (action.kind === "type") {
-    if (!element.editable || !request.target) return { ok: false, code: "unsupported_action" };
+    if (!request.target || (action.replace && !element.editable))
+      return { ok: false, code: "unsupported_action" };
+    if (!element.editable) {
+      // Some fields, such as Slack's search box, take keys but not accessibility text.
+      await whileActive(native, app.pid, keyWindowFor(native, app.pid, window), async () => {
+        await focusElement(element);
+        postText(native, app.pid, action.text);
+      });
+      return { ok: true, via: "keyboard_event" };
+    }
     return typeText(native, app.pid, resolved, request.target, action);
   }
-  const background = backgroundAction(action, element.actions);
+  const pointerOnly =
+    clickNeedsPointer(action, element.role, true) && (await insideWebArea(element));
+  const background = pointerOnly ? undefined : backgroundAction(action, element.actions);
   if (background) {
     await element.performAction(background);
     return { ok: true, via: "accessibility" };
@@ -969,13 +1031,26 @@ async function act(
   }
   if (action.kind === "press" || action.kind === "perform")
     return { ok: false, code: "unsupported_action" };
-  const point = pointerTarget(element.bounds, window?.bounds ?? null);
+  // A posted click needs the item on screen; sidebars clip or scroll away most of theirs.
+  // Element properties are a snapshot, so read the item again after scrolling it into view.
+  let shown = resolved;
+  if (
+    pointerOnly &&
+    request.target &&
+    ((element.bounds?.height ?? 0) < 8 || request.target.states.includes("offscreen")) &&
+    element.actions.includes("scroll_to_visible")
+  ) {
+    await element.performAction("scroll_to_visible");
+    await NodeTimersPromises.setTimeout(150);
+    shown = (await reread(app, request.target)) ?? resolved;
+  }
+  const point = pointerTarget(shown.element.bounds, shown.window?.bounds ?? null);
   if (!point) return { ok: false, code: "input_requires_foreground" };
   if (!action.foreground) {
     const at = { x: point[0], y: point[1] };
-    const target = windowFor(native.windows(app.pid), window?.bounds ?? null, at);
+    const target = windowFor(native.windows(app.pid), shown.window?.bounds ?? null, at);
     if (!target) return { ok: false, code: "input_requires_foreground" };
-    return postPointer(native, app.pid, target, at, action);
+    return postPointer(native, app.pid, target, at, action, !pointerOnly);
   }
   // Real pointer input moves the user's cursor and lands on whatever window is
   // on top, so it runs only where the app's own element is the topmost one at
@@ -1047,6 +1122,14 @@ async function execute(
   const xa11y = (await import("@crowecawcaw/xa11y")).default;
   const { App } = xa11y;
   const native = await (nativeLibrary ??= loadMacNative());
+  if (request.kind === "permissions")
+    return {
+      ok: true,
+      permissions: {
+        accessibility: native.isAccessibilityTrusted(),
+        screenRecording: native.canCaptureScreen(),
+      },
+    };
   const focus = focusGuard(native);
   if (bringsAppForward(request)) focus.disarm();
   else focus.arm();

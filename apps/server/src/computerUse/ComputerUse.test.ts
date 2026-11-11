@@ -107,6 +107,11 @@ it.each<[string, ComputerStep, ComputerAction]>([
   ["hover onto an element", { action: "hover", ref: 1 }, { kind: "move" }],
   ["type", { action: "type", ref: 3, text: "hi" }, { kind: "type", text: "hi", replace: false }],
   [
+    "type into the focused element",
+    { action: "type", text: "hi" },
+    { kind: "type", text: "hi", replace: false },
+  ],
+  [
     "type with clear as a value replacement",
     { action: "type", name: "Name", text: "hi", clear: true },
     { kind: "type", text: "hi", replace: true },
@@ -139,7 +144,7 @@ it.each<[string, ComputerStep, ComputerUseError["code"]]>([
   ["both an element and a point", { action: "click", ref: 1, x: 1, y: 1 }, "invalid_input"],
   ["x without y", { action: "hover", x: 1 }, "invalid_input"],
   ["type without text", { action: "type", ref: 3 }, "invalid_input"],
-  ["type without an element", { action: "type", text: "hi" }, "invalid_ref"],
+  ["clear without an element", { action: "type", text: "hi", clear: true }, "invalid_input"],
   ["type at a point", { action: "type", x: 1, y: 1, text: "hi" }, "invalid_input"],
   ["press without a key", { action: "press", ref: 3 }, "invalid_input"],
   ["press with an unknown key", { action: "press", key: "Hyper" }, "invalid_key"],
@@ -170,6 +175,11 @@ const setup = (calls: WorkerRequest[], enabled = true, failAction = false) =>
         withSession: (effect) => effect,
         execute: (request) =>
           Effect.sync(() => {
+            if (request.kind === "permissions")
+              return {
+                ok: true as const,
+                permissions: { accessibility: true, screenRecording: false },
+              };
             calls.push(request);
             return request.kind === "snapshot"
               ? { ok: true as const, snapshot: { ...snapshot, app: request.app } }
@@ -324,14 +334,19 @@ it.effect(
       expect(calls).toHaveLength(0);
 
       yield* settings.updateSettings({ computerUseAllowAllApps: true, computerUseAllowedApps: [] });
-      expect(yield* computer.status).toMatchObject({ allowAllApps: true, allowedApps: [] });
+      expect(yield* computer.status).toMatchObject({
+        allowAllApps: true,
+        allowedApps: [],
+        accessibilityPermission: true,
+        screenRecordingPermission: false,
+      });
       const opened = yield* computer.open("a", input);
       const result = yield* computer.act("a", {
         snapshotId: opened.snapshotId,
         steps: [{ ref: 1, action: "click" }],
       });
       expect(result.completed).toEqual(["accessibility"]);
-      expect(calls.map((call) => [call.kind, call.app])).toEqual([
+      expect(calls.map((call) => [call.kind, "app" in call && call.app])).toEqual([
         ["open", "TextEdit"],
         ["snapshot", "TextEdit"],
         ["action", "TextEdit"],

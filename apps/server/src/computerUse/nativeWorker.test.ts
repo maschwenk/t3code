@@ -6,6 +6,7 @@ import { expect, it } from "@effect/vitest";
 import {
   agentMenuBar,
   backgroundAction,
+  clickNeedsPointer,
   findShortcut,
   identityMatches,
   launchServicesPids,
@@ -47,6 +48,19 @@ it.each([
   "runs %s in the background only through an advertised action",
   (_, action, available, expected) => {
     expect(backgroundAction(action, available)).toBe(expected);
+  },
+);
+
+it.each([
+  ["a web tree item", "tree_item", true, { kind: "click", button: "left", count: 1 }, true],
+  ["a web row", "row", true, { kind: "click", button: "left", count: 1 }, true],
+  ["a native tree item", "tree_item", false, { kind: "click", button: "left", count: 1 }, false],
+  ["a web button", "button", true, { kind: "click", button: "left", count: 1 }, false],
+  ["a right click", "tree_item", true, { kind: "click", button: "right", count: 1 }, false],
+] as const)(
+  "posts a pointer click on %s only where press would just select it",
+  (_, role, inWebContent, action, expected) => {
+    expect(clickNeedsPointer(action, role, inWebContent)).toBe(expected);
   },
 );
 
