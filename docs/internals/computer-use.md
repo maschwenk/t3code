@@ -54,6 +54,15 @@ For tabs, each caller and tab keeps a map from integer to Playwright ref. Its co
 - **Delivery:** the verbs are shared, the input paths are not. Apps report `via` per step (accessibility, keyboard event, pointer event, takeover). In the 11-08 bake-off, tab typing was one `insertText` event and tab scrolling was a JS scroll with no wheel event. Tabs should report `via` too.
 - **Escape hatch:** pages Playwright can't drive stay reachable through computer tools on T3's own window ([computer/tools.ts](../../apps/server/src/mcp/toolkits/computer/tools.ts)).
 
+## Goal steps: a fast model for clicking around
+
+`preview_execute` takes a `goal` step ([BrowserGoal.ts](../../apps/server/src/preview/BrowserGoal.ts)). The server observes the tab, asks TypeSafe's Jev, a choice model, which listed control to click next, acts, and repeats until Jev says done. That costs about 0.3 s a step, where an agent turn per click costs about 3 s.
+
+- **Added to the fork's batch tool, not a replacement for the tools.** Jev only picks among clicks, scrolls and "done". Typing, uploads, dialogs and checking the result stay with the agent, and known steps stay direct because they need no model. Everything it touches is fork-only, so upstream syncs don't conflict.
+- **Credentials** come from the `jev-browser-use` skill's `~/.config/jev-browser-use/config.json` (`provider`, `model`, `envFile`), read on every call. Without it a goal step stops with `goal_unavailable`.
+- **Jev reads up to 48 KB of tree.** The agent default of 16 KB hides most of a long page, and Jev can only click what it is shown. `observe` takes `maxBytes` for this.
+- **A control is offered only when its name picks out one target.** Links that share a name and URL count once. Anything matching the caller's `deny` list is never offered.
+
 ## Upstream
 
 Upstream's Cua stack, https://github.com/pingdotgg/t3code/pull/16527 through https://github.com/pingdotgg/t3code/pull/16532, is all open, five of six as drafts; the top layer was updated 2026-11-08. It adds:

@@ -530,6 +530,8 @@ type SnapshotInput = {
   /** Headless pages render at the scale the server set; a desktop page at its display's. */
   readonly renderScale: number | "display";
   readonly fullScreenshot?: boolean | undefined;
+  /** Observations past the agent default, for goal runs whose decider reads the whole page. */
+  readonly maxTreeChars?: number;
   readonly consoleEntries: ReadonlyArray<PreviewAutomationConsoleEntry>;
   readonly networkEntries: ReadonlyArray<PreviewAutomationNetworkEntry>;
   readonly actionTimeline: PreviewAutomationSnapshot["actionTimeline"];
@@ -618,8 +620,9 @@ const capture = async (
   // masking, which could hide the `data:` scheme behind a password value's dots.
   const redacted = withoutTreeDataPayloads(tree);
   const maskedTree = dotted ? maskTree(redacted, dotted) : redacted;
+  const treeLimit = Math.max(MAX_VISIBLE_TEXT_LENGTH, input.maxTreeChars ?? 0);
   const accessibilityTree = maskedTree
-    .slice(0, MAX_VISIBLE_TEXT_LENGTH)
+    .slice(0, treeLimit)
     .replace(/\[ref=((?:f\d+)?e\d+)\]/g, (_match, nativeRef: string) => {
       const ref = `t3-${generation}-${nativeRef}`;
       state.refs.set(ref, nativeRef);
@@ -643,7 +646,7 @@ const capture = async (
     generation,
     epoch,
     readiness,
-    truncated: maskedTree.length > MAX_VISIBLE_TEXT_LENGTH,
+    truncated: maskedTree.length > treeLimit,
   });
   return result;
 };
@@ -704,8 +707,14 @@ export const observe = async (
   input: SnapshotInput,
   caller: string | undefined,
   baselineId?: string,
+  maxBytes = OBSERVATION_BYTES,
 ): Promise<PreviewAutomationObservation> => {
-  const captured = await snapshot({ ...input, includeImage: false, settle: true });
+  const captured = await snapshot({
+    ...input,
+    includeImage: false,
+    settle: true,
+    maxTreeChars: maxBytes,
+  });
   const revision = captureRevisions.get(captured)!;
   if (refsFor(input.page).generation !== revision.generation) throw pageChanged();
   const refPrefix = `t3-${revision.generation}-`;
@@ -717,7 +726,7 @@ export const observe = async (
   let bytes = 0;
   for (const line of normalized.split("\n")) {
     const size = Buffer.byteLength(line) + (tree ? 1 : 0);
-    if (bytes + size > OBSERVATION_BYTES) break;
+    if (bytes + size > maxBytes) break;
     tree += (tree ? "\n" : "") + line;
     bytes += size;
   }

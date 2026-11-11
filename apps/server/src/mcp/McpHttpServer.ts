@@ -73,6 +73,7 @@ import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
 import * as OrchestratorHandlers from "./toolkits/orchestrator/handlers.ts";
 import { OrchestratorToolkit } from "./toolkits/orchestrator/tools.ts";
 import * as BrowserExecutor from "../preview/BrowserExecutor.ts";
+import * as BrowserGoal from "../preview/BrowserGoal.ts";
 import * as PreviewHandlers from "./toolkits/preview/handlers.ts";
 import {
   PreviewSnapshotTool,
@@ -1239,7 +1240,7 @@ export const layerHtmlToolkit = Layer.mergeAll(
 const layerPreviewStandardToolkitRegistration = toolkitRegistration(
   PreviewStandardToolkit,
   PreviewHandlers.layerStandard,
-).pipe(Layer.provide(BrowserExecutor.layer));
+).pipe(Layer.provide(BrowserExecutor.layer.pipe(Layer.provide(BrowserGoal.layerJev))));
 
 const layerPreviewSnapshotRegistration = imageToolRegistration(
   registerPreviewSnapshot(),

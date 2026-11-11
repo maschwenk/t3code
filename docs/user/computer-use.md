@@ -73,6 +73,11 @@ For websites, use the existing **Browser** panel and ask Claude to use its brows
 has navigation, screenshots, semantic locators, typing, scrolling and recording, with an animated
 agent cursor and click feedback. Desktop browser profiles remain separate from the native app allowlist.
 
+Agents can hand click-through navigation ("open the billing settings") to TypeSafe's Jev, which
+picks each click in about a third of a second. It needs a `~/.config/jev-browser-use/config.json` naming
+the provider (`poros`, `typesafe` or `openrouter`) and an `envFile` that holds its API key. The page
+contents of those steps go to that provider.
+
 Connect through [remote access](./remote-access.md) to steer Claude on the host. Native computer-use
 actions run on the environment machine, not on the phone or computer viewing the chat. The host must
 remain running and its desktop session unlocked: while the screen is locked, apps report no windows.

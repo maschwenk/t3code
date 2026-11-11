@@ -83,6 +83,11 @@ export const PreviewAutomationObserveInput = Schema.Struct({
         "Revision of a previous observation whose full tree you still have. Omit after compaction or to request a full view.",
     }),
   ),
+  maxBytes: Schema.optional(
+    Schema.Int.check(Schema.isBetween({ minimum: 1_000, maximum: 64_000 })).annotate({
+      description: "Tree size cap. Default 16000.",
+    }),
+  ),
 });
 export type PreviewAutomationObserveInput = typeof PreviewAutomationObserveInput.Type;
 

@@ -22,6 +22,7 @@ export const BrowserExecutorInput = Schema.Struct({
         "dialog",
         "waitFor",
         "close",
+        "goal",
       ]),
       tab: TabName,
       input: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
@@ -46,6 +47,30 @@ export const BrowserExecutorInput = Schema.Struct({
 });
 export type BrowserExecutorInput = typeof BrowserExecutorInput.Type;
 
+export const BrowserGoalStatus = Schema.Literals([
+  "needs_verification",
+  "blocked",
+  "low_confidence",
+  "no_progress",
+  "step_limit",
+  "unavailable",
+  "decision_error",
+  "action_error",
+  "deadline_exceeded",
+]);
+export type BrowserGoalStatus = typeof BrowserGoalStatus.Type;
+
+export const BrowserGoalRun = Schema.Struct({
+  step: Schema.Int,
+  tab: Schema.String,
+  status: BrowserGoalStatus,
+  actions: Schema.Array(Schema.String),
+  decisions: Schema.Int,
+  elapsedMs: Schema.Int,
+  message: Schema.optional(Schema.String),
+});
+export type BrowserGoalRun = typeof BrowserGoalRun.Type;
+
 export const BrowserExecutorResult = Schema.Struct({
   sessionId: Schema.String,
   tabs: Schema.Array(Schema.Struct({ name: Schema.String, tabId: PreviewTabId })),
@@ -58,5 +83,6 @@ export const BrowserExecutorResult = Schema.Struct({
   ),
   observationError: Schema.optional(Schema.Struct({ tab: Schema.String, code: Schema.String })),
   reset: Schema.optional(Schema.Boolean),
+  goals: Schema.optional(Schema.Array(BrowserGoalRun)),
 });
 export type BrowserExecutorResult = typeof BrowserExecutorResult.Type;
