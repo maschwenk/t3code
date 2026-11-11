@@ -60,8 +60,9 @@ For tabs, each caller and tab keeps a map from integer to Playwright ref. Its co
 
 - **Added to the fork's batch tool, not a replacement for the tools.** Jev only picks among clicks, scrolls and "done". Typing, uploads, dialogs and checking the result stay with the agent, and known steps stay direct because they need no model. Everything it touches is fork-only, so upstream syncs don't conflict.
 - **Credentials** come from the `jev-browser-use` skill's `~/.config/jev-browser-use/config.json` (`provider`, `model`, `envFile`), read on every call. Without it a goal step stops with `goal_unavailable`.
-- **Jev reads up to 48 KB of tree.** The agent default of 16 KB hides most of a long page, and Jev can only click what it is shown. `observe` takes `maxBytes` for this.
+- **Jev reads up to 64 KB of tree, without pixel boxes.** The agent default of 16 KB hides most of a long page, and Jev can only click what it is shown. `observe` takes `maxBytes` and `compact` for this; boxes are about a quarter of a tree.
 - **A control is offered only when its name picks out one target.** Links that share a name and URL count once. Anything matching the caller's `deny` list is never offered.
+- **Jev takes at most 255 choices**, so a goal offers at most 250 controls. An open dialog's come first, and the rest is split between page content and navigation, so a busy sidebar and a long article can't crowd each other out. Links inside collapsed menus have no accessible name and aren't offered until the menu is opened.
 
 ## Upstream
 

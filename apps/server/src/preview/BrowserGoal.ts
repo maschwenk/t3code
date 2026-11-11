@@ -179,9 +179,38 @@ const ELEMENT = new RegExp(
   `^\\s*- '?(${CLICKABLE}) "((?:[^"\\\\]|\\\\.)*)"((?: \\[[^\\]]*\\])*?) \\[ref=(\\w+)\\]`,
 );
 const STATES = /\[(checked|checked=mixed|expanded|pressed|selected)\]/g;
-const MAX_OPTIONS = 150;
+// Jev answers at most 255 choices: these controls, two scrolls, DONE, BLOCKED and WAIT.
+const MAX_OPTIONS = 250;
 /** Goal runs read past the 16 KB agent default: what Jev cannot see, it cannot click. */
-export const OBSERVE_BYTES = 48_000;
+export const OBSERVE_BYTES = 64_000;
+// When a page has more controls than MAX_OPTIONS, an open dialog's come first, and the rest is
+// split between page content and navigation (sidebars, menus, banners), so neither crowds out
+// the other: a long article still offers its links, and a busy page still offers its sidebar.
+const DIALOGS = new Set(["dialog", "alertdialog"]);
+const NAVIGATION = new Set(["navigation", "banner", "complementary", "contentinfo", "search"]);
+const placeOf = (roles: ReadonlyArray<string>) =>
+  roles.some((role) => DIALOGS.has(role))
+    ? "dialog"
+    : roles.some((role) => NAVIGATION.has(role)) && !roles.includes("main")
+      ? "navigation"
+      : "content";
+const withinBudget = <T extends { readonly place: string }>(items: ReadonlyArray<T>) => {
+  const dialog = items.filter((item) => item.place === "dialog").slice(0, MAX_OPTIONS);
+  const content = items.filter((item) => item.place === "content");
+  const navigation = items.filter((item) => item.place === "navigation");
+  const left = MAX_OPTIONS - dialog.length;
+  const forContent = Math.min(
+    content.length,
+    Math.max(Math.ceil(left / 2), left - navigation.length),
+  );
+  const chosen = new Set([
+    ...dialog,
+    ...content.slice(0, forContent),
+    ...navigation.slice(0, left - forContent),
+  ]);
+  return items.filter((item) => chosen.has(item));
+};
+const LINE = /^(\s*)- '?(\w+)/;
 /** Pixel boxes and cursor hints only cost Jev tokens; it never targets coordinates. */
 const forDecider = (tree: string) => tree.replace(/ \[(?:box=[^\]]*|cursor=pointer)\]/g, "");
 const MIN_CONFIDENCE = 0.55;
@@ -199,7 +228,15 @@ export interface GoalAction {
  * share a name and URL count once, other repeated names are ambiguous and left out. */
 export const goalActions = (tree: string, deny: ReadonlyArray<string> = []): GoalAction[] => {
   const lines = tree.split("\n");
+  const ancestors: Array<{ indent: number; role: string }> = [];
   const found = lines.flatMap((line, index) => {
+    const shape = LINE.exec(line);
+    if (shape) {
+      const indent = shape[1]!.length;
+      while (ancestors.length && ancestors.at(-1)!.indent >= indent) ancestors.pop();
+      ancestors.push({ indent, role: shape[2]! });
+    }
+    const place = placeOf(ancestors.map((ancestor) => ancestor.role));
     const match = ELEMENT.exec(line);
     if (!match || match[3]!.includes("[disabled]")) return [];
     const quoted = line.trimStart().startsWith("- '") ? match[2]!.replaceAll("''", "'") : match[2]!;
@@ -213,25 +250,23 @@ export const goalActions = (tree: string, deny: ReadonlyArray<string> = []): Goa
     const url =
       match[1] === "link" ? /^\s*- \/url: (.+)$/.exec(lines[index + 1] ?? "")?.[1] : undefined;
     const states = [...match[3]!.matchAll(STATES)].map((state) => state[1]);
-    return [{ role: match[1]!, name, ref: match[4]!, states, target: url ?? match[4]! }];
+    return [{ role: match[1]!, name, ref: match[4]!, states, target: url ?? match[4]!, place }];
   });
   const targets = new Map<string, Set<string>>();
   for (const item of found)
     targets.set(item.name, (targets.get(item.name) ?? new Set()).add(item.target));
   const offered = new Set<string>();
   const denied = deny.map((value) => value.toLowerCase());
-  const clicks = found
-    .filter((item) => {
-      if (targets.get(item.name)!.size !== 1 || offered.has(item.name)) return false;
-      offered.add(item.name);
-      return !denied.some((value) => item.name.toLowerCase().includes(value));
-    })
-    .slice(0, MAX_OPTIONS)
-    .map((item): GoalAction => ({
-      kind: "click",
-      ref: item.ref,
-      description: `Click ${item.role} ${JSON.stringify(item.name)}${item.states.length ? ` (${item.states.join(", ")})` : ""}`,
-    }));
+  const allowed = found.filter((item) => {
+    if (targets.get(item.name)!.size !== 1 || offered.has(item.name)) return false;
+    offered.add(item.name);
+    return !denied.some((value) => item.name.toLowerCase().includes(value));
+  });
+  const clicks = withinBudget(allowed).map((item): GoalAction => ({
+    kind: "click",
+    ref: item.ref,
+    description: `Click ${item.role} ${JSON.stringify(item.name)}${item.states.length ? ` (${item.states.join(", ")})` : ""}`,
+  }));
   return [
     ...clicks,
     { kind: "scroll", deltaY: SCROLL_PX, description: "Scroll the page down" },
@@ -271,7 +306,7 @@ export const runGoal = Effect.fn("BrowserGoal.run")(function* <E>(
   let waits = 0;
   let stale = 0;
   let retried = false;
-  let before: { content: string; action: GoalAction } | undefined;
+  let before: { seen: string; action: GoalAction } | undefined;
   const finish = (status: BrowserGoalStatus, message?: string) =>
     Clock.currentTimeMillis.pipe(
       Effect.map((now): GoalOutcome => ({
@@ -296,7 +331,10 @@ export const runGoal = Effect.fn("BrowserGoal.run")(function* <E>(
     const page = observed.success;
     if (page.mode !== "full") return yield* finish("action_error", "observe returned a delta");
     const content = forDecider(page.tree);
-    if (before?.content === content)
+    // A new URL or title is progress even when the tree is unchanged, such as a Slack channel
+    // switch whose message pane falls past the tree budget.
+    const seen = `${page.url}\n${page.title}\n${content}`;
+    if (before?.seen === seen)
       return yield* finish("no_progress", `${before.action.description} changed nothing`);
     if (actions.length >= maxSteps) return yield* finish("step_limit");
     const available = goalActions(page.tree, input.deny);
@@ -356,6 +394,6 @@ export const runGoal = Effect.fn("BrowserGoal.run")(function* <E>(
     const screen = /heading "((?:[^"\\]|\\.)*)"/.exec(page.tree)?.[1] ?? page.title;
     history.push(`On "${screen}": ${action.description}`);
     actions.push(`${action.description} (${confidence.toFixed(2)})`);
-    before = { content, action };
+    before = { seen, action };
   }
 });

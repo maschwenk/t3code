@@ -2390,6 +2390,7 @@ const make = Effect.gen(function* () {
             request.agentSessionId,
             (input as PreviewAutomationObserveInput).baselineId,
             (input as PreviewAutomationObserveInput).maxBytes,
+            (input as PreviewAutomationObserveInput).compact,
           ),
         );
       case "snapshot": {

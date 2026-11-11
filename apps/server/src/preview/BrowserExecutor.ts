@@ -199,7 +199,11 @@ const make = Effect.gen(function* () {
                 item.input,
                 {
                   observe: (timeoutMs) =>
-                    invoke("observe", { maxBytes: BrowserGoal.OBSERVE_BYTES }, timeoutMs).pipe(
+                    invoke(
+                      "observe",
+                      { maxBytes: BrowserGoal.OBSERVE_BYTES, compact: true },
+                      timeoutMs,
+                    ).pipe(
                       Effect.flatMap((value) =>
                         Effect.fromResult(decodeObservation(value)).pipe(
                           Effect.mapError(() => ({ _tag: "invalid_observation_response" })),

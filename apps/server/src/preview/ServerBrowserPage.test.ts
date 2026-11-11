@@ -104,6 +104,31 @@ describe("server browser element refs", () => {
       baselineId,
     );
 
+  it("drops pixel boxes and zero-area elements from compact observations", async () => {
+    await page.setContent(
+      '<button>open</button><div role="alert" style="position:absolute;width:1px;height:1px;overflow:hidden">loading…</div>',
+    );
+    const view = await ServerBrowserPage.observe(
+      {
+        page,
+        cdp,
+        includeImage: false,
+        renderScale: 1,
+        consoleEntries: [],
+        networkEntries: [],
+        actionTimeline: [],
+      },
+      "agent-compact",
+      undefined,
+      16_000,
+      true,
+    );
+    if (view.mode !== "full") throw new Error("Expected a full observation");
+    expect(view.tree).toContain('button "open"');
+    expect(view.tree).not.toContain("loading");
+    expect(view.tree).not.toContain("[box=");
+  });
+
   it("returns reconstructable changes with fresh refs and a full view after takeover", async () => {
     await page.setContent(repeatedRows);
     const first = await observe();
