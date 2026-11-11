@@ -22,6 +22,9 @@ To unlock it with the 1Password app and Touch ID instead, add T3 Code in **1Pass
 Settings → Browser → Add Browser**. 1Password only accepts code-signed apps in the
 Applications folder, so this works with an installed T3 Code build, not a development build.
 
+Agents see 1Password's sign-in panel and menus in the preview and can click them, for example
+its **Sign in** button. They never see passwords, one-time codes or other field values.
+
 ## Okta Verify
 
 Okta Verify is a desktop app, not an extension. Sign-in pages reach it in two ways, and the

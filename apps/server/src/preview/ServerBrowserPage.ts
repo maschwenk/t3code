@@ -432,6 +432,96 @@ const maskTree = (tree: string, dotted: RegExp) =>
     })
     .join("\n");
 
+const EXTENSION_FRAME = "chrome-extension://";
+const VALUE_ROLES = new Set(["textbox", "searchbox", "combobox", "spinbutton"]);
+// What a password manager displays besides labels: one-time codes ("482 913") and suggested passwords.
+const ONE_TIME_CODE = /(?<!\d)\d{3,4}[ \u00a0]?\d{3,4}(?!\d)/g;
+const generatedSecret = (token: string) =>
+  !/^[^@\s]+@[^@\s]+\.\w+$/.test(token) &&
+  !/^[a-z][\w+.-]*:\/\//i.test(token) &&
+  [/[a-z]/, /[A-Z]/, /\d/, /[^A-Za-z\d]/].filter((kind) => kind.test(token)).length >= 3;
+const redactExtensionText = (text: string) =>
+  text
+    .replace(ONE_TIME_CODE, MASKED_VALUE)
+    .replace(/\S{12,}/g, (token) => (generatedSecret(token) ? MASKED_VALUE : token));
+
+/**
+ * An extension frame's tree as one labelled node with page-relative boxes. Field values go and
+ * codes or generated passwords in text are masked: agents get the labels and buttons only.
+ */
+export const extensionTree = (
+  title: string,
+  tree: string,
+  frame: {
+    readonly x: number;
+    readonly y: number;
+    readonly width: number;
+    readonly height: number;
+  },
+) => {
+  const box = (x: number, y: number, width: number, height: number) =>
+    `[box=${Math.round(x)},${Math.round(y)},${Math.round(width)},${Math.round(height)}]`;
+  const lines = tree.split("\n").flatMap((line) => {
+    const node = TREE_LINE.exec(line);
+    if (!node) return [];
+    const [, head = "", name = "", attributes = "", value] = node;
+    const role = head.replace(/^\s*- '?/, "");
+    const shownName = name.startsWith(' "')
+      ? ` "${redactExtensionText(name.slice(2, -1))}"`
+      : redactExtensionText(name);
+    const shownAttributes = attributes.replace(
+      /\[box=(-?\d+),(-?\d+),(\d+),(\d+)\]/,
+      (_match, x: string, y: string, width: string, height: string) =>
+        box(frame.x + Number(x), frame.y + Number(y), Number(width), Number(height)),
+    );
+    const shownValue =
+      value === undefined || value === ":"
+        ? (value ?? "")
+        : VALUE_ROLES.has(role)
+          ? ""
+          : `: ${redactExtensionText(value.slice(1).trimStart())}`;
+    return [`  ${head}${shownName}${shownAttributes}${shownValue}`];
+  });
+  const label = JSON.stringify(redactExtensionText(title.trim() || "extension"));
+  return [
+    `- extension ${label} ${box(frame.x, frame.y, frame.width, frame.height)}:`,
+    ...lines,
+  ].join("\n");
+};
+
+/**
+ * Extension UI the page tree can't reach, such as 1Password's panels in closed shadow roots.
+ * Playwright reads each frame in its own utility world, which page script can't touch, and
+ * its refs resolve into that frame; desktop tabs route the click there (GuestInput).
+ */
+const extensionTrees = async (page: Page, pageTree: string, deadline: number) => {
+  let shown = pageTree;
+  const trees: string[] = [];
+  for (const frame of page.frames()) {
+    if (!frame.url().startsWith(EXTENSION_FRAME)) continue;
+    const timeout = deadline - Date.now();
+    if (timeout < 200) break;
+    try {
+      const owner = await frame.frameElement();
+      const box = await owner.boundingBox().finally(() => void owner.dispose().catch(constVoid));
+      if (!box || box.width < 2 || box.height < 2) continue;
+      const [title, tree] = await Promise.all([
+        answered(frame.title()),
+        frame.locator("body").ariaSnapshot({ mode: "ai", boxes: true, timeout }),
+      ]);
+      const prefix = /\[ref=(f\d+)e\d+\]/.exec(tree)?.[1];
+      // Frames the page tree already shows, or one nested in an earlier extension frame.
+      if (!prefix || shown.includes(`[ref=${prefix}e`)) continue;
+      const node = extensionTree(title ?? "", tree, box);
+      trees.push(node);
+      shown += `\n${node}`;
+    } catch {
+      // A panel that closed mid-read is simply absent.
+    }
+  }
+  return trees;
+};
+
 /** Chromium sizes the capture, so the reported size is read from the PNG header. */
 const pngSize = (base64: string) => {
   const header = Buffer.from(base64.slice(0, 32), "base64");
@@ -593,7 +683,7 @@ const capture = async (
   ]);
   void pageAndScreenshot.catch(constVoid);
   // Leaves time for the second read; a frame that never loads holds the tree until then.
-  const tree = await input.page.ariaSnapshot({
+  const pageTree = await input.page.ariaSnapshot({
     mode: "ai",
     boxes: true,
     timeout: Math.max(1, deadline - Date.now() - 2_000),
@@ -602,11 +692,14 @@ const capture = async (
   // A value that changed meanwhile may be in the tree under neither reading.
   if (after.some((values, i) => values && JSON.stringify(values) !== JSON.stringify(before[i])))
     throw pageChanged();
+  // First, so a long page's tree can't push a sign-in panel past the cut.
+  const extensions = await extensionTrees(input.page, pageTree, deadline - 1_000);
+  const tree = [...extensions, pageTree].join("\n");
   const dotted = dottedPattern(after.flatMap((values) => values ?? []));
   // Unread frames can expose values only if their content appears in the tree.
   const unread = readers.flatMap((reader, i) => (after[i] ? [] : reader.frames));
   const filled = /^\s*- iframe (?:\[active\] )?\[ref=(\S+?)\].*:$/gm;
-  for (const [, ref] of unread.length ? tree.matchAll(filled) : []) {
+  for (const [, ref] of unread.length ? pageTree.matchAll(filled) : []) {
     const iframe = await input.page.locator(`aria-ref=${ref}`).elementHandle({ timeout: 2_000 });
     if (!iframe) throw pageChanged();
     const frame = await iframe.contentFrame();

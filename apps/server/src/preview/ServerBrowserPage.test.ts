@@ -18,6 +18,38 @@ import {
 
 import * as ServerBrowserPage from "./ServerBrowserPage.ts";
 
+it("labels extension UI with page boxes and never shows its field values, codes or generated passwords", () => {
+  // Playwright's tree of a 1Password-shaped panel, with its boxes relative to the frame.
+  const frameTree = [
+    '- dialog "Sign in with 1Password" [ref=f1e2] [box=0,0,360,63]:',
+    "  - text: Cloudflare · max.schwenk@owner.com",
+    '  - button "Sign in" [ref=f1e3] [box=236,0,57,21]',
+    '  - textbox "Password" [ref=f1e6] [box=153,21,153,21]: hunter2-secret',
+    '  - textbox "One-time code" [ref=f1e8] [box=64,42,153,21]: "482913"',
+    "  - text: Current code 482 913",
+    '  - button "Use suggested password xK7#mP2$qL9!vR4" [ref=f1e9]',
+  ].join("\n");
+  expect(
+    ServerBrowserPage.extensionTree("1Password", frameTree, {
+      x: 460,
+      y: 8,
+      width: 360,
+      height: 120,
+    }),
+  ).toBe(
+    [
+      '- extension "1Password" [box=460,8,360,120]:',
+      '  - dialog "Sign in with 1Password" [ref=f1e2] [box=460,8,360,63]:',
+      "    - text: Cloudflare · max.schwenk@owner.com",
+      '    - button "Sign in" [ref=f1e3] [box=696,8,57,21]',
+      '    - textbox "Password" [ref=f1e6] [box=613,29,153,21]',
+      '    - textbox "One-time code" [ref=f1e8] [box=524,50,153,21]',
+      "    - text: Current code ••••••••",
+      '    - button "Use suggested password ••••••••" [ref=f1e9]',
+    ].join("\n"),
+  );
+});
+
 describe("server browser element refs", () => {
   let browser: Browser;
   let context: BrowserContext;
