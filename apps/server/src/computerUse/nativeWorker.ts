@@ -1037,7 +1037,7 @@ async function act(
   if (
     pointerOnly &&
     request.target &&
-    (element.bounds?.height ?? 0) < 8 &&
+    ((element.bounds?.height ?? 0) < 8 || request.target.states.includes("offscreen")) &&
     element.actions.includes("scroll_to_visible")
   ) {
     await element.performAction("scroll_to_visible");
