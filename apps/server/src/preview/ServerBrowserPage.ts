@@ -708,20 +708,23 @@ export const observe = async (
   caller: string | undefined,
   baselineId?: string,
   maxBytes = OBSERVATION_BYTES,
+  compact = false,
 ): Promise<PreviewAutomationObservation> => {
   const captured = await snapshot({
     ...input,
     includeImage: false,
     settle: true,
-    maxTreeChars: maxBytes,
+    // Boxes and cursor hints are about a quarter of a tree, so a compact read starts from more.
+    maxTreeChars: compact ? Math.ceil(maxBytes * 1.4) : maxBytes,
   });
   const revision = captureRevisions.get(captured)!;
   if (refsFor(input.page).generation !== revision.generation) throw pageChanged();
   const refPrefix = `t3-${revision.generation}-`;
-  const normalized = String(captured.accessibilityTree || captured.visibleText).replace(
+  const full = String(captured.accessibilityTree || captured.visibleText).replace(
     /\[ref=t3-[a-z0-9-]+-((?:f\d+)?e\d+)\]/g,
     "[ref=$1]",
   );
+  const normalized = compact ? full.replace(/ \[(?:box=[^\]]*|cursor=pointer)\]/g, "") : full;
   let tree = "";
   let bytes = 0;
   for (const line of normalized.split("\n")) {

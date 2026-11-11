@@ -42,3 +42,36 @@ it("offers enabled, allowed controls whose name picks out one target", () => {
     [undefined, "Scroll the page up"],
   ]);
 });
+
+const page = (dialog: number, content: number, navigation: number) => {
+  const links = (prefix: string, count: number, indent: string) =>
+    Array.from({ length: count }, (_, i) => `${indent}- link "${prefix} ${i}" [ref=${prefix}${i}]`);
+  return [
+    "- generic [ref=root]:",
+    "  - complementary [ref=side]:",
+    "    - navigation [ref=nav]:",
+    ...links("nav", navigation, "      "),
+    "  - main [ref=main]:",
+    ...links("content", content, "    "),
+    "    - navigation [ref=toc]:",
+    '      - link "In-article contents" [ref=toc1]',
+    ...(dialog ? ['  - dialog "Quick search" [ref=dlg]:', ...links("dialog", dialog, "    ")] : []),
+  ].join("\n");
+};
+const counts = (tree: string) => {
+  const refs = goalActions(tree).flatMap((action) => (action.ref ? [action.ref] : []));
+  return ["dialog", "content", "nav"].map(
+    (prefix) => refs.filter((ref) => ref.startsWith(prefix)).length,
+  );
+};
+
+it.each([
+  { dialog: 10, content: 200, navigation: 200, expected: [10, 120, 120] },
+  { dialog: 0, content: 400, navigation: 30, expected: [0, 220, 30] },
+  { dialog: 0, content: 20, navigation: 400, expected: [0, 20, 229] },
+])(
+  "keeps an open dialog and shares the other 250 slots between content and navigation ($expected)",
+  ({ dialog, content, navigation, expected }) => {
+    expect(counts(page(dialog, content, navigation))).toEqual(expected);
+  },
+);

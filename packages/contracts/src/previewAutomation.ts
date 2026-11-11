@@ -88,6 +88,9 @@ export const PreviewAutomationObserveInput = Schema.Struct({
       description: "Tree size cap. Default 16000.",
     }),
   ),
+  compact: Schema.optional(
+    Schema.Boolean.annotate({ description: "Drop pixel boxes to fit more of the page." }),
+  ),
 });
 export type PreviewAutomationObserveInput = typeof PreviewAutomationObserveInput.Type;
 
