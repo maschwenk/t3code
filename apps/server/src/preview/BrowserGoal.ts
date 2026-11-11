@@ -14,6 +14,10 @@ import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } fr
 export const GoalInput = Schema.Struct({
   goal: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(1000)),
   maxSteps: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 30 }))),
+  // Lower it for low-stakes picks where several options are fine, such as a game move.
+  minConfidence: Schema.optional(
+    Schema.Number.check(Schema.isBetween({ minimum: 0.1, maximum: 0.95 })),
+  ),
   deny: Schema.optional(
     Schema.Array(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(100))).check(
       Schema.isMaxLength(50),
@@ -325,7 +329,7 @@ export const runGoal = Effect.fn("BrowserGoal.run")(function* <E>(
     const { choice, confidence } = decided.success;
     if (choice === "DONE") return yield* finish("needs_verification");
     if (choice === "BLOCKED") return yield* finish("blocked");
-    if (confidence < MIN_CONFIDENCE)
+    if (confidence < (input.minConfidence ?? MIN_CONFIDENCE))
       return yield* finish("low_confidence", `${options[choice]} at ${confidence.toFixed(2)}`);
     if (choice === "WAIT") {
       if (++waits >= 3) return yield* finish("no_progress", "the page kept loading");
