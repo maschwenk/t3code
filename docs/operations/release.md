@@ -626,6 +626,10 @@ Notes:
     managed capability: the Account Holder requests it through the
     [macOS Browsers Passkeys form](https://developer.apple.com/contact/request/macos-browsers-passkeys/).
     After approval, regenerate the profile and update `MACOS_PROVISIONING_PROFILE`.
+  - With neither, the in-app browser refuses a page's passkey sign-in or registration at once.
+    Chromium has no passkey sheet of its own there, and password manager extensions such as
+    1Password hand requests back to the browser when their prompt closes, so the page could
+    otherwise wait forever.
 
 ## 3) Azure Trusted Signing setup (Windows)
 

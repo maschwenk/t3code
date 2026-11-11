@@ -2,7 +2,7 @@ import { assert, describe, it } from "@effect/vitest";
 import { afterEach, vi } from "vite-plus/test";
 
 import { PASSKEY_CREATE_CHANNEL, PASSKEY_GET_CHANNEL } from "./GuestProtocol.ts";
-import { installPasskeyBridge } from "./PasskeyBridge.ts";
+import { installPasskeyBridge, refuseModalPasskeys } from "./PasskeyBridge.ts";
 
 const base64Url = (bytes: ReadonlyArray<number>) => Buffer.from(bytes).toString("base64url");
 const bytesOf = (buffer: ArrayBuffer | null) => (buffer ? [...new Uint8Array(buffer)] : null);
@@ -27,9 +27,15 @@ const illegalInvocation = (): never => {
   throw new TypeError("Illegal invocation");
 };
 
-const install = (respond: (channel: string) => unknown) => {
+const install = (
+  respond: (channel: string) => unknown,
+  setup: (
+    invoke: (channel: string, publicKey: unknown) => Promise<unknown>,
+  ) => void = installPasskeyBridge,
+) => {
   const nativeCreate = vi.fn(async () => "native-create");
   const nativeGet = vi.fn(async () => "native-get");
+  const nativeUserVerifying = async () => false;
   class FakeCredentialsContainer {
     create() {
       return nativeCreate();
@@ -39,6 +45,7 @@ const install = (respond: (channel: string) => unknown) => {
     }
   }
   class FakePublicKeyCredential {
+    static isUserVerifyingPlatformAuthenticatorAvailable = nativeUserVerifying;
     get id() {
       return illegalInvocation();
     }
@@ -62,11 +69,12 @@ const install = (respond: (channel: string) => unknown) => {
   vi.stubGlobal("AuthenticatorAssertionResponse", FakeAssertionResponse);
 
   const invoke = vi.fn(async (channel: string, _publicKey: unknown) => respond(channel));
-  installPasskeyBridge(invoke);
+  setup(invoke);
   return {
     invoke,
     nativeCreate,
     nativeGet,
+    nativeUserVerifying,
     credentials: new FakeCredentialsContainer() as unknown as CredentialsContainer,
     FakePublicKeyCredential,
     FakeAttestationResponse,
@@ -157,5 +165,45 @@ describe("installPasskeyBridge", () => {
     const error = await pending;
     assert.instanceOf(error, DOMException);
     assert.strictEqual((error as DOMException).name, "AbortError");
+  });
+});
+
+describe("refuseModalPasskeys", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("settles a modal ceremony at once instead of leaving it on a browser with no sheet", async () => {
+    const { invoke, nativeCreate, nativeGet, nativeUserVerifying, credentials } = install(
+      () => undefined,
+      () => refuseModalPasskeys(),
+    );
+    // Password managers keep the browser's get from document start and fall back to it.
+    const browserGet = credentials.get.bind(credentials);
+
+    const fetched = await browserGet({ publicKey: { challenge: new Uint8Array([1]) } }).catch(
+      (error: unknown) => error,
+    );
+    assert.instanceOf(fetched, DOMException);
+    assert.strictEqual((fetched as DOMException).name, "NotAllowedError");
+    const created = await credentials
+      .create({ publicKey: creationOptions })
+      .catch((error: unknown) => error);
+    assert.strictEqual((created as DOMException).name, "NotAllowedError");
+    assert.strictEqual(nativeGet.mock.calls.length + nativeCreate.mock.calls.length, 0);
+    assert.strictEqual(invoke.mock.calls.length, 0);
+
+    // Autofill requests and feature checks still describe the real browser.
+    assert.strictEqual(
+      await credentials.get({
+        mediation: "conditional",
+        publicKey: { challenge: new Uint8Array([1]) },
+      }),
+      "native-get" as unknown as Credential,
+    );
+    assert.strictEqual(
+      PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable,
+      nativeUserVerifying,
+    );
   });
 });
