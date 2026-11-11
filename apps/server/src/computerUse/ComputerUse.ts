@@ -158,12 +158,13 @@ export function planStep(
     case "wait":
       return step.ms === undefined ? "invalid_input" : plan({ kind: "wait", ms: step.ms });
   }
+  if (step.action === "type") {
+    if (step.text === undefined || (step.clear && !target)) return "invalid_input";
+    // Without a target the text goes to the focused element, like press.
+    return plan({ kind: "type", text: step.text, replace: step.clear ?? false });
+  }
   if (!target) return "invalid_ref";
   switch (step.action) {
-    case "type":
-      return step.text === undefined
-        ? "invalid_input"
-        : plan({ kind: "type", text: step.text, replace: step.clear ?? false });
     case "scroll":
       return step.deltaX === undefined && step.deltaY === undefined
         ? "invalid_input"
@@ -205,6 +206,9 @@ export class ComputerUse extends Context.Service<
         allowAllApps: boolean;
         allowedApps: readonly string[];
         screenCaptureEnabled: boolean;
+        /** macOS only: whether the T3 host process holds these permissions. */
+        accessibilityPermission?: boolean;
+        screenRecordingPermission?: boolean;
       },
       ComputerUseError
     >;
@@ -260,15 +264,28 @@ const make = Effect.gen(function* () {
           }),
       ),
     );
-  const status = settings.getSettings.pipe(
-    Effect.map((current) => ({
+  const status = Effect.gen(function* () {
+    const current = yield* settings.getSettings.pipe(
+      Effect.mapError((cause) => new ComputerUseError({ code: "disabled", cause })),
+    );
+    // Off macOS, or when the helper cannot start, the permission fields are left out.
+    const granted = yield* execute({ kind: "permissions" }).pipe(
+      Effect.map((result) => result.permissions),
+      Effect.orElseSucceed(() => undefined),
+    );
+    return {
       enabled: current.enableAgentComputerAccess,
       allowAllApps: current.computerUseAllowAllApps,
       allowedApps: current.computerUseAllowedApps,
       screenCaptureEnabled: current.enableComputerScreenCapture,
-    })),
-    Effect.mapError((cause) => new ComputerUseError({ code: "disabled", cause })),
-  );
+      ...(granted
+        ? {
+            accessibilityPermission: granted.accessibility,
+            screenRecordingPermission: granted.screenRecording,
+          }
+        : {}),
+    };
+  });
   /**
    * Checks the live settings. Native work runs for seconds to minutes, so it
    * must not hold the settings write lock: that would also hold back the user

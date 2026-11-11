@@ -534,6 +534,8 @@ export async function loadMacNative() {
         return undefined;
       return ffi.restorePointer({ retType: [T.I32], paramsValue: pid })[0] as unknown as number;
     },
+    /** Whether this process may read and drive other apps (Accessibility). */
+    isAccessibilityTrusted: () => call<boolean>("ax", "AXIsProcessTrusted", T.Boolean, [], []),
     /** Whether this process may capture other apps' windows (Screen Recording). */
     canCaptureScreen: () =>
       call<boolean>("cg", "CGPreflightScreenCaptureAccess", T.Boolean, [], []),

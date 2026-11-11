@@ -200,6 +200,7 @@ export const WorkerRequest = Schema.Union([
     ownInputAt: Schema.optionalKey(Schema.Number),
   }),
   Schema.Struct({ kind: Schema.Literal("open"), app: Schema.String, activate: Schema.Boolean }),
+  Schema.Struct({ kind: Schema.Literal("permissions") }),
 ]);
 export type WorkerRequest = typeof WorkerRequest.Type;
 
@@ -263,6 +264,9 @@ export const WorkerResponse = Schema.Union([
     ok: Schema.Literal(true),
     ...SentBack,
     snapshot: Schema.optionalKey(NativeSnapshot),
+    permissions: Schema.optionalKey(
+      Schema.Struct({ accessibility: Schema.Boolean, screenRecording: Schema.Boolean }),
+    ),
     /** How an action was delivered. */
     via: Schema.optionalKey(
       Schema.Literals([
