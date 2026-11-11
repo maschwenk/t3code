@@ -461,10 +461,26 @@ export const extensionTree = (
 ) => {
   const box = (x: number, y: number, width: number, height: number) =>
     `[box=${Math.round(x)},${Math.round(y)},${Math.round(width)},${Math.round(height)}]`;
+  // A frame clips what lies outside it, such as 1Password's collapsed "Other logins" list.
+  let clippedAt: number | undefined;
   const lines = tree.split("\n").flatMap((line) => {
     const node = TREE_LINE.exec(line);
     if (!node) return [];
     const [, head = "", name = "", attributes = "", value] = node;
+    const indent = head.length - head.trimStart().length;
+    if (clippedAt !== undefined && indent > clippedAt) return [];
+    clippedAt = undefined;
+    const at = /\[box=(-?\d+),(-?\d+),(\d+),(\d+)\]/.exec(attributes)?.slice(1).map(Number);
+    if (
+      at &&
+      (at[0]! >= frame.width ||
+        at[1]! >= frame.height ||
+        at[0]! + at[2]! <= 0 ||
+        at[1]! + at[3]! <= 0)
+    ) {
+      clippedAt = indent;
+      return [];
+    }
     const role = head.replace(/^\s*- '?/, "");
     const shownName = name.startsWith(' "')
       ? ` "${redactExtensionText(name.slice(2, -1))}"`

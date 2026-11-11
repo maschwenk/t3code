@@ -18,7 +18,7 @@ import {
 
 import * as ServerBrowserPage from "./ServerBrowserPage.ts";
 
-it("labels extension UI with page boxes and never shows its field values, codes or generated passwords", () => {
+it("labels extension UI with page boxes, drops what its frame clips, and never shows its field values, codes or generated passwords", () => {
   // Playwright's tree of a 1Password-shaped panel, with its boxes relative to the frame.
   const frameTree = [
     '- dialog "Sign in with 1Password" [ref=f1e2] [box=0,0,360,63]:',
@@ -28,6 +28,10 @@ it("labels extension UI with page boxes and never shows its field values, codes 
     '  - textbox "One-time code" [ref=f1e8] [box=64,42,153,21]: "482913"',
     "  - text: Current code 482 913",
     '  - button "Use suggested password xK7#mP2$qL9!vR4" [ref=f1e9]',
+    "  - listbox [ref=f1e10] [box=8,130,340,96]:",
+    '    - option "Cloudflare — gm@owner.com" [ref=f1e11] [box=8,130,340,48]',
+    "    - text: below the frame",
+    '  - button "Other logins" [ref=f1e12] [box=120,90,100,24]',
   ].join("\n");
   expect(
     ServerBrowserPage.extensionTree("1Password", frameTree, {
@@ -46,6 +50,7 @@ it("labels extension UI with page boxes and never shows its field values, codes 
       '    - textbox "One-time code" [ref=f1e8] [box=524,50,153,21]',
       "    - text: Current code ••••••••",
       '    - button "Use suggested password ••••••••" [ref=f1e9]',
+      '    - button "Other logins" [ref=f1e12] [box=580,98,100,24]',
     ].join("\n"),
   );
 });
