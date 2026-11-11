@@ -10,6 +10,7 @@ import {
   type UsageLimitSourceSnapshot,
 } from "@t3tools/contracts";
 import { resolveServerBackgroundActivitySettings } from "@t3tools/shared/backgroundActivitySettings";
+import { compareSemverVersions } from "@t3tools/shared/semver";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
@@ -22,6 +23,7 @@ import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
 import * as BackgroundPolicy from "../background/BackgroundPolicy.ts";
+import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretResolver";
 import * as SecretResolverLayer from "../secrets/SecretResolver.ts";
 import { resolveSettingsSecrets } from "../secrets/settingsSecretValue.ts";
@@ -62,6 +64,24 @@ export const make = Effect.gen(function* () {
   const settingsService = yield* Settings.ServerSettingsService;
   const secrets = yield* SecretResolver.SecretResolver;
   const backgroundPolicy = yield* BackgroundPolicy.BackgroundPolicy;
+  const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
+  const claudeCliVersion = providerRegistry.getProviders.pipe(
+    Effect.map((providers) =>
+      providers
+        .flatMap((provider) => {
+          const version = provider.installedVersion ?? provider.version;
+          return provider.driver === "claudeAgent" && provider.enabled && version ? [version] : [];
+        })
+        .toSorted(compareSemverVersions)
+        .at(-1),
+    ),
+  );
+  const hub = Effect.fn("UsageLimitSources.hub")(function* (
+    config: UsageLimitSourceConfig,
+    managementKey: string,
+  ) {
+    return { url: config.url, managementKey, claudeCliVersion: yield* claudeCliVersion };
+  });
   const readManagementKey = Effect.fn("UsageLimitSources.readManagementKey")(function* (
     config: UsageLimitSourceConfig,
   ) {
@@ -84,9 +104,7 @@ export const make = Effect.gen(function* () {
     if (managementKey.length === 0) {
       return { ...base, accounts: [], error: missingManagementKey(config) };
     }
-    const accounts = yield* api
-      .readAccounts({ url: config.url, managementKey })
-      .pipe(Effect.result);
+    const accounts = yield* api.readAccounts(yield* hub(config, managementKey)).pipe(Effect.result);
     if (accounts._tag === "Failure") {
       yield* Effect.logDebug("usage limit source read failed", { id, cause: accounts.failure });
       return { ...base, accounts: [], error: accounts.failure.detail };
@@ -138,7 +156,7 @@ export const make = Effect.gen(function* () {
       return yield* new UsageLimitSourceError({ detail: missingManagementKey(config) });
     }
     const result = yield* api.consume(
-      { url: config.url, managementKey },
+      yield* hub(config, managementKey),
       input.accountId,
       input.creditId,
     );

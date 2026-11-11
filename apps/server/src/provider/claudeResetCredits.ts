@@ -12,7 +12,7 @@ import * as Schema from "effect/Schema";
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 
 const API_BASE = "https://api.anthropic.com";
-const PROGRAM = "cedar_ember";
+export const CLAUDE_RESET_PROGRAM = "cedar_ember";
 const GRANT_ID = /^[a-z0-9_-]{1,40}$/;
 const REQUEST_ID = /^[A-Za-z0-9_-]{1,64}$/;
 const COMPLETE_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
@@ -42,7 +42,7 @@ const UsageResponse = Schema.Struct({
   cedar_ember: Schema.optional(Schema.NullOr(Schema.Unknown)),
 });
 const decodeCedarEmber = Schema.decodeUnknownOption(CedarEmber);
-const ClaimResponse = Schema.Struct({
+export const ClaudeResetClaimResponse = Schema.Struct({
   result: Schema.Literals([
     "reset",
     "already_used",
@@ -143,11 +143,14 @@ const readAccessToken = Effect.fn("claudeResetCredits.readAccessToken")(function
   return credentials.claudeAiOauth?.accessToken?.trim() || undefined;
 });
 
+/** Claude only reveals reset credits to a current Claude Code CLI's user agent. */
+export const claudeCliUserAgent = (version: string) => `claude-cli/${version} (external, cli)`;
+
 const withClaudeHeaders = (token: string, version: string) =>
   HttpClientRequest.setHeaders({
     authorization: `Bearer ${token}`,
     "anthropic-beta": "oauth-2025-04-20",
-    "user-agent": `claude-cli/${version} (external, cli)`,
+    "user-agent": claudeCliUserAgent(version),
   });
 
 export const readClaudeResetCredits = Effect.fn("readClaudeResetCredits")(
@@ -187,7 +190,7 @@ export const claudeAccountConfigPath = Effect.fn("claudeAccountConfigPath")(func
     : path.join(yield* HostProcess.HomeDirectory, ".claude.json");
 });
 
-const CLAIM_OUTCOMES = {
+export const CLAUDE_RESET_CLAIM_OUTCOMES = {
   reset: "reset",
   not_limited: "nothingToReset",
   already_used: "alreadyRedeemed",
@@ -226,7 +229,7 @@ export const consumeClaudeResetCredit = Effect.fn("consumeClaudeResetCredit")(fu
       ).pipe(
         withClaudeHeaders(token, input.version),
         HttpClientRequest.bodyJsonUnsafe({
-          program: PROGRAM,
+          program: CLAUDE_RESET_PROGRAM,
           grant_id: input.grantId,
           request_id: input.requestId,
         }),
@@ -243,7 +246,7 @@ export const consumeClaudeResetCredit = Effect.fn("consumeClaudeResetCredit")(fu
     return yield* new ClaudeResetCreditError({ reason: "signedOut" });
   }
   const body = yield* HttpClientResponse.filterStatusOk(response).pipe(
-    Effect.flatMap(HttpClientResponse.schemaBodyJson(ClaimResponse)),
+    Effect.flatMap(HttpClientResponse.schemaBodyJson(ClaudeResetClaimResponse)),
     Effect.timeout("25 seconds"),
     Effect.mapError((cause) => new ClaudeResetCreditError({ reason: "requestFailed", cause })),
   );
@@ -254,5 +257,5 @@ export const consumeClaudeResetCredit = Effect.fn("consumeClaudeResetCredit")(fu
   if (body.result === "unavailable") {
     return yield* new ClaudeResetCreditError({ reason: "unconfirmed" });
   }
-  return CLAIM_OUTCOMES[body.result];
+  return CLAUDE_RESET_CLAIM_OUTCOMES[body.result];
 });

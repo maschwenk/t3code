@@ -433,6 +433,109 @@ describe("CLIProxyAPI built-in management API", () => {
     }),
   );
 
+  it.effect(
+    "shows Claude reset credits only when the hub knows the current Claude Code version",
+    () =>
+      Effect.gen(function* () {
+        const grant = (id: string, ends_at: string) => ({
+          id,
+          resets_left: 1,
+          ends_at,
+          paused: false,
+          usable_now: true,
+        });
+        const test = fixture({
+          accounts: [{ ...accounts[0]!, provider: "claude" }],
+          // Claude hides grants from any user agent other than a current Claude Code CLI.
+          upstream: (request) => ({
+            status: 200,
+            body: {
+              seven_day: { utilization: 100, resets_at: "2099-01-01T00:00:00Z" },
+              cedar_ember: request.header?.["User-Agent"]?.startsWith("claude-cli/2.1.319 ")
+                ? {
+                    eligible: true,
+                    next_grant_id: "full-reset-2611",
+                    grants: [
+                      grant("full-reset-2611", "2099-12-10T22:00:00+00:00"),
+                      grant("launch-2610-fable", "2099-03-09T07:59:00+00:00"),
+                    ],
+                  }
+                : { eligible: false, ineligible_reason: "surface", grants: [] },
+            },
+          }),
+        });
+        const api = yield* test.api;
+        const current = yield* api.readAccounts({ ...config, claudeCliVersion: "2.1.319" });
+        expect(current[0]?.usageLimits.resetCredits).toEqual({
+          availableCount: 2,
+          nextCreditId: "full-reset-2611",
+          nextExpiresAt: "2099-12-10T22:00:00.000Z",
+        });
+        const unknown = yield* api.readAccounts(config);
+        expect(unknown[0]?.usageLimits.resetCredits).toBeUndefined();
+        expect(unknown[0]?.usageLimits.windows.map((window) => window.id)).toEqual(["seven_day"]);
+      }),
+  );
+
+  it.effect("redeems a Claude reset in the account's organization and clears its cooldown", () =>
+    Effect.gen(function* () {
+      const test = fixture({
+        accounts: [{ ...accounts[0]!, provider: "claude" }],
+        upstream: (request) => ({
+          status: 200,
+          body: request.url?.endsWith("/api/oauth/profile")
+            ? { organization: { uuid: "org-1" } }
+            : { result: "reset" },
+        }),
+      });
+      const api = yield* test.api;
+      const hub = { ...config, claudeCliVersion: "2.1.319" };
+      expect(yield* api.consume(hub, "first.json", "full-reset-2611")).toEqual({
+        outcome: "reset",
+      });
+      expect(yield* api.consume(hub, "first.json", "full-reset-2611")).toEqual({
+        outcome: "reset",
+      });
+      const claims = test.requests.filter((request) =>
+        request.body?.url?.endsWith("/reset_rate_limits"),
+      );
+      expect(claims.map((request) => request.body?.url)).toEqual([
+        "https://api.anthropic.com/api/organizations/org-1/reset_rate_limits",
+        "https://api.anthropic.com/api/organizations/org-1/reset_rate_limits",
+      ]);
+      // A retried click reuses the request id, so Claude spends the grant at most once.
+      expect(claims[0]?.body?.data).toBe(claims[1]?.body?.data);
+      expect(JSON.parse(claims[0]!.body!.data!)).toMatchObject({
+        program: "cedar_ember",
+        grant_id: "full-reset-2611",
+      });
+      expect(
+        test.requests
+          .filter((request) => request.path.endsWith("/reset-quota"))
+          .map((request) => request.body?.auth_index),
+      ).toEqual(["a", "a"]);
+    }),
+  );
+
+  it.effect("reports a Claude reset cooldown without clearing the hub cooldown", () =>
+    Effect.gen(function* () {
+      const test = fixture({
+        accounts: [{ ...accounts[0]!, provider: "claude" }],
+        upstream: (request) => ({
+          status: 200,
+          body: request.url?.endsWith("/api/oauth/profile")
+            ? { organization: { uuid: "org-1" } }
+            : { result: "cooldown" },
+        }),
+      });
+      const result = yield* (yield* test.api)
+        .consume({ ...config, claudeCliVersion: "2.1.319" }, "first.json", "full-reset-2611")
+        .pipe(Effect.flip);
+      expect(result.detail).toContain("cooling down");
+      expect(test.requests.some((request) => request.path.endsWith("/reset-quota"))).toBe(false);
+    }),
+  );
+
   it.effect("pins redemption to the displayed credit and clears only that account's cooldown", () =>
     Effect.gen(function* () {
       const test = fixture();
