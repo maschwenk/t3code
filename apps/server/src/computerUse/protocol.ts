@@ -1,4 +1,5 @@
 import * as Schema from "effect/Schema";
+import { GoalInput } from "../preview/goalInput.ts";
 
 const BoundedText = Schema.String.check(Schema.isMaxLength(16_384));
 const ScrollDelta = Schema.Number.check(
@@ -48,6 +49,7 @@ export const ComputerStep = Schema.Struct({
     "perform",
     "menu",
     "wait",
+    "goal",
   ]),
   ref: Schema.optionalKey(Schema.Int),
   name: Schema.optionalKey(ElementName),
@@ -69,6 +71,10 @@ export const ComputerStep = Schema.Struct({
   perform: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(128))),
   path: Schema.optionalKey(MenuPath),
   ms: Schema.optionalKey(WaitMs),
+  goal: Schema.optionalKey(GoalInput.fields.goal),
+  maxSteps: GoalInput.fields.maxSteps,
+  minConfidence: GoalInput.fields.minConfidence,
+  deny: GoalInput.fields.deny,
   ...Foreground,
 });
 export type ComputerStep = typeof ComputerStep.Type;
@@ -323,6 +329,7 @@ export class ComputerUseError extends Schema.TaggedError<ComputerUseError>()("Co
     "invalid_point",
     "menu_not_found",
     "invalid_key",
+    "goal_incomplete",
     "failed",
   ]),
   cause: Schema.optional(Schema.Defect()),
@@ -353,6 +360,8 @@ export class ComputerUseError extends Schema.TaggedError<ComputerUseError>()("Co
         return "The app, element or captured window changed. Take a fresh computer_snapshot before acting (with includeImage=true for steps at x, y).";
       case "app_not_running":
         return "That app is not running on the environment machine. Open it with computer_open.";
+      case "goal_incomplete":
+        return "The goal step stopped before the goal showed; its Goal line says why. Read the snapshot and finish with ordinary steps.";
       case "unsupported_action":
         return "This element does not support that accessibility action. Use an action listed in a fresh snapshot.";
       case "capture_requires_foreground":

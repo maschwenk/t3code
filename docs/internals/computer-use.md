@@ -63,6 +63,7 @@ For tabs, each caller and tab keeps a map from integer to Playwright ref. Its co
 - **Jev reads up to 64 KB of tree, without pixel boxes.** The agent default of 16 KB hides most of a long page, and Jev can only click what it is shown. `observe` takes `maxBytes` and `compact` for this; boxes are about a quarter of a tree.
 - **A control is offered only when its name picks out one target.** Links that share a name and URL count once. Anything matching the caller's `deny` list is never offered.
 - **Jev takes at most 255 choices**, so a goal offers at most 250 controls. An open dialog's come first, and the rest is split between page content and navigation, so a busy sidebar and a long article can't crowd each other out. Links inside collapsed menus have no accessible name and aren't offered until the menu is opened.
+- **`computer_action` takes the same step for Mac apps.** It reads the whole app, offers enabled elements that list `press` and whose role and name are unique, and clicks them like a click step. After a click it waits until the app has looked the same for 600 ms: a Slack channel switch redraws for about two seconds, passing through an empty window and a bare "Slack" title, and a read taken midway made Jev answer BLOCKED. That puts a Slack goal at about 5 s a click.
 
 ## Upstream
 

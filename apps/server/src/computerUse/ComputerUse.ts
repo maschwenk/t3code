@@ -5,12 +5,14 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Result from "effect/Result";
 import * as Semaphore from "effect/Semaphore";
+import * as BrowserGoal from "../preview/BrowserGoal.ts";
+import type { GoalInput } from "../preview/goalInput.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as AgentCursor from "./agentCursor.ts";
 import * as Driver from "./Driver.ts";
 import { parseKeyChord } from "./keys.ts";
 import { type Capture, captureToScreen } from "./pointerTarget.ts";
-import { carryRefs } from "./snapshotTree.ts";
+import { carryRefs, formatElement } from "./snapshotTree.ts";
 import {
   ComputerUseError,
   type ComputerAction,
@@ -66,7 +68,8 @@ export function resolveStepTarget(
 }
 
 type ActionRequest = Extract<WorkerRequest, { kind: "action" }>;
-export type PlannedStep = Pick<ActionRequest, "action" | "target" | "drop" | "screen">;
+type ActionStep = Pick<ActionRequest, "action" | "target" | "drop" | "screen">;
+export type PlannedStep = ActionStep | { readonly goal: GoalInput };
 
 /**
  * Checks one step against its snapshot and the latest capture, maps its verb to
@@ -79,6 +82,11 @@ export function planStep(
   capture: Capture | undefined,
   step: ComputerStep,
 ): PlannedStep | ComputerUseError["code"] {
+  if (step.action === "goal") {
+    if (step.goal === undefined) return "invalid_input";
+    const { goal, maxSteps, minConfidence, deny } = step;
+    return { goal: { goal, maxSteps, minConfidence, deny } };
+  }
   const named = step.ref !== undefined || step.name !== undefined;
   const target = resolveStepTarget(elements, step) ?? null;
   if (named && !target) return "invalid_ref";
@@ -89,7 +97,7 @@ export function planStep(
   const toScreen = (pixel: { readonly x: number; readonly y: number }) =>
     capture ? captureToScreen(capture, pixel) : undefined;
   const foreground = step.foreground === undefined ? {} : { foreground: step.foreground };
-  const plan = (action: ComputerAction, more?: Pick<PlannedStep, "drop" | "screen">) => ({
+  const plan = (action: ComputerAction, more?: Pick<ActionStep, "drop" | "screen">) => ({
     action,
     target,
     ...more,
@@ -175,6 +183,51 @@ export function planStep(
         : plan({ kind: "perform", action: step.perform });
   }
 }
+export type AppGoalAction = { readonly description: string; readonly target: ElementTarget };
+const GOAL_VIEW: SnapshotOptions = { offset: 0, limit: 600, includeOffscreen: false };
+const GOAL_BUDGET_MS = 90_000;
+const GOAL_QUIET_MS = 600;
+const GOAL_SETTLE_MS = 5000;
+const GOAL_SETTLE_GAP = "200 millis";
+const GOAL_STATES = new Set(["selected", "checked", "mixed", "expanded"]);
+
+/** What a goal step's decider reads of an app, and the elements it may click: enabled ones
+ * listing press whose role and name pick out one of them. */
+export function appGoalView(
+  snapshot: NativeSnapshot,
+  deny: ReadonlyArray<string> = [],
+): BrowserGoal.GoalView<AppGoalAction> {
+  const window = snapshot.elements.find((element) => element.role === "window")?.name;
+  const screen = window || snapshot.app;
+  // Coordinates only cost the decider tokens; it picks elements, never points.
+  const tree = snapshot.elements
+    .map((element) => formatElement(element).replace(/ @-?\d+,-?\d+ \d+x\d+/, ""))
+    .join("\n");
+  const pressable = snapshot.elements.filter(
+    (element) => element.enabled && element.name?.trim() && element.actions.includes("press"),
+  );
+  // Options name the role, so a tab and a sidebar row may share a name.
+  const key = (element: ElementTarget) => `${element.role}\n${element.name}`;
+  const named = new Map<string, number>();
+  for (const element of pressable) named.set(key(element), (named.get(key(element)) ?? 0) + 1);
+  const denied = deny.map((value) => value.toLowerCase());
+  const actions = pressable
+    .filter(
+      (element) =>
+        named.get(key(element)) === 1 &&
+        !denied.some((value) => element.name!.toLowerCase().includes(value)),
+    )
+    .slice(0, BrowserGoal.MAX_OPTIONS)
+    .map((target) => {
+      const states = target.states.filter((state) => GOAL_STATES.has(state));
+      return {
+        target,
+        description: `Click ${target.role} ${JSON.stringify(target.name)}${states.length ? ` (${states.join(", ")})` : ""}`,
+      };
+    });
+  return { page: `App: ${snapshot.app}\nWindow: ${screen}\n${tree}`, screen, actions };
+}
+
 export type Observation = NativeSnapshot & {
   readonly snapshotId: string;
   /** The app came forward on its own and was sent back behind the user's app. */
@@ -186,8 +239,10 @@ export type ActResult = {
   readonly sentBack?: true;
   /** How each completed step was delivered, in order. */
   readonly completed: ReadonlyArray<
-    NonNullable<Extract<WorkerResponse, { ok: true }>["via"]> | "wait"
+    NonNullable<Extract<WorkerResponse, { ok: true }>["via"]> | "wait" | "goal"
   >;
+  /** Each goal step's run, including one that stopped the batch. */
+  readonly goals?: ReadonlyArray<BrowserGoal.GoalOutcome & { readonly goal: string }>;
   /** Why the batch stopped early. Later steps did not run. */
   readonly error?: ComputerUseError;
   /** The app after the batch, viewed the same way as the snapshot it started from. */
@@ -236,6 +291,7 @@ export class ComputerUse extends Context.Service<
 const make = Effect.gen(function* () {
   const settings = yield* ServerSettings.ServerSettingsService;
   const driver = yield* Driver.Driver;
+  const decider = yield* BrowserGoal.GoalDecider;
   const cursor = yield* AgentCursor.make;
   const random = yield* SecureRandom.SecureRandom;
   const mutex = yield* Semaphore.make(1);
@@ -401,6 +457,64 @@ const make = Effect.gen(function* () {
       ),
     );
 
+  /** A goal step's view of the app: fresh whole-app reads, and clicks that run like click steps.
+   * Callers hold the mutex, the authorization and a worker session. */
+  const goalSurface = (
+    caller: string,
+    app: string,
+    pid: number,
+    deny: ReadonlyArray<string> | undefined,
+  ): BrowserGoal.GoalSurface<AppGoalAction, ComputerUseError> => {
+    const read = execute({ kind: "snapshot", app, includeImage: false, options: GOAL_VIEW }).pipe(
+      Effect.flatMap((result) =>
+        result.snapshot?.pid === pid
+          ? Effect.succeed(appGoalView(result.snapshot, deny))
+          : Effect.fail(fail("target_changed")),
+      ),
+    );
+    let clicked = false;
+    return {
+      // Apps keep redrawing after a click: a Slack channel switch passes through an empty
+      // window and a bare "Slack" title for about two seconds, each step steady for up to
+      // 400 ms. So a read counts only once the app has looked the same for GOAL_QUIET_MS.
+      observe: Effect.fn("ComputerUse.goalObserve")(function* () {
+        let view = yield* read;
+        if (!clicked) return view;
+        const start = yield* Clock.currentTimeMillis;
+        let quietSince = start;
+        while (true) {
+          const now = yield* Clock.currentTimeMillis;
+          if (now - quietSince >= GOAL_QUIET_MS || now - start >= GOAL_SETTLE_MS) {
+            clicked = false;
+            return view;
+          }
+          yield* Effect.sleep(GOAL_SETTLE_GAP);
+          const next = yield* read;
+          if (next.page !== view.page) {
+            view = next;
+            quietSince = yield* Clock.currentTimeMillis;
+          }
+        }
+      }),
+      act: Effect.fn("ComputerUse.goalClick")(function* (choice: AppGoalAction) {
+        const allowed = yield* check(app, false);
+        const click = { kind: "click", button: "left", count: 1 } as const;
+        yield* cursor.point(caller, click, choice.target);
+        const outcome = yield* execute({
+          kind: "action",
+          app,
+          pid,
+          target: choice.target,
+          action: click,
+          takeover: allowed.enableComputerPointerTakeover,
+          ...(pointerInputAt !== undefined ? { ownInputAt: pointerInputAt } : {}),
+        });
+        if (outcome.inputAt !== undefined) pointerInputAt = outcome.inputAt;
+        clicked = true;
+      }),
+    };
+  };
+
   const act: ComputerUse["Service"]["act"] = (caller, input) =>
     mutex.withPermits(1)(
       Effect.gen(function* () {
@@ -427,15 +541,31 @@ const make = Effect.gen(function* () {
               // other threads' observations of the same desktop.
               receipts.clear();
               const completed: ActResult["completed"][number][] = [];
+              const goals: NonNullable<ActResult["goals"]>[number][] = [];
               let error: ComputerUseError | undefined;
               for (const step of steps) {
-                const { action, target } = step;
                 // Turning computer use off, or removing the app, stops the rest of a batch.
                 const allowed = yield* Effect.result(check(app, false));
                 if (Result.isFailure(allowed)) {
                   error = allowed.failure;
                   break;
                 }
+                if ("goal" in step) {
+                  const deadline = (yield* Clock.currentTimeMillis) + GOAL_BUDGET_MS;
+                  const run = yield* BrowserGoal.runGoal(
+                    step.goal,
+                    goalSurface(caller, app, pid, step.goal.deny),
+                    deadline,
+                  ).pipe(Effect.provideService(BrowserGoal.GoalDecider, decider));
+                  goals.push({ goal: step.goal.goal, ...run });
+                  if (run.status !== "needs_verification") {
+                    error = fail("goal_incomplete");
+                    break;
+                  }
+                  completed.push("goal");
+                  continue;
+                }
+                const { action, target } = step;
                 if (action.kind === "wait") {
                   yield* Effect.sleep(action.ms);
                   completed.push("wait");
@@ -485,6 +615,7 @@ const make = Effect.gen(function* () {
               return {
                 total: steps.length,
                 completed,
+                ...(goals.length ? { goals } : {}),
                 ...(error ? { error } : {}),
                 ...(Result.isSuccess(after)
                   ? {
