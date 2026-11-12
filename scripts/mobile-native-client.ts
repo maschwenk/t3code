@@ -189,6 +189,8 @@ const command = Effect.fn("nativeClient.command")(function* (
         APP_VARIANT: "development",
         MOBILE_VERSION_POLICY: "appVersion",
         T3CODE_IOS_PERSONAL_TEAM: "0",
+        T3CODE_IOS_TEAM_ID: "",
+        T3CODE_IOS_BUNDLE_ID: "",
         CI: "1",
         EXPO_NO_GIT_STATUS: "1",
         // macOS tar otherwise adds AppleDouble entries that change the extracted bundle.
