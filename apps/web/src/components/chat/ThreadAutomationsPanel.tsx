@@ -19,7 +19,7 @@ import {
 
 import { ThreadDetailsSection } from "./ThreadDetailsSection";
 import { cn } from "../../lib/utils";
-import { ScheduledRelativeLabel } from "../settings/ScheduledTasksSettings";
+import { ScheduledRelativeLabel } from "../settings/ScheduledRelativeLabel";
 import { scheduledTaskStatusText } from "@t3tools/client-runtime/scheduled-tasks";
 import { openScheduledTaskEditor, useScheduleInThread } from "./ScheduledTaskCards";
 import { useNowMinute } from "../../hooks/useNowMinute";
