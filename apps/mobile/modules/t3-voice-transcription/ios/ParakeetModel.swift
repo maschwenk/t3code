@@ -54,8 +54,8 @@ final class ParakeetModel: Sendable {
       UIApplication.didReceiveMemoryWarningNotification,
       UIApplication.didEnterBackgroundNotification,
     ] {
-      _ = NotificationCenter.default.addObserver(forName: name, object: nil, queue: nil) {
-        [unowned self] _ in self.unload()
+      _ = NotificationCenter.default.addObserver(forName: name, object: nil, queue: nil) { [unowned self] _ in
+        self.unload()
       }
     }
   }
