@@ -103,6 +103,18 @@ T3CODE_IOS_PERSONAL_TEAM_BUNDLE_ID=com.example.t3code \
 vp run ios:release
 ```
 
+A paid Apple team of your own keeps every capability. Set its team ID and a bundle identifier you
+registered together. Push notifications, T3 Connect sign-in, and app.t3.codes links stay tied to T3's
+team and bundle, so pair such a build by QR code or link. Set `T3CODE_MOBILE_UPDATES_ENABLED=0` so
+T3's over-the-air updates never replace its JavaScript.
+
+```bash
+T3CODE_IOS_TEAM_ID=ABCDE12345 \
+T3CODE_IOS_BUNDLE_ID=com.example.t3code \
+T3CODE_MOBILE_UPDATES_ENABLED=0 \
+vp run ios:release
+```
+
 Build and run the local iOS preview app:
 
 ```bash

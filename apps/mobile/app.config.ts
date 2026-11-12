@@ -38,6 +38,22 @@ if (
   );
 }
 
+// A fork's own paid Apple team keeps every capability under its own bundle identifier.
+const ownTeamId = repoEnv.T3CODE_IOS_TEAM_ID?.trim() || undefined;
+const ownTeamBundleIdentifier = repoEnv.T3CODE_IOS_BUNDLE_ID?.trim() || undefined;
+if (
+  (ownTeamId || ownTeamBundleIdentifier) &&
+  (isIosPersonalTeamBuild ||
+    !ownTeamId ||
+    !/^[A-Z0-9]{10}$/.test(ownTeamId) ||
+    !ownTeamBundleIdentifier ||
+    !IOS_BUNDLE_IDENTIFIER_PATTERN.test(ownTeamBundleIdentifier))
+) {
+  throw new Error(
+    "Set T3CODE_IOS_TEAM_ID to a 10-character Apple team ID and T3CODE_IOS_BUNDLE_ID to a reverse-DNS identifier together, without T3CODE_IOS_PERSONAL_TEAM.",
+  );
+}
+
 const DEVELOPMENT_ASSETS = {
   appIcon: fromRepoRoot(BRAND_ASSET_PATHS.developmentIosIconPng),
   iosIcon: fromRepoRoot(BRAND_ASSET_PATHS.developmentIconComposerProject),
@@ -122,7 +138,7 @@ const variant = VARIANT_CONFIG[APP_VARIANT];
 const HOSTED_APP_HOST = "app.t3.codes";
 const iosBundleIdentifier = isIosPersonalTeamBuild
   ? personalTeamBundleIdentifier!
-  : variant.iosBundleIdentifier;
+  : (ownTeamBundleIdentifier ?? variant.iosBundleIdentifier);
 
 const dmSansFonts = {
   regular: "@expo-google-fonts/dm-sans/400Regular/DMSans_400Regular.ttf",
@@ -252,7 +268,7 @@ const config: ExpoConfig = {
     requireFullScreen: process.env.T3_SHOWCASE_CAPTURE_BUILD === "1",
     bundleIdentifier: iosBundleIdentifier,
     // Avoid Personal Team fallback: it cannot sign App Groups, Apple sign-in or push entitlements.
-    appleTeamId: "ARK85ZXQ4Z",
+    appleTeamId: ownTeamId ?? "ARK85ZXQ4Z",
     associatedDomains: [
       `applinks:${variant.relyingParty}`,
       `webcredentials:${variant.relyingParty}`,
