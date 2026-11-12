@@ -5,18 +5,20 @@ import UIKit
 
 enum ParakeetStatus: Equatable {
   case missing
-  /// No progress once the files are in and Core ML is compiling them for this device.
-  case downloading(Double?)
+  /// One fraction across the download and the Core ML compile that follows it.
+  case downloading(progress: Double, compiling: Bool)
   case ready
 
   var record: [String: Any] {
     switch self {
     case .missing: return ["state": "missing"]
     case .ready: return ["state": "ready"]
-    case .downloading(let progress):
-      var record: [String: Any] = ["state": "downloading"]
-      record["progress"] = progress
-      return record
+    case .downloading(let progress, let compiling):
+      return [
+        "state": "downloading",
+        "progress": progress,
+        "phase": compiling ? "compiling" : "downloading",
+      ]
     }
   }
 }
@@ -33,10 +35,41 @@ final class ParakeetModel: Sendable {
   private static let version = AsrModelVersion.ultra
   private static let idleUnload = Duration.seconds(120)
   private static let directory = AsrModels.defaultCacheDirectory(for: version)
+  /// The bytes fill this much of the bar; compiling the models for this device fills the rest.
+  /// On Wi-Fi the download takes a minute or two and the first compile about ten.
+  private static let downloadShare = 0.4
+
+  /// A model Core ML is compiling. Core ML reports nothing until it returns, so its slot eases
+  /// forward by elapsed time and stops short of its end. The encoder is nearly all of the
+  /// first-load cost (about ten minutes on an iPhone Duo's Neural Engine); the others take seconds.
+  private struct Compile {
+    let weight: Double
+    let seconds: Double
+    let start = ContinuousClock.now
+
+    init(model: String) {
+      let encoder = model.contains("Encoder")
+      weight = encoder ? 0.85 : 0.05
+      seconds = encoder ? 240 : 2
+    }
+
+    var eased: Double {
+      weight * 0.95 * (1 - exp(-((ContinuousClock.now - start) / .seconds(1)) / seconds))
+    }
+  }
 
   private struct Download {
     let task: Task<Bool, Error>
-    var progress: Double? = 0
+    var progress = 0.0
+    var compiling = false
+    /// The compile share of models already compiled, out of 1.
+    var compiled = 0.0
+    var current: Compile?
+
+    var compileProgress: Double {
+      ParakeetModel.downloadShare
+        + (1 - ParakeetModel.downloadShare) * min(1, compiled + (current?.eased ?? 0))
+    }
   }
 
   private struct State {
@@ -65,7 +98,9 @@ final class ParakeetModel: Sendable {
   }
 
   var status: ParakeetStatus {
-    if let download = state.withLock({ $0.download }) { return .downloading(download.progress) }
+    if let download = state.withLock({ $0.download }) {
+      return .downloading(progress: download.progress, compiling: download.compiling)
+    }
     return AsrModels.modelsExist(at: Self.directory, version: Self.version) ? .ready : .missing
   }
 
@@ -115,7 +150,14 @@ final class ParakeetModel: Sendable {
   }
 
   private func fetch() async throws -> Bool {
+    let ticker = Task { [weak self] in
+      while !Task.isCancelled {
+        try? await Task.sleep(for: .seconds(1))
+        self?.advance { $0.current == nil ? nil : $0.compileProgress }
+      }
+    }
     defer {
+      ticker.cancel()
       state.withLock { $0.download = nil }
       notify()
     }
@@ -131,22 +173,41 @@ final class ParakeetModel: Sendable {
     }
   }
 
+  /// FluidAudio downloads the repository, then loads each model on its own, which compiles it for
+  /// this device: a compile start names the model and an empty name marks it done.
   private func report(_ update: DownloadProgress) {
-    let changed = state.withLock { state in
-      guard var download = state.download, let current = download.progress else { return false }
-      let next: Double?
+    advance { download in
       switch update.phase {
-      case .listing: return false
-      // A repository download fills the first half of FluidAudio's fraction; compiling fills the rest.
-      case .downloading: next = min(1, update.fractionCompleted * 2)
-      case .compiling: next = nil
+      case .listing:
+        return nil
+      case .downloading:
+        // A repository download fills the first half of FluidAudio's fraction. Each later model
+        // re-checks the cache with a download update, which must not move the bar back.
+        guard !download.compiling else { return nil }
+        return Self.downloadShare * min(1, update.fractionCompleted * 2)
+      case .compiling(let model) where model.isEmpty:
+        download.compiled += download.current?.weight ?? 0
+        download.current = nil
+        return download.compileProgress
+      case .compiling(let model):
+        download.compiling = true
+        download.current = Compile(model: model)
+        return download.compileProgress
       }
-      if let next, (next * 100).rounded(.down) <= (current * 100).rounded(.down) { return false }
-      download.progress = next
-      state.download = download
-      return true
     }
-    if changed { notify() }
+  }
+
+  /// Applies a change to the running download and reports it once the bar moves a whole percent.
+  private func advance(_ change: (inout Download) -> Double?) {
+    let moved = state.withLock { state in
+      guard let before = state.download else { return false }
+      var download = before
+      if let next = change(&download) { download.progress = max(before.progress, min(1, next)) }
+      state.download = download
+      return (download.progress * 100).rounded(.down) > (before.progress * 100).rounded(.down)
+        || download.compiling != before.compiling
+    }
+    if moved { notify() }
   }
 
   private func manager() async throws -> AsrManager {

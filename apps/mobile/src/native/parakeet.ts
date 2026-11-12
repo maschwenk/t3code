@@ -2,8 +2,12 @@ import { requireOptionalNativeModule } from "expo";
 
 export type ParakeetModelStatus =
   | { readonly state: "missing" | "ready" }
-  /** No progress once the files are in and the model is being compiled for this device. */
-  | { readonly state: "downloading"; readonly progress?: number };
+  /** One fraction across the download and the compile for this device that follows it. */
+  | {
+      readonly state: "downloading";
+      readonly progress: number;
+      readonly phase: "downloading" | "compiling";
+    };
 
 export type ParakeetModule = {
   getParakeetModel(): ParakeetModelStatus;
