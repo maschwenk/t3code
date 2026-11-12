@@ -39,3 +39,6 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+
+# Xcode state from opening a local Swift package
+.swiftpm/

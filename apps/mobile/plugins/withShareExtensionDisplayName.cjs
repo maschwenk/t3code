@@ -1,6 +1,7 @@
 "use strict";
 
-// Expo replaces the empty signing team with appleTeamId. Reverse-ordered mods run after extension creation.
+// Reverse-ordered mods run after extension creation. Expo's appleTeamId never reaches this target,
+// and Xcode only provisions its App Group when the project itself names the team.
 
 const fs = require("fs");
 const path = require("path");
@@ -52,6 +53,7 @@ function withDisplayNamePlist(config, displayName) {
 }
 
 function withExtensionDisplayNameBuildSetting(config, displayName) {
+  const teamId = config.ios?.appleTeamId;
   return withXcodeProject(config, (cfg) => {
     const objects = cfg.modResults.hash.project.objects;
     const targetEntry = findByName(objects.PBXNativeTarget, TARGET_NAME);
@@ -72,6 +74,7 @@ function withExtensionDisplayNameBuildSetting(config, displayName) {
       const buildConfiguration = buildConfigurations[reference.value];
       if (buildConfiguration?.buildSettings) {
         buildConfiguration.buildSettings.INFOPLIST_KEY_CFBundleDisplayName = `"${displayName}"`;
+        if (teamId) buildConfiguration.buildSettings.DEVELOPMENT_TEAM = teamId;
       }
     }
     return cfg;
