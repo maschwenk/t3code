@@ -77,8 +77,9 @@ agent cursor and click feedback. Desktop browser profiles remain separate from t
 
 Agents can hand click-through navigation ("open the billing settings") to TypeSafe's Jev, which
 picks each click in about a third of a second. It needs a `~/.config/jev-browser-use/config.json` naming
-the provider (`poros`, `typesafe` or `openrouter`) and an `envFile` that holds its API key. The page
-contents of those steps go to that provider.
+the provider (`typesafe` or `openrouter`) and an `envFile` that holds its API key. To use another
+gateway, also set `endpoint` to its URL and `keyName` to the variable in `envFile` that holds its key.
+The page contents of those steps go to that provider.
 
 Connect through [remote access](./remote-access.md) to steer Claude on the host. Native computer-use
 actions run on the environment machine, not on the phone or computer viewing the chat. The host must

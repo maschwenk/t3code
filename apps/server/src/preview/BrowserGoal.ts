@@ -43,30 +43,40 @@ const INSTRUCTIONS =
 
 // The jev-browser-use skill's config, so Codex's skill and T3 share one credential setup.
 const CONFIG_PATH = [".config", "jev-browser-use", "config.json"] as const;
-const PROVIDERS = {
-  poros: {
-    endpoint: "https://owner-poros.com/v1/systemone",
-    key: "POROS_API_KEY",
-    model: "typesafe/jev",
-  },
-  typesafe: {
-    endpoint: "https://api.typesafe.ai/v1/systemone",
-    key: "TYPESAFE_API_KEY",
-    model: "jev-latest",
-  },
-  openrouter: {
-    endpoint: "https://openrouter.ai/api/alpha/decisions",
-    key: "OPENROUTER_API_KEY",
-    model: "~typesafe/jev-latest",
-  },
-} as const;
-const JevConfig = Schema.fromJsonString(
-  Schema.Struct({
-    provider: Schema.optional(Schema.Literals(["poros", "typesafe", "openrouter"])),
-    model: Schema.optional(Schema.String),
-    envFile: Schema.optional(Schema.String),
-  }),
-);
+const PROVIDERS = new Map([
+  [
+    "typesafe",
+    {
+      endpoint: "https://api.typesafe.ai/v1/systemone",
+      key: "TYPESAFE_API_KEY",
+      model: "jev-latest",
+    },
+  ],
+  [
+    "openrouter",
+    {
+      endpoint: "https://openrouter.ai/api/alpha/decisions",
+      key: "OPENROUTER_API_KEY",
+      model: "~typesafe/jev-latest",
+    },
+  ],
+]);
+const JevConfigFields = Schema.Struct({
+  provider: Schema.optional(Schema.String),
+  model: Schema.optional(Schema.String),
+  envFile: Schema.optional(Schema.String),
+  endpoint: Schema.optional(Schema.String),
+  keyName: Schema.optional(Schema.String),
+});
+const JevConfig = Schema.fromJsonString(JevConfigFields);
+/** `endpoint` and `keyName` point Jev at a gateway, overriding the named provider's. */
+export const jevRoute = (config: typeof JevConfigFields.Type) => {
+  const preset = PROVIDERS.get(config.provider ?? "typesafe");
+  const endpoint = config.endpoint ?? preset?.endpoint;
+  const key = config.keyName ?? preset?.key;
+  const model = config.model ?? preset?.model;
+  return endpoint && key && model ? { endpoint, key, model } : undefined;
+};
 const JevResponse = Schema.Struct({
   answers: Schema.Struct({
     next: Schema.Struct({ choice: Schema.String, confidence: Schema.Finite }),
@@ -88,16 +98,20 @@ const make = Effect.gen(function* () {
       Effect.flatMap(Schema.decodeEffect(JevConfig)),
       Effect.mapError(() => unavailable(`Jev is not configured: no readable ${configPath}.`)),
     );
-    const provider = PROVIDERS[config.provider ?? "typesafe"];
+    const route = jevRoute(config);
+    if (!route)
+      return yield* unavailable(
+        `Jev provider ${config.provider} is unknown; set endpoint and keyName in ${configPath}.`,
+      );
     const fromFile = config.envFile
       ? yield* fs.readFileString(config.envFile).pipe(
-          Effect.map((contents) => NodeUtil.parseEnv(contents)[provider.key]),
+          Effect.map((contents) => NodeUtil.parseEnv(contents)[route.key]),
           Effect.mapError(() => unavailable(`Jev envFile ${config.envFile} is unreadable.`)),
         )
       : undefined;
-    const key = environment[provider.key] ?? fromFile;
-    if (!key) return yield* unavailable(`${provider.key} is missing for Jev.`);
-    return { endpoint: provider.endpoint, model: config.model ?? provider.model, key };
+    const key = environment[route.key] ?? fromFile;
+    if (!key) return yield* unavailable(`${route.key} is missing for Jev.`);
+    return { endpoint: route.endpoint, model: route.model, key };
   });
   const decide = Effect.fn("GoalDecider.decide")(function* (request: {
     readonly goal: string;

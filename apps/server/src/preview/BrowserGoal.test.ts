@@ -1,5 +1,5 @@
 import { expect, it } from "@effect/vitest";
-import { goalActions } from "./BrowserGoal.ts";
+import { goalActions, jevRoute } from "./BrowserGoal.ts";
 
 // The format of Playwright 1.60 `ariaSnapshot({ mode: "ai", boxes: true })`.
 const tree = `- generic [active] [ref=e1] [box=8,8,1264,704]:
@@ -75,3 +75,30 @@ it.each([
     expect(counts(page(dialog, content, navigation))).toEqual(expected);
   },
 );
+
+it.each([
+  {
+    config: {},
+    expected: {
+      endpoint: "https://api.typesafe.ai/v1/systemone",
+      key: "TYPESAFE_API_KEY",
+      model: "jev-latest",
+    },
+  },
+  {
+    config: {
+      provider: "my-gateway",
+      model: "typesafe/jev",
+      endpoint: "https://gateway.example/v1/systemone",
+      keyName: "GATEWAY_API_KEY",
+    },
+    expected: {
+      endpoint: "https://gateway.example/v1/systemone",
+      key: "GATEWAY_API_KEY",
+      model: "typesafe/jev",
+    },
+  },
+  { config: { provider: "my-gateway" }, expected: undefined },
+])("routes Jev config $config", ({ config, expected }) => {
+  expect(jevRoute(config)).toEqual(expected);
+});
