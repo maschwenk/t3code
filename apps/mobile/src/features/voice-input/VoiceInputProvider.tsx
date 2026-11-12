@@ -13,7 +13,10 @@ import {
   preferredMicrophoneInput,
   rememberMicrophones,
 } from "../../lib/microphonePriority";
-import { getLocalVoiceTranscriber } from "../../native/voiceTranscription";
+import {
+  getLocalVoiceTranscriber,
+  type OnDeviceVoiceEngine,
+} from "../../native/voiceTranscription";
 import { createVoiceRecorder } from "../../native/voiceRecorder";
 import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../state/preferences";
 import { getNativeShowcaseScene } from "../showcase/nativeShowcaseScene";
@@ -55,13 +58,22 @@ function keepScreenAwake(tag: string): () => void {
 export const deviceMicrophoneOrder = (saved?: ReadonlyArray<MicrophoneEntry>) =>
   microphoneOrder(saved, Platform.OS === "android" ? "android" : "ios");
 
-/** "checking" until the first availability probe settles; re-probed on foreground. */
-export const localVoiceTranscriberAtom = makePermissionStatusAtom<
-  VoiceTranscriber | null | "checking"
->({
-  label: "mobile:voice-input:transcriber",
-  initial: "checking",
-  read: () => getLocalVoiceTranscriber().catch(() => null),
+export const localVoiceTranscribers = Atom.family((engine: OnDeviceVoiceEngine) =>
+  makePermissionStatusAtom<VoiceTranscriber | null | "checking">({
+    label: `mobile:voice-input:transcriber:${engine}`,
+    initial: "checking",
+    read: () => getLocalVoiceTranscriber(engine).catch(() => null),
+  }),
+);
+
+/**
+ * "checking" until preferences load and the chosen engine's first availability probe settles;
+ * re-probed on foreground. Waiting for preferences keeps a Parakeet choice from starting on Apple.
+ */
+export const localVoiceTranscriberAtom = Atom.make((get) => {
+  const preferences = get(mobilePreferencesAtom);
+  if (!AsyncResult.isSuccess(preferences)) return "checking";
+  return get(localVoiceTranscribers(preferences.value.onDeviceVoiceEngine ?? "system"));
 }).pipe(Atom.keepAlive);
 
 const voiceInputAvailableAtom = Atom.make((get) => {

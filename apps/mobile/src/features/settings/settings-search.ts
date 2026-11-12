@@ -44,6 +44,8 @@ const SETTINGS_SEARCH_TERMS = {
     "this device",
     "environment",
     "on-device",
+    "parakeet",
+    "speech engine",
     "audio input",
     "preferred microphone",
     "microphone order",

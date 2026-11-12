@@ -18,6 +18,7 @@ import { ToolCallVisibility } from "@t3tools/contracts/settings";
 import type { AndroidNavigationStyle } from "../lib/androidNavigationStyle";
 import type { ComposerEnterBehavior } from "../lib/composerEnterBehavior";
 import type { FollowUpBehavior } from "../lib/followUpBehavior";
+import type { OnDeviceVoiceEngine } from "../native/voiceTranscription";
 import { isMicrophoneKind, type MicrophoneEntry } from "../lib/microphonePriority";
 import { MOBILE_THEME_IDS, type MobileThemeId, type MobileThemeMode } from "../lib/mobileTheme";
 import * as MobileDatabase from "./mobile-database";
@@ -114,6 +115,7 @@ export interface Preferences {
   readonly composerEnterBehavior?: ComposerEnterBehavior;
   readonly followUpBehavior?: FollowUpBehavior;
   readonly microphones?: ReadonlyArray<MicrophoneEntry>;
+  readonly onDeviceVoiceEngine?: OnDeviceVoiceEngine;
   readonly projectGroupingEnabled?: boolean;
   readonly projectGroupingMode?: SidebarProjectGroupingMode;
   readonly toolCallVisibility?: ToolCallVisibility;
@@ -198,6 +200,7 @@ function sanitizePreferences(parsed: Preferences): Preferences {
     composerEnterBehavior?: ComposerEnterBehavior;
     followUpBehavior?: FollowUpBehavior;
     microphones?: ReadonlyArray<MicrophoneEntry>;
+    onDeviceVoiceEngine?: OnDeviceVoiceEngine;
     projectGroupingEnabled?: boolean;
     projectGroupingMode?: SidebarProjectGroupingMode;
     toolCallVisibility?: ToolCallVisibility;
@@ -313,6 +316,9 @@ function sanitizePreferences(parsed: Preferences): Preferences {
         ? [{ kind: entry.kind, uid: entry.uid, name: entry.name }]
         : [];
     });
+  }
+  if (parsed.onDeviceVoiceEngine === "system" || parsed.onDeviceVoiceEngine === "parakeet") {
+    preferences.onDeviceVoiceEngine = parsed.onDeviceVoiceEngine;
   }
   if (typeof parsed.projectGroupingEnabled === "boolean") {
     preferences.projectGroupingEnabled = parsed.projectGroupingEnabled;
