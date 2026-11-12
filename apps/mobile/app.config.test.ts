@@ -59,6 +59,9 @@ it("signs a full build for another team only when its team and bundle are both s
   expect(config.ios?.appleTeamId).toBe("ABCDE12345");
   expect(config.ios?.bundleIdentifier).toBe("com.example.t3code");
   expect(JSON.stringify(config.plugins)).toContain('"groupIdentifier":"group.com.example.t3code"');
+  // It installs beside the store app, so it can't share its name and icon.
+  expect(config.name).toBe("T3 Fork");
+  expect(config.ios?.icon).toContain("nightly");
 
   vi.stubEnv("T3CODE_IOS_BUNDLE_ID", "");
   await expect(loadConfig("production")).rejects.toThrow("T3CODE_IOS_TEAM_ID");
