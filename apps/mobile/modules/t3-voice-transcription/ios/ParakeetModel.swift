@@ -58,6 +58,10 @@ final class ParakeetModel: Sendable {
         self.unload()
       }
     }
+    // A download the app was killed during leaves files that Settings has no Delete for.
+    if !AsrModels.modelsExist(at: Self.directory, version: Self.version) {
+      try? FileManager.default.removeItem(at: Self.directory)
+    }
   }
 
   var status: ParakeetStatus {
@@ -119,10 +123,11 @@ final class ParakeetModel: Sendable {
       try Self.excludeFromBackup()
       try await AsrModels.download(to: Self.directory, version: Self.version) { self.report($0) }
       return true
-    } catch _ where Task.isCancelled {
-      // Cancelling leaves nothing behind; a failed download keeps its partial files to resume.
+    } catch {
+      // Settings only offers Delete for a ready model, so an unfinished download keeps nothing.
       try? FileManager.default.removeItem(at: Self.directory)
-      return false
+      if Task.isCancelled { return false }
+      throw error
     }
   }
 
