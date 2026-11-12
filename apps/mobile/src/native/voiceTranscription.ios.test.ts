@@ -299,7 +299,10 @@ describe("getLocalVoiceTranscriber with Parakeet", () => {
 
   it.each([
     { model: { state: "missing" }, message: "Download Parakeet in Settings → Voice" },
-    { model: { state: "downloading", progress: 0.4 }, message: "still downloading" },
+    {
+      model: { state: "downloading", progress: 0.4, phase: "downloading" },
+      message: "still downloading",
+    },
   ] as const)(
     "points to Settings without falling back to Apple when the model is $model.state",
     async ({ model, message }) => {

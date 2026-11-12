@@ -78,11 +78,11 @@ export function OnDeviceVoiceSection(props: { readonly systemAvailable: boolean 
         <View className="border-t border-border-subtle">
           <ListActionRow
             icon="xmark"
-            label="Downloading Parakeet"
+            label={model.phase === "compiling" ? "Setting up Parakeet" : "Downloading Parakeet"}
             description={
-              model.progress === undefined
-                ? "Preparing for this device… · Tap to cancel"
-                : `${Math.round(model.progress * 100)}% of ${size} · Tap to cancel`
+              model.phase === "compiling"
+                ? `${Math.round(model.progress * 100)}% · Optimizing for this device, a few minutes · Tap to cancel`
+                : `${Math.round(model.progress * 100)}% · ${size} download · Tap to cancel`
             }
             onPress={() => native.cancelParakeetModelDownload()}
           />
