@@ -104,7 +104,8 @@ vp run ios:release
 ```
 
 A paid Apple team of your own keeps every capability. Set its team ID and a bundle identifier you
-registered together. Push notifications, T3 Connect sign-in, and app.t3.codes links stay tied to T3's
+registered together. The build is named T3 Fork with the nightly icon, so it doesn't look like the
+store app installed beside it. Push notifications, T3 Connect sign-in, and app.t3.codes links stay tied to T3's
 team and bundle, so pair such a build by QR code or link. Set `T3CODE_MOBILE_UPDATES_ENABLED=0` so
 T3's over-the-air updates never replace its JavaScript.
 
