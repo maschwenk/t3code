@@ -7,7 +7,7 @@ import type {
 } from "@t3tools/contracts";
 import { CalendarClockIcon } from "lucide-react";
 import { Atom } from "effect/reactivity";
-import { createContext, type ReactNode, use } from "react";
+import { createContext, lazy, type ReactNode, Suspense, use } from "react";
 
 import { appAtomRegistry } from "~/rpc/atomRegistry";
 import { useThreadShell } from "~/state/entities";
@@ -16,10 +16,7 @@ import { serverEnvironment } from "~/state/server";
 import { formatUpcomingTimestamp } from "~/timestampFormat";
 import { useNowMinute } from "~/hooks/useNowMinute";
 
-import {
-  ScheduledTaskEditorDialog,
-  type ScheduledTaskThreadContext,
-} from "../settings/ScheduledTasksSettings";
+import type { ScheduledTaskThreadContext } from "../settings/ScheduledTasksSettings";
 import { SettingsScopeProvider } from "../settings/SettingsScopeContext";
 import type { MessagesTimelineRow } from "./MessagesTimeline.logic";
 import {
@@ -30,6 +27,12 @@ import {
   type ScheduledTaskCardPlacement,
 } from "@t3tools/client-runtime/scheduled-tasks";
 import { Button } from "../ui/button";
+
+const ScheduledTaskEditorDialog = lazy(() =>
+  import("../settings/ScheduledTasksSettings").then((module) => ({
+    default: module.ScheduledTaskEditorDialog,
+  })),
+);
 
 interface ScheduledTaskEditorRequest {
   readonly environmentId: EnvironmentId;
@@ -60,13 +63,15 @@ export function ScheduledTaskEditorHost() {
   if (request === null) return null;
   return (
     <SettingsScopeProvider search={ALL_ENVIRONMENTS_SCOPE} onChange={ignoreScopeChange}>
-      <ScheduledTaskEditorDialog
-        key={`${request.environmentId}:${request.task?.id ?? request.thread?.threadId ?? "new"}`}
-        initialEnvironmentId={request.environmentId}
-        task={request.task}
-        thread={request.thread ?? null}
-        onClose={() => appAtomRegistry.set(scheduledTaskEditorAtom, null)}
-      />
+      <Suspense fallback={null}>
+        <ScheduledTaskEditorDialog
+          key={`${request.environmentId}:${request.task?.id ?? request.thread?.threadId ?? "new"}`}
+          initialEnvironmentId={request.environmentId}
+          task={request.task}
+          thread={request.thread ?? null}
+          onClose={() => appAtomRegistry.set(scheduledTaskEditorAtom, null)}
+        />
+      </Suspense>
     </SettingsScopeProvider>
   );
 }
