@@ -31,6 +31,7 @@ import {
 } from "../voice-input/voiceDestination";
 import { VoiceModelSection } from "./VoiceModelSection";
 import { CloudVoiceSection } from "./CloudVoiceSection";
+import { OnDeviceVoiceSection } from "./OnDeviceVoiceSection";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { ThreadSwipeable } from "../home/thread-swipe-actions";
 import { ListActionRow as SettingsActionRow } from "../../components/ui/ListActionRow";
@@ -40,7 +41,9 @@ import { SettingsSection } from "./components/SettingsSection";
 import {
   deviceMicrophoneOrder,
   localVoiceTranscriberAtom,
+  localVoiceTranscribers,
 } from "../voice-input/VoiceInputProvider";
+import { parakeet } from "../../native/parakeet";
 
 type MicrophonePermission = "checking" | "granted" | "ask" | "denied";
 
@@ -168,6 +171,7 @@ function EnvironmentChoice({
 
 export function SettingsVoiceRouteScreen() {
   const transcriber = useAtomValue(localVoiceTranscriberAtom);
+  const systemTranscriber = useAtomValue(localVoiceTranscribers("system"));
   const grant = useAtomValue(voiceGrantAtom);
   const { environments, isReady } = useEnvironments();
   const grantEnvironment = grant
@@ -259,6 +263,7 @@ export function SettingsVoiceRouteScreen() {
             />
           ) : null}
         </SettingsSection>
+        {!grant ? <OnDeviceVoiceSection systemAvailable={systemTranscriber !== null} /> : null}
         {hasEnvironmentVoiceCapture &&
           environments
             .filter(
@@ -285,7 +290,8 @@ export function SettingsVoiceRouteScreen() {
             label={grantEnvironment.label}
           />
         ) : null}
-        {!grant && transcriber === null ? (
+        {/* With Parakeet, the Apple row explains its own availability. */}
+        {!grant && transcriber === null && !parakeet ? (
           <Text className="px-2 text-sm text-foreground-muted">{UNAVAILABLE_EXPLANATION}</Text>
         ) : null}
         {permission === "ask" || permission === "denied" ? (

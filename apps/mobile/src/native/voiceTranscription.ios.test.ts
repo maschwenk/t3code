@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 
 import { VoiceInputController, VoiceTranscriptionError } from "@t3tools/client-runtime/voice-input";
 import { resetVoiceInputGlobalsForTests } from "../../../../packages/client-runtime/src/voice-input/controller";
+import type { ParakeetModelStatus } from "./parakeet";
+import type { OnDeviceVoiceEngine } from "./voiceTranscription";
 
 const mocks = vi.hoisted(() => ({
   isAvailable: vi.fn<(locale: string) => boolean>(),
@@ -10,6 +12,9 @@ const mocks = vi.hoisted(() => ({
   transcribe: vi.fn<(audio: ArrayBufferLike, locale: string) => Promise<TranscriptionResult>>(),
   readAudio: vi.fn<() => Promise<ArrayBuffer>>(),
   preferredLanguages: [] as unknown,
+  parakeetModel: { state: "ready" } as ParakeetModelStatus,
+  prepareParakeet: vi.fn<() => Promise<void>>(),
+  transcribeWithParakeet: vi.fn<(uri: string) => Promise<string>>(),
 }));
 
 // iOS exposes the user's ordered Language & Region list through NSUserDefaults.
@@ -22,6 +27,14 @@ vi.mock("@react-native-ai/apple/src/NativeAppleTranscription", () => ({
     isAvailable: mocks.isAvailable,
     prepare: mocks.prepare,
     transcribe: mocks.transcribe,
+  },
+}));
+
+vi.mock("./parakeet", () => ({
+  parakeet: {
+    getParakeetModel: () => mocks.parakeetModel,
+    prepareParakeet: mocks.prepareParakeet,
+    transcribeWithParakeet: mocks.transcribeWithParakeet,
   },
 }));
 
@@ -55,8 +68,11 @@ function useLanguages(preferred: ReadonlyArray<string>, appLocale: string) {
 }
 
 /** Prepares and transcribes one recording, resolving with the error when either step fails. */
-async function transcribeOnce(signal = new AbortController().signal) {
-  const transcriber = (await getLocalVoiceTranscriber())!;
+async function transcribeOnce(
+  signal = new AbortController().signal,
+  engine: OnDeviceVoiceEngine = "system",
+) {
+  const transcriber = (await getLocalVoiceTranscriber(engine))!;
   return transcriber
     .prepare({ signal })
     .then(async (prepared) => {
@@ -108,6 +124,9 @@ beforeEach(() => {
   mocks.prepare.mockResolvedValue("sv-SE");
   mocks.readAudio.mockResolvedValue(audio);
   mocks.transcribe.mockResolvedValue(nativeTranscript);
+  mocks.parakeetModel = { state: "ready" };
+  mocks.prepareParakeet.mockResolvedValue();
+  mocks.transcribeWithParakeet.mockResolvedValue(" Hej världen. ");
 });
 
 afterEach(() => {
@@ -262,5 +281,47 @@ describe("getLocalVoiceTranscriber", () => {
     expect(error).toBeInstanceOf(VoiceTranscriptionError);
     expect(error).toMatchObject({ code: "cancelled" });
     expect(mocks.transcribe).not.toHaveBeenCalled();
+  });
+});
+
+describe("getLocalVoiceTranscriber with Parakeet", () => {
+  it("transcribes with Parakeet where Apple's speech is unavailable", async () => {
+    mocks.isAvailable.mockReturnValue(false);
+
+    expect(await transcribeOnce(undefined, "parakeet")).toEqual({
+      text: "Hej världen.",
+      locale: "auto",
+    });
+    expect(mocks.transcribeWithParakeet).toHaveBeenCalledWith("file:///voice.m4a");
+    expect(mocks.prepare).not.toHaveBeenCalled();
+    expect(mocks.transcribe).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { model: { state: "missing" }, message: "Download Parakeet in Settings → Voice" },
+    { model: { state: "downloading", progress: 0.4 }, message: "still downloading" },
+  ] as const)(
+    "points to Settings without falling back to Apple when the model is $model.state",
+    async ({ model, message }) => {
+      mocks.parakeetModel = model;
+
+      expect(await transcribeOnce(undefined, "parakeet")).toMatchObject({
+        code: "unavailable",
+        message: expect.stringContaining(message),
+      });
+      expect(mocks.prepareParakeet).not.toHaveBeenCalled();
+      expect(mocks.prepare).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    { failing: "loading", code: "preparation-failed" },
+    { failing: "transcribing", code: "transcription-failed" },
+  ] as const)("reports $code when Parakeet fails while $failing", async ({ failing, code }) => {
+    const failure = Object.assign(new Error("Core ML failed"), { code: "ERR_UNKNOWN" });
+    if (failing === "loading") mocks.prepareParakeet.mockRejectedValue(failure);
+    else mocks.transcribeWithParakeet.mockRejectedValue(failure);
+
+    expect(await transcribeOnce(undefined, "parakeet")).toMatchObject({ code, cause: failure });
   });
 });
