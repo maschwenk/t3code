@@ -3,6 +3,9 @@ import {
   OrchestratorMcpEnvironmentTarget,
   OrchestratorMcpFailure,
   PositiveInt,
+  PullRequestChecksState,
+  PullRequestMergeability,
+  PullRequestReviewDecision,
   PullRequestReviewGuide,
   PullRequestReviewGuideRun,
   PullRequestState,
@@ -256,6 +259,17 @@ export const WatchPullRequestResult = Schema.Struct({
   ...PullRequestIdentity,
   watching: Schema.Boolean,
   wasWatching: Schema.Boolean,
+  /** The pull request as T3 last synced it; absent on unwatch and before the first sync. */
+  current: Schema.optional(
+    Schema.Struct({
+      syncedAt: Schema.String,
+      state: PullRequestState,
+      isDraft: Schema.Boolean,
+      reviewDecision: Schema.NullOr(PullRequestReviewDecision),
+      checks: Schema.NullOr(PullRequestChecksState),
+      mergeability: Schema.NullOr(PullRequestMergeability),
+    }),
+  ),
 });
 export type WatchPullRequestResult = typeof WatchPullRequestResult.Type;
 
@@ -374,7 +388,7 @@ const ListThreadPullRequestsTool = Tool.make("list_thread_pull_requests", {
 
 const WatchPullRequestTool = Tool.make("watch_pull_request", {
   description:
-    "Watch an open PR for this thread, linking it first if needed. T3 wakes you on failed checks, passed required checks, new comments or reviews, or conflicts. Handle old comments first. Only later ones wake you. After this call, end your turn. The watch stays on after each wake, so do not call this again on a wake. A wake is not a merge decision. Check readiness yourself.",
+    "Watch an open PR for this thread, linking it first if needed. If the result's `current` state already unblocks you, act now. Otherwise end your turn. T3 wakes you on failed checks, passed required checks, new comments or reviews (approvals from the last 10 minutes count), or conflicts. Each wake states the review decision and merge state. Handle older comments first. The watch stays on after each wake, so do not call this again on a wake. A wake is not a merge decision. Check readiness yourself.",
   parameters: PullRequestTargetInput,
   success: WatchPullRequestResult,
   failure: PullRequestToolError,

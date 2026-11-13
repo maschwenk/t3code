@@ -296,6 +296,41 @@ describe("pull request toolkit handlers", () => {
     }),
   );
 
+  // regression: the agent watched an approved pull request and kept saying it waited on review
+  it.effect("tells the agent the review decision it starts watching from", () =>
+    Effect.gen(function* () {
+      const link = makeLink(278, { headBranch: "feature" });
+      const harness = yield* makeHarness({
+        thread: makeThread([
+          {
+            ...link,
+            snapshot: link.snapshot && {
+              ...link.snapshot,
+              reviewDecision: "approved",
+              checksState: "passing",
+              mergeability: "mergeable",
+            },
+          },
+        ]),
+      });
+      expect(
+        yield* harness.call("watch_pull_request", { repository: "t3tools/t3code", number: 278 }),
+      ).toMatchObject({
+        current: {
+          syncedAt: "2026-08-27T00:00:00.000Z",
+          state: "open",
+          isDraft: false,
+          reviewDecision: "approved",
+          checks: "passing",
+          mergeability: "mergeable",
+        },
+      });
+      expect(
+        yield* harness.call("unwatch_pull_request", { repository: "t3tools/t3code", number: 278 }),
+      ).not.toHaveProperty("current");
+    }),
+  );
+
   it.effect("refuses to watch a merged pull request and stops an existing watch", () =>
     Effect.gen(function* () {
       const watch = {

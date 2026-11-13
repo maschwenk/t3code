@@ -11,8 +11,52 @@ import * as DateTime from "effect/DateTime";
 export const PULL_REQUEST_WATCH_WAKE_LIMIT = 10;
 /** How long a head may go without any check before the agent is told none reported. */
 export const PULL_REQUEST_WATCH_NO_CHECKS_MS = 15 * 60_000;
+/**
+ * A new watch starts its remark cursor this far back, for approvals and change requests only.
+ * An agent usually reads the PR a minute or two before it watches, and a verdict landing in
+ * that gap would otherwise count as old and never wake it.
+ */
+export const PULL_REQUEST_WATCH_VERDICT_LOOKBACK_MS = 10 * 60_000;
 const LISTED_ITEMS = 10;
 const SNIPPET_LENGTH = 200;
+
+type Verdict = "approved" | "changes-requested" | "dismissed";
+
+/** Hosts spell review states differently: GitHub `CHANGES_REQUESTED`, Gitea `changes_requested`. */
+function verdictOf(remark: PullRequestComment): Verdict | null {
+  if (remark.kind !== "review") return null;
+  switch (remark.reviewState?.toLowerCase().replaceAll("_", "-")) {
+    case "approved":
+      return "approved";
+    case "changes-requested":
+      return "changes-requested";
+    case "dismissed":
+      return "dismissed";
+    default:
+      return null;
+  }
+}
+
+export interface PullRequestReviewers {
+  readonly approved: ReadonlyArray<string>;
+  readonly changesRequested: ReadonlyArray<string>;
+}
+
+/** Each reviewer's latest approval or change request; a dismissal clears it. */
+export function pullRequestReviewers(
+  remarks: ReadonlyArray<PullRequestComment>,
+): PullRequestReviewers {
+  const latest = new Map<string, Verdict>();
+  for (const remark of remarks.toSorted((left, right) =>
+    left.createdAt.localeCompare(right.createdAt),
+  )) {
+    const verdict = verdictOf(remark);
+    if (verdict !== null && remark.author !== null) latest.set(remark.author.login, verdict);
+  }
+  const by = (verdict: Verdict) =>
+    [...latest].flatMap(([login, latestVerdict]) => (latestVerdict === verdict ? [login] : []));
+  return { approved: by("approved"), changesRequested: by("changes-requested") };
+}
 
 export type PullRequestWatchChange =
   | { readonly kind: "checks-failed"; readonly failed: ReadonlyArray<PullRequestCheck> }
@@ -109,12 +153,17 @@ export function evaluatePullRequestWatch(
 
   const own = (detail.viewer ?? detail.author?.login)?.toLowerCase();
   const through = Date.parse(watch.remarksThrough);
+  const startedAt = Date.parse(watch.startedAt);
   const activeAt = (remark: PullRequestComment) => remark.editedAt ?? remark.createdAt;
   // Hosts can stamp remarks to the second, so remarks at the boundary time are told apart by ID.
+  // Before the watch began only approvals and change requests count; the agent handles older
+  // comments itself before it watches.
   const fresh = (remarks ?? []).filter((remark) => {
     const at = Date.parse(activeAt(remark));
+    const verdict = verdictOf(remark);
     return (
       (at > through || (at === through && !watch.remarkIds.includes(remark.id))) &&
+      (at > startedAt || verdict === "approved" || verdict === "changes-requested") &&
       remark.author?.login.toLowerCase() !== own
     );
   });
@@ -221,21 +270,68 @@ const SUMMARY: Record<PullRequestWatchChange["kind"], string> = {
   conflicting: "merge conflict",
 };
 
+export interface PullRequestStanding extends Pick<
+  PullRequestDetail,
+  "baseBranch" | "isDraft" | "mergeability" | "reviewDecision" | "autoMergeEnabled"
+> {
+  /** Null when no read of the conversation has been complete yet. */
+  readonly reviewers: PullRequestReviewers | null;
+}
+
+function reviewStanding({ reviewDecision, reviewers }: PullRequestStanding): string {
+  const by = (logins: ReadonlyArray<string> | undefined) =>
+    logins === undefined || logins.length === 0 ? "" : ` by ${logins.join(", ")}`;
+  const approved = by(reviewers?.approved);
+  const changes = by(reviewers?.changesRequested);
+  switch (reviewDecision) {
+    case "approved":
+      return `approved${approved}`;
+    case "changes-requested":
+      return `changes requested${changes}`;
+    case "review-required":
+      return approved === ""
+        ? "review required, not approved yet"
+        : `review required, approved so far${approved}`;
+  }
+  // Without a review rule the host decides nothing, so the reviews themselves are the state.
+  if (changes !== "") return `changes requested${changes}`;
+  if (approved !== "") return `approved${approved}`;
+  return reviewers === null ? "not known yet" : "no approvals or change requests";
+}
+
+function mergeStanding(standing: PullRequestStanding): string {
+  const conflicts =
+    standing.mergeability === "conflicting"
+      ? `conflicts with ${standing.baseBranch}`
+      : standing.mergeability === "mergeable"
+        ? `no conflicts with ${standing.baseBranch}`
+        : `conflict check against ${standing.baseBranch} still running`;
+  return [
+    ...(standing.isDraft ? ["draft"] : []),
+    conflicts,
+    ...(standing.autoMergeEnabled === true ? ["auto-merge on"] : []),
+  ].join(", ");
+}
+
 export function pullRequestWatchMessage(input: {
   readonly number: number;
   readonly url: string;
-  readonly baseBranch: string;
   readonly headSha: string | null;
   readonly report: PullRequestWatchReport;
+  readonly standing: PullRequestStanding;
 }): { readonly text: string; readonly notification: OrchestrationV2Notification } {
   const { changes, exhausted } = input.report;
   const context = {
-    baseBranch: input.baseBranch,
+    baseBranch: input.standing.baseBranch,
     commit: input.headSha === null ? "" : ` on ${input.headSha.slice(0, 7)}`,
   };
   const text = [
     `Update on pull request #${input.number} (${input.url}), which T3 Code is watching for you:`,
     ...changes.flatMap((change) => changeLines(change, context)),
+    "",
+    "Where it stands now:",
+    `- Review: ${reviewStanding(input.standing)}.`,
+    `- Merge: ${mergeStanding(input.standing)}.`,
     "",
     exhausted
       ? `T3 Code stopped watching after ${PULL_REQUEST_WATCH_WAKE_LIMIT} comment-only updates in a row. Call watch_pull_request to watch it again.`

@@ -38,6 +38,8 @@ import * as ProjectionStore from "./ProjectionStore.ts";
 import {
   evaluatePullRequestWatch,
   PULL_REQUEST_WATCH_NO_CHECKS_MS,
+  pullRequestReviewers,
+  type PullRequestReviewers,
   pullRequestWatchMessage,
 } from "./pullRequestWatch.ts";
 
@@ -89,6 +91,8 @@ interface LastRead {
   readonly watches: ReadonlySet<string>;
   readonly status: string | null;
   readonly remarks: string | null;
+  /** From the last complete conversation read, for wakes on passes that skip it. */
+  readonly reviewers: PullRequestReviewers | null;
 }
 
 interface ReadPlan {
@@ -545,6 +549,7 @@ export const make = Effect.gen(function* () {
           fingerprint === null ? QUIET_REREAD_MS : FINGERPRINT_REREAD_MS,
         )
       : null;
+    const reviewers = remarks === null ? (last?.reviewers ?? null) : pullRequestReviewers(remarks);
     lastReads.set(group.key, {
       at:
         plan.activity || last === undefined
@@ -558,6 +563,7 @@ export const make = Effect.gen(function* () {
       watches: new Set(group.targets.map(watchKey)),
       status: fingerprint?.status ?? null,
       remarks: fingerprint?.remarks ?? null,
+      reviewers,
     });
     yield* eachTarget(group, (target) => {
       const report = evaluatePullRequestWatch(target.watch, detail, remarks, now);
@@ -565,9 +571,9 @@ export const make = Effect.gen(function* () {
         const wake = pullRequestWatchMessage({
           number: target.link.number,
           url: target.link.url,
-          baseBranch: detail.baseBranch,
           headSha: report.next.headSha,
           report,
+          standing: { ...detail, reviewers },
         });
         // An ending watch keeps what this pass saw, so watching again starts from it.
         return (

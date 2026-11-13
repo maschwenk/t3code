@@ -4350,6 +4350,124 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
     }),
   );
 
+  // regression: an approval 90 seconds before watch_pull_request never woke the agent, and the
+  // checks-passed wake left it saying it still waited on review
+  it.effect("wakes with an approval from just before the watch and where the PR stands", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const threadId = ThreadId.make("runtime-pull-request-watch-approved-before");
+      const projectId = ProjectId.make("pr-watch-approved-before-project");
+      yield* seedProject({
+        projectId,
+        title: "Watch approved before",
+        workspaceRoot: "/workspace/watch",
+        defaultModelSelection: null,
+        createdAt: "2026-10-01T00:00:00.000Z",
+      });
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        createdBy: "user",
+        creationSource: "web",
+        commandId: CommandId.make("pr-watch-approved-before-create"),
+        threadId,
+        projectId,
+        title: "Watch approved before",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+      });
+      const key = { host: "github.com", repository: "pingdotgg/t3code", number: 278 };
+      const watchOn = (on: boolean, id: string) =>
+        orchestrator.dispatch({
+          type: "thread.pull-request.watch",
+          commandId: CommandId.make(`pr-watch-approved-before-${id}`),
+          threadId,
+          ...key,
+          watching: on,
+          link: { url: "https://github.com/pingdotgg/t3code/pull/278", source: "agent" },
+        });
+      yield* TestClock.adjust("1 hour");
+      yield* watchOn(true, "start");
+      const started = (yield* orchestrator.getThreadShell(threadId))?.pullRequests?.[0]?.watch;
+      assert.isDefined(started);
+      const before = (seconds: number) =>
+        DateTime.formatIso(DateTime.makeUnsafe(Date.parse(started!.startedAt) - seconds * 1_000));
+      const reviewBy = (login: string, at: string, body = ""): PullRequestComment => ({
+        id: `review-${login}`,
+        kind: "review",
+        author: { login, name: null, avatarUrl: null },
+        body,
+        createdAt: at,
+        url: null,
+        path: null,
+        reviewState: body === "" ? "APPROVED" : "COMMENTED",
+      });
+      const comments = [
+        reviewBy("alice", before(30 * 60)),
+        reviewBy("coderabbit", before(120), "Walkthrough of the change."),
+        reviewBy("maintainer", before(88)),
+      ];
+      const detail: PullRequestDetail = {
+        ...watchedPullRequestDetail({ projectId, number: key.number, at: before(600) }),
+        reviewDecision: "approved",
+        checks: [
+          {
+            name: "required-check",
+            status: "success",
+            description: null,
+            url: null,
+            required: true,
+          },
+        ],
+      };
+      const reactor = yield* PullRequestWatchReactor.make.pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            NodeServices.layer,
+            NodeCrypto.layer,
+            Layer.mock(PullRequestService.PullRequestService)({
+              detail: () => Effect.succeed(detail),
+              activity: () =>
+                Effect.succeed({
+                  comments,
+                  commentCount: comments.length,
+                  commentsTruncated: false,
+                  reviewThreads: [],
+                  commits: [],
+                }),
+            }),
+          ),
+        ),
+      );
+      const wakes = Effect.map(orchestrator.getThreadRecords(threadId, ["messages"]), (records) =>
+        records.messages.filter((message) => message.notification !== undefined),
+      );
+
+      yield* reactor.sweep;
+      const [wake, ...extra] = yield* wakes;
+      assert.lengthOf(extra, 0);
+      assert.equal(wake?.notification?.summary, "#278: checks passed, new comments");
+      const text = wake?.text ?? "";
+      assert.include(text, "  - maintainer: APPROVED");
+      assert.notInclude(text, "coderabbit");
+      assert.include(text, "- Review: approved by alice, maintainer.");
+      assert.include(text, "- Merge: no conflicts with main.");
+
+      yield* TestClock.adjust("2 minutes");
+      yield* reactor.sweep;
+      assert.lengthOf(yield* wakes, 1);
+
+      // Watching again does not repeat the approval the last watch reported.
+      yield* watchOn(false, "stop");
+      yield* watchOn(true, "again");
+      yield* reactor.sweep;
+      assert.lengthOf(yield* wakes, 1);
+      yield* watchOn(false, "end");
+    }),
+  );
+
   it.effect("reads each watched PR as soon as its own fingerprint lands", () =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
