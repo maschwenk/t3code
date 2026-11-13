@@ -1,11 +1,15 @@
+import type { EnvironmentId } from "@t3tools/contracts";
+import { useAtomValue } from "@effect/atom-react";
 import * as Haptics from "expo-haptics";
 import { memo } from "react";
 import { Pressable, type ColorValue } from "react-native";
 
 import { SymbolView } from "../../components/ui/AppSymbol";
-import { toggleReadAloud, useReadingAloud } from "./readAloud";
+import { readAloudConnectionAtom } from "../voice-input/voiceDestination";
+import { stopReadAloud, toggleReadAloud, useReadingAloud } from "./readAloud";
 
 export const ReadAloudButton = memo(function ReadAloudButton(props: {
+  readonly environmentId: EnvironmentId;
   readonly scope: string;
   readonly messageId: string;
   readonly markdown: string;
@@ -14,6 +18,10 @@ export const ReadAloudButton = memo(function ReadAloudButton(props: {
   readonly iconSize: number;
 }) {
   const speaking = useReadingAloud(props.scope, props.messageId);
+  // The environment machine speaks; one without a voice offers no button. A reply that is
+  // already speaking keeps its stop button through a reconnect.
+  const prepared = useAtomValue(readAloudConnectionAtom(props.environmentId));
+  if (!prepared && !speaking) return null;
   return (
     <Pressable
       accessibilityRole="button"
@@ -21,7 +29,8 @@ export const ReadAloudButton = memo(function ReadAloudButton(props: {
       hitSlop={8}
       onPress={() => {
         void Haptics.selectionAsync();
-        toggleReadAloud(props.scope, props.messageId, props.markdown);
+        if (prepared) toggleReadAloud(props.scope, props.messageId, props.markdown, prepared);
+        else stopReadAloud(props.scope);
       }}
       style={({ pressed }) => ({
         width: props.buttonSize,

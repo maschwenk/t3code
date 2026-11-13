@@ -23,6 +23,7 @@ import {
 import * as SpeechPostProcessing from "./postProcessing.ts";
 import * as CloudSpeech from "./CloudSpeech.ts";
 import * as SpeechService from "./SpeechService.ts";
+import * as SpeechSynthesis from "./SpeechSynthesis.ts";
 
 const MAX_TRANSCRIBE_BODY_BYTES = SpeechService.MAX_SPEECH_BYTES + SPEECH_MAX_OPTIONS_BYTES + 4;
 const parseAudio = Option.liftThrowable(decodeSpeechPcmRequest);
@@ -60,6 +61,7 @@ export const speechHttpApiLayer = HttpApiBuilder.group(
     const speech = yield* SpeechService.SpeechService;
     const cloud = yield* CloudSpeech.CloudSpeech;
     const postProcessing = yield* SpeechPostProcessing.SpeechPostProcessing;
+    const synthesis = yield* SpeechSynthesis.SpeechSynthesis;
     const guard = Effect.fnUntraced(function* (
       endpoint: string,
       scope: AuthEnvironmentScope = AuthOrchestrationOperateScope,
@@ -68,6 +70,13 @@ export const speechHttpApiLayer = HttpApiBuilder.group(
       yield* requireEnvironmentScope(scope);
     });
     return handlers
+      .handle(
+        "speak",
+        Effect.fn("environment.voice.speak")(function* (args) {
+          yield* guard(args.endpoint.name);
+          return yield* mapSpeechError(synthesis.speak(args.payload.text));
+        }),
+      )
       .handle(
         "cloudKeys",
         Effect.fn("environment.voice.cloudKeys")(function* (args) {

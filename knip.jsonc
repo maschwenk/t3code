@@ -80,6 +80,7 @@
         "@napi-rs/keyring",
         "ffi-rs",
         "transcribe-cpp",
+        "sherpa-onnx-node",
       ],
     },
     "apps/desktop": {

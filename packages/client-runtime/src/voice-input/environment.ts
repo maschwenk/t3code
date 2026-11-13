@@ -159,6 +159,18 @@ export const transcribeCloudPcm = (
   );
 };
 
+/** WAV audio of the text in the environment's read-aloud voice. */
+export const speakEnvironmentText = (prepared: PreparedConnection, text: string) =>
+  request({
+    group: "voice",
+    prepared,
+    method: "POST",
+    // The first request downloads the voice model on the environment machine.
+    timeoutMs: INFERENCE_OR_DOWNLOAD_TIMEOUT_MS,
+    path: (urls) => urls.speak(),
+    run: ({ client, headers }) => client.speak({ headers, payload: { text } }),
+  });
+
 export const getEnvironmentSpeechStreamUrl = (prepared: PreparedConnection) => {
   let endpoint = prepared.httpBaseUrl;
   return request({

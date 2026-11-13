@@ -1,23 +1,35 @@
-import * as Speech from "expo-speech";
+import type { PreparedConnection } from "@t3tools/client-runtime/connection";
+import { speakEnvironmentText } from "@t3tools/client-runtime/voice-input";
+import { SPEECH_SYNTHESIS_MAX_CHARS } from "@t3tools/contracts";
+import { createAudioPlayer, type AudioPlayer } from "expo-audio";
+import { File, Paths } from "expo-file-system";
 import { useSyncExternalStore } from "react";
-import { Platform, Settings } from "react-native";
 
 import {
   acquireAudioSession,
   activateAudioSession,
+  disposeAudioPlayer,
   isAudioSessionOwner,
   releaseAudioSession,
 } from "../../lib/audioSession";
-import { markdownToSpeechText, pickReadAloudVoice, splitSpeechText } from "./readAloudModel";
+import { uuidv4 } from "../../lib/uuid";
+import { runSpeech } from "../voice-input/voiceDestination";
+import { markdownToSpeechText, splitSpeechText } from "./readAloudModel";
+
+// The environment speaks one piece at a time, so a short queue keeps it busy without
+// synthesizing a long reply nobody stays to hear.
+const PIECES_AHEAD = 2;
+const MAX_PIECE_CHARS = Math.min(400, SPEECH_SYNTHESIS_MAX_CHARS);
 
 interface Reading {
   readonly scope: string;
   readonly key: string;
   readonly token: ReturnType<typeof acquireAudioSession>;
+  readonly abort: AbortController;
+  player: AudioPlayer | null;
 }
 
 let reading: Reading | null = null;
-let lastStop: Promise<unknown> = Promise.resolve();
 const listeners = new Set<() => void>();
 
 function publish(next: Reading | null): void {
@@ -28,46 +40,78 @@ function publish(next: Reading | null): void {
 function finish(current: Reading): void {
   if (reading !== current) return;
   publish(null);
-  // The session is released after the synthesizer stops so other audio comes back up.
-  lastStop = Speech.stop()
+  current.abort.abort();
+  const player = current.player;
+  current.player = null;
+  // Releasing first lets the player's pause end the session, so ducked audio comes back up.
+  void releaseAudioSession(current.token)
     .catch(() => {})
-    .then(() => releaseAudioSession(current.token))
-    .catch(() => {});
-}
-
-function preferredLocale(): string {
-  // The app ships in English only, so Intl reports English even for other system languages.
-  const languages: unknown = Settings.get("AppleLanguages");
-  const first = Array.isArray(languages) ? languages[0] : undefined;
-  return typeof first === "string" ? first : Intl.DateTimeFormat().resolvedOptions().locale;
-}
-
-async function voiceOptions(): Promise<Speech.SpeechOptions> {
-  // Android engines rate nearly every voice as enhanced; their default is the one picked in system settings.
-  if (Platform.OS !== "ios") return {};
-  const locale = preferredLocale();
-  const voices = await Speech.getAvailableVoicesAsync().catch(() => []);
-  const voice = pickReadAloudVoice(voices, locale);
-  return voice ? { voice } : { language: locale };
-}
-
-async function speak(current: Reading, text: string): Promise<void> {
-  const [options] = await Promise.all([voiceOptions(), lastStop]);
-  if (!(await activateAudioSession(current.token)) || reading !== current) return;
-  const chunks = splitSpeechText(text, Speech.maxSpeechInputLength);
-  const end = () => finish(current);
-  chunks.forEach((chunk, index) => {
-    Speech.speak(chunk, {
-      ...options,
-      ...(index === chunks.length - 1 ? { onDone: end } : {}),
-      onStopped: end,
-      onError: end,
+    .finally(() => {
+      if (player) disposeAudioPlayer(player);
     });
+}
+
+function deleteQuietly(file: File): void {
+  try {
+    file.delete();
+  } catch {}
+}
+
+function playToEnd(current: Reading, uri: string): Promise<void> {
+  const player = current.player ?? createAudioPlayer(null);
+  current.player = player;
+  return new Promise((resolve) => {
+    const subscription = player.addListener("playbackStatusUpdate", (status) => {
+      if (status.didJustFinish || reading !== current) done();
+    });
+    const stop = () => done();
+    current.abort.signal.addEventListener("abort", stop);
+    function done() {
+      subscription.remove();
+      current.abort.signal.removeEventListener("abort", stop);
+      resolve();
+    }
+    player.replace({ uri });
+    player.play();
   });
 }
 
+async function speak(current: Reading, prepared: PreparedConnection, text: string): Promise<void> {
+  const pieces = splitSpeechText(text, MAX_PIECE_CHARS);
+  const files: Promise<File>[] = [];
+  const fetchPiece = (index: number) =>
+    (files[index] ??= runSpeech(
+      speakEnvironmentText(prepared, pieces[index]!),
+      current.abort.signal,
+    ).then(async (audio) => {
+      const file = new File(Paths.cache, `read-aloud-${uuidv4()}.wav`);
+      await file.write(audio);
+      return file;
+    }));
+  try {
+    for (let index = 0; index < pieces.length; index += 1) {
+      for (let ahead = index; ahead <= index + PIECES_AHEAD && ahead < pieces.length; ahead += 1)
+        void fetchPiece(ahead).catch(() => {});
+      const file = await fetchPiece(index);
+      // Activate once the first audio exists, so music is not ducked during a long first download.
+      if (index === 0 && !(await activateAudioSession(current.token))) return;
+      if (reading !== current) return;
+      await playToEnd(current, file.uri);
+      if (reading !== current) return;
+    }
+  } finally {
+    finish(current);
+    for (const file of files) void file?.then(deleteQuietly, () => {});
+  }
+}
+
 /** Speaks a reply, or stops it when it is already speaking. One reply speaks at a time. */
-export function toggleReadAloud(scope: string, key: string, markdown: string): void {
+export function toggleReadAloud(
+  scope: string,
+  key: string,
+  markdown: string,
+  prepared: PreparedConnection,
+): void {
   const previous = reading;
   if (previous) finish(previous);
   if (previous?.scope === scope && previous.key === key) return;
@@ -78,10 +122,12 @@ export function toggleReadAloud(scope: string, key: string, markdown: string): v
     scope,
     key,
     token: acquireAudioSession("speech", () => finish(current)),
+    abort: new AbortController(),
+    player: null,
   };
   if (!isAudioSessionOwner(current.token)) return;
   publish(current);
-  speak(current, text).catch(() => finish(current));
+  speak(current, prepared, text).catch(() => finish(current));
 }
 
 /** Stops speech that started from the scope, such as a thread the reader is leaving. */

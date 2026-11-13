@@ -17,7 +17,10 @@ import * as Stream from "effect/Stream";
 import * as ServerConfig from "../config.ts";
 import type { SpeechModel } from "./model.ts";
 
-type ModelFile = Pick<SpeechModel, "id" | "filename" | "revision" | "size" | "sha256">;
+type ModelFile = Pick<SpeechModel, "id" | "filename" | "revision" | "size" | "sha256"> & {
+  /** Where to fetch a file that is not on Hugging Face. */
+  readonly url?: string;
+};
 
 class SpeechModelDownloadError extends Schema.TaggedError<SpeechModelDownloadError>()(
   "SpeechModelDownloadError",
@@ -57,7 +60,7 @@ export class SpeechModelStore extends Context.Service<
 
 const DOWNLOAD_ATTEMPTS = 3;
 const PARTIAL_FILENAME =
-  /\.gguf\.[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.part$/i;
+  /\.(?:gguf|tar\.bz2)\.[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.part$/i;
 
 const make = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
@@ -186,7 +189,9 @@ const make = Effect.gen(function* () {
       yield* fs.makeDirectory(directory, { recursive: true });
       if (yield* verifiedPath(model, finalPath, progress.onVerificationStart)) return finalPath;
       const partialPath = `${finalPath}.${yield* random.uuidV4()}.part`;
-      const url = `https://huggingface.co/${model.id}/resolve/${model.revision}/${model.filename}`;
+      const url =
+        model.url ??
+        `https://huggingface.co/${model.id}/resolve/${model.revision}/${model.filename}`;
       return yield* Effect.gen(function* () {
         for (let attempt = 1; attempt <= DOWNLOAD_ATTEMPTS; attempt += 1) {
           const offset = Number((yield* statFile(partialPath))?.size ?? 0);

@@ -28,6 +28,7 @@ import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 import type * as NetAddress from "effect/net/NetAddress";
 import * as SpeechService from "./SpeechService.ts";
 import * as CloudSpeech from "./CloudSpeech.ts";
+import * as SpeechSynthesis from "./SpeechSynthesis.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
@@ -49,6 +50,7 @@ const principal = (...scopes: AuthEnvironmentScope[]) =>
 
 const dependencies = Layer.mergeAll(
   Layer.mock(CloudSpeech.CloudSpeech)({}),
+  Layer.mock(SpeechSynthesis.SpeechSynthesis)({}),
   Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed([]) }),
   Layer.mock(ServerSettings.ServerSettingsService)({
     getSettings: Effect.succeed(DEFAULT_SERVER_SETTINGS),
@@ -322,4 +324,61 @@ effectIt.effect.each([
         reason,
       });
     }).pipe(Effect.scoped),
+);
+
+effectIt.effect("speaks text as WAV and reports a machine without a voice as unavailable", () =>
+  Effect.gen(function* () {
+    const wave = new Uint8Array([82, 73, 70, 70, 1, 2, 3]);
+    const speak = vi.fn((text: string) =>
+      text === "unsupported"
+        ? Effect.fail(
+            new SpeechService.SpeechUnsupportedPlatformError({
+              platform: "linux",
+              architecture: "riscv64",
+            }),
+          )
+        : Effect.succeed(wave),
+    );
+    const api = HttpApi.make("environment").add(EnvironmentVoiceHttpApi);
+    const { handler, dispose } = HttpRouter.toWebHandler(
+      HttpApiBuilder.layer(api).pipe(
+        Layer.provide(speechHttpApiLayer),
+        Layer.provide(principal(AuthOrchestrationOperateScope)),
+        Layer.provide(Layer.mock(SpeechService.SpeechService)({})),
+        Layer.provide(Layer.succeed(SpeechSynthesis.SpeechSynthesis, { speak })),
+        Layer.provide(HttpServer.layerServices),
+        Layer.provide(dependencies),
+        Layer.provide(NodeServices.layer),
+      ),
+      { disableLogger: true },
+    );
+    yield* Effect.addFinalizer(() => Effect.promise(dispose));
+    const context = yield* Layer.build(Layer.mergeAll(dependencies, NodeServices.layer));
+    const call = (text: string) =>
+      Effect.promise(() =>
+        handler(
+          new Request("http://localhost/api/voice/speak", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ text }),
+          }),
+          context,
+        ),
+      );
+
+    const spoken = yield* call("Hello there.");
+    expect(spoken.status).toBe(200);
+    expect(spoken.headers.get("content-type")).toBe("audio/wav");
+    expect(new Uint8Array(yield* Effect.promise(() => spoken.arrayBuffer()))).toEqual(wave);
+
+    const unsupported = yield* call("unsupported");
+    expect(unsupported.status).toBe(400);
+    expect(yield* Effect.promise(() => unsupported.json())).toMatchObject({
+      code: "invalid_request",
+      reason: "speech_unavailable",
+    });
+
+    expect((yield* call("")).status).toBe(400);
+    expect(speak).toHaveBeenCalledTimes(2);
+  }).pipe(Effect.scoped),
 );

@@ -92,56 +92,35 @@ export function markdownToSpeechText(markdown: string): string {
   return blocks.join("\n\n");
 }
 
-/** Splits at paragraph breaks, then spaces, so each piece fits one utterance. */
+const SENTENCE_GAP = /([.!?…]["'”’)\]]*)\s+/g;
+
+/**
+ * Splits at sentences, then spaces. The first piece is one sentence so speech starts quickly;
+ * each later piece packs sentences up to twice the one before it, so the next piece is ready
+ * before the current one finishes.
+ */
 export function splitSpeechText(text: string, maxLength: number): string[] {
+  const pieces: string[] = [];
+  for (const paragraph of text.split("\n\n")) {
+    for (let sentence of paragraph.replace(SENTENCE_GAP, "$1\u0000").split("\u0000")) {
+      sentence = sentence.trim();
+      while (sentence.length > maxLength) {
+        const space = sentence.lastIndexOf(" ", maxLength);
+        const end = space > 0 ? space : maxLength;
+        pieces.push(sentence.slice(0, end));
+        sentence = sentence.slice(end).trimStart();
+      }
+      if (sentence) pieces.push(sentence);
+    }
+  }
   const chunks: string[] = [];
-  let current = "";
-  for (let block of text.split("\n\n")) {
-    while (block.length > maxLength) {
-      if (current) chunks.push(current);
-      current = "";
-      const space = block.lastIndexOf(" ", maxLength);
-      const end = space > 0 ? space : maxLength;
-      chunks.push(block.slice(0, end));
-      block = block.slice(end).trimStart();
-    }
-    if (current && current.length + 2 + block.length > maxLength) {
-      chunks.push(current);
-      current = "";
-    }
-    current = current ? `${current}\n\n${block}` : block;
+  for (const piece of pieces) {
+    const last = chunks.at(-1);
+    const before = chunks.at(-2);
+    const limit = before === undefined ? 0 : Math.min(maxLength, before.length * 2);
+    if (last !== undefined && last.length + 1 + piece.length <= limit)
+      chunks[chunks.length - 1] = `${last} ${piece}`;
+    else chunks.push(piece);
   }
-  if (current) chunks.push(current);
   return chunks;
-}
-
-export interface ReadAloudVoice {
-  readonly identifier: string;
-  readonly quality: string;
-  readonly language: string;
-}
-
-function voiceRank(voice: ReadAloudVoice): number {
-  // expo-speech reports iOS premium voices as "Default", so read the tier from the identifier.
-  if (voice.identifier.includes(".premium.")) return 2;
-  return voice.quality === "Enhanced" || voice.identifier.includes(".enhanced.") ? 1 : 0;
-}
-
-/** The best downloaded voice for the locale, or undefined to use the system default. */
-export function pickReadAloudVoice(
-  voices: ReadonlyArray<ReadAloudVoice>,
-  locale: string,
-): string | undefined {
-  const wanted = locale.replace(/_/g, "-").toLowerCase();
-  const language = wanted.split("-")[0];
-  let best: { readonly identifier: string; readonly score: number } | undefined;
-  for (const voice of voices) {
-    const voiceLocale = voice.language.replace(/_/g, "-").toLowerCase();
-    const rank = voiceRank(voice);
-    if (rank === 0 || voiceLocale.split("-")[0] !== language) continue;
-    // The listener's own accent outranks a better voice from another region.
-    const score = rank + (voiceLocale === wanted ? 10 : 0);
-    if (!best || score > best.score) best = { identifier: voice.identifier, score };
-  }
-  return best?.identifier;
 }

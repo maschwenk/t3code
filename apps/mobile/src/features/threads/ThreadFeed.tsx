@@ -2296,6 +2296,7 @@ function renderFeedEntry(
               iconSize={props.replyActionSize.icon}
             />
             <ReadAloudButton
+              environmentId={props.environmentId}
               scope={scopedThreadKey(props.environmentId, props.threadId)}
               messageId={message.id}
               markdown={renderedText}

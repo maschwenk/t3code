@@ -73,7 +73,9 @@ export function activateAudioSession(
       // Speech lowers music and podcasts rather than stopping them.
       interruptionMode: token.kind === "speech" ? "duckOthers" : "doNotMix",
       playsInSilentMode: true,
-      shouldPlayInBackground: false,
+      // A reply read aloud keeps going with the screen locked. iOS already declares background
+      // audio for picture in picture; Android would need expo-audio's foreground service.
+      shouldPlayInBackground: token.kind === "speech" && process.env.EXPO_OS === "ios",
     });
     if (!isAudioSessionOwner(token)) return false;
     await setIsAudioActiveAsync(true);

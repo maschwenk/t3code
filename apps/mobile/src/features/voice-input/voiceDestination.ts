@@ -90,12 +90,14 @@ const native = requireOptionalNativeModule<{
 }>("T3VoiceTranscription");
 export const hasEnvironmentVoiceCapture = typeof native?.decodeRecording === "function";
 
-const voiceConnections = (capability: "voiceTranscription" | "cloudVoiceTranscription") =>
+const voiceConnections = (
+  capability: "voiceTranscription" | "cloudVoiceTranscription" | "voiceSynthesis",
+) =>
   Atom.family((id: EnvironmentId) =>
     Atom.make((get) => {
       const environment = get(environmentPresentations.presentationAtom(id));
       if (
-        !hasEnvironmentVoiceCapture ||
+        (capability !== "voiceSynthesis" && !hasEnvironmentVoiceCapture) ||
         environment?.connection.phase !== "connected" ||
         !environment.serverConfig?.environment.capabilities[capability] ||
         !sessionHasScope(
@@ -109,6 +111,7 @@ const voiceConnections = (capability: "voiceTranscription" | "cloudVoiceTranscri
   );
 export const voiceConnectionAtom = voiceConnections("voiceTranscription");
 export const cloudVoiceConnectionAtom = voiceConnections("cloudVoiceTranscription");
+export const readAloudConnectionAtom = voiceConnections("voiceSynthesis");
 
 // React Native's XMLHttpRequest fetch follows redirects. Expo's native transport honors redirect: "error".
 export function runSpeech<A, E>(

@@ -143,13 +143,13 @@ another or the system default.
 
 ## Listen to a reply on mobile
 
-On iPhone and Android, the speaker button under a finished reply reads it aloud
-with the phone's built-in voice; press it again to stop. Code blocks are skipped,
-and speech keeps going with the screen locked. It stops when you leave the
-thread, start dictation, or play other media. On iPhone, music and podcasts get
-quieter while it speaks.
+On iPhone and Android, the speaker button under a finished reply reads it aloud;
+press it again to stop. The computer running T3 Code makes the voice with
+Kokoro, an open-source speech model, so the first reply you play downloads about
+130 MB to that computer and takes a few extra seconds. Code blocks are skipped.
+Speech stops when you leave the thread, start dictation, or play other media. On
+iPhone it keeps going with the screen locked, and music and podcasts get quieter
+while it speaks.
 
-iPhone picks the best voice installed for your language. The default voices are
-basic, so download an Enhanced or Premium voice in the iPhone's Accessibility
-settings for a more natural one. Android uses the voice set in its
-text-to-speech settings.
+The button appears when the phone is connected to an environment on macOS,
+Windows x64, or Linux (x64 or arm64, glibc).

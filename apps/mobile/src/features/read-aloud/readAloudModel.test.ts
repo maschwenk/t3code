@@ -1,11 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import {
-  CODE_BLOCK_SPEECH,
-  markdownToSpeechText,
-  pickReadAloudVoice,
-  splitSpeechText,
-} from "./readAloudModel";
+import { CODE_BLOCK_SPEECH, markdownToSpeechText, splitSpeechText } from "./readAloudModel";
 
 describe("markdownToSpeechText", () => {
   it.each([
@@ -65,15 +60,20 @@ describe("markdownToSpeechText", () => {
 
 describe("splitSpeechText", () => {
   it.each([
-    { name: "short text stays whole", text: "One.\n\nTwo.", max: 100, expected: ["One.\n\nTwo."] },
     {
-      name: "paragraphs pack up to the limit",
-      text: "Aaaa.\n\nBbbb.\n\nCccc.",
-      max: 13,
-      expected: ["Aaaa.\n\nBbbb.", "Cccc."],
+      name: "the first sentence goes alone, then pieces grow to twice the one before",
+      text: "Hi there. A b. C d. E f. G h.",
+      max: 100,
+      expected: ["Hi there.", "A b. C d. E f.", "G h."],
     },
     {
-      name: "a long paragraph breaks at spaces",
+      name: "paragraphs and closing quotes end sentences",
+      text: 'Lead.\n\nHe said "go." Then left.',
+      max: 100,
+      expected: ["Lead.", 'He said "go."', "Then left."],
+    },
+    {
+      name: "a long sentence breaks at spaces",
       text: "Lead.\n\none two three four",
       max: 9,
       expected: ["Lead.", "one two", "three", "four"],
@@ -89,68 +89,5 @@ describe("splitSpeechText", () => {
     const chunks = splitSpeechText(text, max);
     expect(chunks).toEqual(expected);
     for (const chunk of chunks) expect(chunk.length).toBeLessThanOrEqual(max);
-  });
-});
-
-describe("pickReadAloudVoice", () => {
-  const compactUS = {
-    identifier: "com.apple.voice.compact.en-US.Samantha",
-    quality: "Default",
-    language: "en-US",
-  };
-  const enhancedUS = {
-    identifier: "com.apple.voice.enhanced.en-US.Ava",
-    quality: "Enhanced",
-    language: "en-US",
-  };
-  const premiumUS = {
-    identifier: "com.apple.voice.premium.en-US.Zoe",
-    quality: "Default",
-    language: "en-US",
-  };
-  const premiumGB = {
-    identifier: "com.apple.voice.premium.en-GB.Serena",
-    quality: "Default",
-    language: "en-GB",
-  };
-  const enhancedDE = {
-    identifier: "com.apple.voice.enhanced.de-DE.Anna",
-    quality: "Enhanced",
-    language: "de-DE",
-  };
-
-  it.each([
-    {
-      name: "premium beats enhanced",
-      voices: [compactUS, enhancedUS, premiumUS],
-      locale: "en-US",
-      expected: premiumUS,
-    },
-    {
-      name: "same region beats a better voice elsewhere",
-      voices: [premiumGB, enhancedUS],
-      locale: "en-US",
-      expected: enhancedUS,
-    },
-    {
-      name: "another region beats a compact voice",
-      voices: [compactUS, premiumGB],
-      locale: "en_US",
-      expected: premiumGB,
-    },
-    {
-      name: "only compact voices use the default",
-      voices: [compactUS],
-      locale: "en-US",
-      expected: undefined,
-    },
-    {
-      name: "another language is never picked",
-      voices: [enhancedDE],
-      locale: "en-US",
-      expected: undefined,
-    },
-  ])("$name", ({ voices, locale, expected }) => {
-    expect(pickReadAloudVoice(voices, locale)).toBe(expected?.identifier);
   });
 });
