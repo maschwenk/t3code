@@ -140,3 +140,16 @@ cleanup even when it is on, so you see what the model heard. Browser recording
 needs HTTPS or localhost and microphone permission; for a remote server over
 plain HTTP, use the desktop app. If the selected microphone is missing, choose
 another or the system default.
+
+## Listen to a reply on mobile
+
+On iPhone and Android, the speaker button under a finished reply reads it aloud
+with the phone's built-in voice; press it again to stop. Code blocks are skipped,
+and speech keeps going with the screen locked. It stops when you leave the
+thread, start dictation, or play other media. On iPhone, music and podcasts get
+quieter while it speaks.
+
+iPhone picks the best voice installed for your language. The default voices are
+basic, so download an Enhanced or Premium voice in the iPhone's Accessibility
+settings for a more natural one. Android uses the voice set in its
+text-to-speech settings.

@@ -175,6 +175,8 @@ import { VideoPreviewModal, type VideoPreviewSource } from "../../components/Vid
 import { markdownFileEmbedLabel, resolveMarkdownMediaPreview } from "../../lib/markdownMedia";
 import { attachmentVideoPreviewSource } from "../../lib/videoPreviewSource";
 import { CopyTextButton } from "./CopyTextButton";
+import { ReadAloudButton } from "../read-aloud/ReadAloudButton";
+import { stopReadAloud } from "../read-aloud/readAloud";
 import { getReviewSectionIdForCheckpoint } from "../review/reviewModel";
 import { setReviewSelectedSectionId } from "../review/reviewState";
 import { Menu } from "../../components/ui/Menu";
@@ -2293,6 +2295,14 @@ function renderFeedEntry(
               buttonSize={props.replyActionSize.button}
               iconSize={props.replyActionSize.icon}
             />
+            <ReadAloudButton
+              scope={scopedThreadKey(props.environmentId, props.threadId)}
+              messageId={message.id}
+              markdown={renderedText}
+              tintColor={iconSubtleColor}
+              buttonSize={props.replyActionSize.button}
+              iconSize={props.replyActionSize.icon}
+            />
             {message.projectedItem ? (
               <AssistantForkButton
                 environmentId={props.environmentId}
@@ -2685,6 +2695,9 @@ export const ThreadFeed = memo(function ThreadFeed({
     },
     [navigation, props.environmentId, props.threadId],
   );
+  const readAloudScope = scopedThreadKey(props.environmentId, props.threadId);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- stops speech from a thread once its controls are gone
+  useEffect(() => () => stopReadAloud(readAloudScope), [readAloudScope]);
   const { themeAppearance } = useAppearancePreferences();
   const copyFeedbackTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const disclosureSettleFrameRef = useRef<number | null>(null);
