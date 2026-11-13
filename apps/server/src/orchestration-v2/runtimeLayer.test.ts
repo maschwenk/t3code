@@ -3514,6 +3514,123 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
     }),
   );
 
+  // An agent that queues its PR and ends its turn planning post-merge work (check the deploy, open
+  // the next PR) only gets another turn from this wake. The sync reactor usually stores the merged
+  // snapshot before this reactor reads the host, so both paths must wake. A wake that can never be
+  // delivered must still end the watch, or the watch would hold auto-settle forever.
+  it.effect.each([
+    { seenBy: "host read", deliverable: true },
+    { seenBy: "link snapshot", deliverable: true },
+    { seenBy: "link snapshot", deliverable: false },
+  ] as const)(
+    "a merge wakes the agent once and ends the watch: $seenBy (deliverable: $deliverable)",
+    ({ seenBy, deliverable }) =>
+      Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const id = `${seenBy === "host read" ? "read" : "snapshot"}-${deliverable}`;
+        const threadId = ThreadId.make(`runtime-pull-request-watch-merged-${id}`);
+        const projectId = ProjectId.make(`pr-watch-merged-project-${id}`);
+        yield* seedProject({
+          projectId,
+          title: "Watch merged",
+          workspaceRoot: "/workspace/watch-merged",
+          defaultModelSelection: null,
+          createdAt: "2026-10-01T00:00:00.000Z",
+        });
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          createdBy: "user",
+          creationSource: "web",
+          commandId: CommandId.make(`pr-watch-merged-create-${id}`),
+          threadId,
+          projectId,
+          title: "Watch merged",
+          modelSelection: deliverable
+            ? modelSelection
+            : { ...modelSelection, instanceId: ProviderInstanceId.make("removed_instance") },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+        });
+        const key = { host: "github.com", repository: "pingdotgg/t3code", number: 21 };
+        yield* orchestrator.dispatch({
+          type: "thread.pull-request.watch",
+          commandId: CommandId.make(`pr-watch-merged-start-${id}`),
+          threadId,
+          ...key,
+          watching: true,
+          link: { url: "https://github.com/pingdotgg/t3code/pull/21", source: "agent" },
+        });
+        if (seenBy === "link snapshot") {
+          yield* orchestrator.dispatch({
+            type: "thread.pull-request-link.sync",
+            commandId: CommandId.make(`pr-watch-merged-sync-${id}`),
+            threadId,
+            ...key,
+            snapshot: {
+              state: "merged",
+              title: "Watched pull request",
+              headBranch: "feature",
+              baseBranch: "main",
+              isDraft: false,
+              updatedAt: null,
+              syncedAt: "2026-10-02T12:05:00.000Z",
+              mergedAt: "2026-10-02T12:05:00.000Z",
+            },
+            stack: null,
+          });
+        }
+        let reads = 0;
+        const reactor = yield* PullRequestWatchReactor.make.pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              NodeServices.layer,
+              NodeCrypto.layer,
+              Layer.mock(PullRequestService.PullRequestService)({
+                watchFingerprint: () => Effect.succeed(null),
+                detail: () =>
+                  Effect.sync(() => {
+                    reads += 1;
+                    return {
+                      ...watchedPullRequestDetail({
+                        projectId,
+                        number: 21,
+                        at: "2026-10-02T12:00:00.000Z",
+                      }),
+                      state: "merged" as const,
+                      mergedAt: "2026-10-02T12:05:00.000Z",
+                    };
+                  }),
+                activity: () =>
+                  Effect.succeed({
+                    comments: [],
+                    commentCount: 0,
+                    commentsTruncated: false,
+                    reviewThreads: [],
+                    commits: [],
+                  }),
+              }),
+            ),
+          ),
+        );
+        const summaries = Effect.map(
+          orchestrator.getThreadRecords(threadId, ["messages"]),
+          ({ messages }) => messages.flatMap((message) => message.notification?.summary ?? []),
+        );
+
+        yield* reactor.sweep;
+        yield* TestClock.adjust("10 minutes");
+        yield* reactor.sweep;
+
+        assert.isUndefined(
+          (yield* orchestrator.getThreadShell(threadId))?.pullRequests?.[0]?.watch,
+        );
+        assert.deepEqual(yield* summaries, deliverable ? ["#21: merged, stopped watching"] : []);
+        assert.equal(reads, seenBy === "host read" ? 1 : 0);
+      }),
+  );
+
   it.effect("finishes owed checks once after pending sweeps, a restart, and a re-watch", () =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
