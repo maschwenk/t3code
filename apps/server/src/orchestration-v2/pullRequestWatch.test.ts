@@ -4,10 +4,14 @@ import {
   ThreadPullRequestWatch,
 } from "@t3tools/contracts";
 import { assert, describe, it } from "@effect/vitest";
+import * as DateTime from "effect/DateTime";
 
 import {
+  PULL_REQUEST_WATCH_VERDICT_LOOKBACK_MS,
   PULL_REQUEST_WATCH_WAKE_LIMIT,
   evaluatePullRequestWatch as evaluate,
+  type PullRequestStanding,
+  pullRequestReviewers,
   pullRequestWatchMessage,
 } from "./pullRequestWatch.ts";
 
@@ -77,6 +81,35 @@ const remark = (
 });
 
 const noRemarks: ReadonlyArray<PullRequestComment> = [];
+
+const review = (login: string, createdAt: string, reviewState: string): PullRequestComment => ({
+  id: `${login}-${reviewState}-${createdAt}`,
+  kind: "review",
+  author: { login, name: null, avatarUrl: null },
+  body: "",
+  createdAt,
+  url: null,
+  path: null,
+  reviewState,
+});
+
+const standing = (overrides: Partial<PullRequestStanding> = {}): PullRequestStanding => ({
+  baseBranch: "main",
+  isDraft: false,
+  mergeability: "mergeable",
+  reviewDecision: "review-required",
+  reviewers: { approved: [], changesRequested: [] },
+  ...overrides,
+});
+
+const wakeText = (report: ReturnType<typeof evaluate>, overrides: Partial<PullRequestStanding>) =>
+  pullRequestWatchMessage({
+    number: 278,
+    url: "https://github.com/o/r/pull/278",
+    headSha: "d2bcd96b8e",
+    report,
+    standing: standing(overrides),
+  }).text;
 
 describe("evaluatePullRequestWatch", () => {
   it("reports each failure at once, even while another check never finishes", () => {
@@ -344,12 +377,108 @@ describe("evaluatePullRequestWatch", () => {
     const { text } = pullRequestWatchMessage({
       number: 1,
       url: "https://github.com/o/r/pull/1",
-      baseBranch: "main",
       headSha: null,
       report,
+      standing: standing(),
     });
     assert.isTrue(text.isWellFormed());
     assert.include(text, `"${"x".repeat(196)}..."`);
+  });
+
+  // regression: an approval 90 seconds before watch_pull_request counted as old, and the
+  // checks-passed wake said nothing about it, so the agent kept saying it waited on review
+  it("reports an approval from just before the watch began, but not older comments", () => {
+    const lookedBack = DateTime.formatIso(
+      DateTime.makeUnsafe(Date.parse(STARTED) - PULL_REQUEST_WATCH_VERDICT_LOOKBACK_MS),
+    );
+    const approval = review("maintainer", "2026-10-02T11:58:32Z", "APPROVED");
+    const remarks = [
+      review("alice", "2026-10-02T11:30:00Z", "APPROVED"),
+      remark("bot", "2026-10-02T11:59:00Z", "Summary of changes."),
+      review("bot", "2026-10-02T11:59:10Z", "COMMENTED"),
+      approval,
+    ];
+    const green = detail({ checks: [{ ...check("required-check", "success"), required: true }] });
+    const first = evaluatePullRequestWatch(watch({ remarksThrough: lookedBack }), green, remarks);
+    assert.deepEqual(first.changes, [
+      { kind: "checks-passed", count: 1, required: true },
+      { kind: "remarks", remarks: [approval] },
+    ]);
+    assert.deepEqual(evaluatePullRequestWatch(first.next, green, remarks).changes, []);
+    // A watch saved before the lookback started its cursor at its own start.
+    assert.deepEqual(evaluatePullRequestWatch(watch(), green, remarks).changes, [
+      { kind: "checks-passed", count: 1, required: true },
+    ]);
+
+    const text = wakeText(first, {
+      reviewDecision: "approved",
+      reviewers: pullRequestReviewers(remarks),
+    });
+    assert.include(text, "- All 1 required check passed on d2bcd96.");
+    assert.include(text, "  - maintainer: APPROVED");
+    assert.include(text, "- Review: approved by alice, maintainer.");
+    assert.include(text, "- Merge: no conflicts with main.");
+  });
+
+  it("counts each reviewer's latest verdict, so a dismissal or later change request wins", () => {
+    const reviewers = pullRequestReviewers([
+      review("carol", "2026-10-02T12:03:00Z", "COMMENTED"),
+      review("bob", "2026-10-02T12:04:00Z", "changes_requested"),
+      review("alice", "2026-10-02T12:01:00Z", "APPROVED"),
+      review("bob", "2026-10-02T12:02:00Z", "APPROVED"),
+      review("carol", "2026-10-02T12:00:00Z", "APPROVED"),
+      review("dave", "2026-10-02T12:00:00Z", "APPROVED"),
+      review("dave", "2026-10-02T12:05:00Z", "DISMISSED"),
+      remark("erin", "2026-10-02T12:06:00Z", "LGTM"),
+    ]);
+    assert.deepEqual(reviewers, { approved: ["carol", "alice"], changesRequested: ["bob"] });
+  });
+
+  it("says where the review and merge stand on every wake", () => {
+    const passed = evaluatePullRequestWatch(
+      watch(),
+      detail({ checks: [check("t", "success")] }),
+      noRemarks,
+    );
+    const lines = (overrides: Partial<PullRequestStanding>) =>
+      wakeText(passed, overrides)
+        .split("\n")
+        .filter((line) => line.startsWith("- Review:") || line.startsWith("- Merge:"));
+    assert.deepEqual(lines({}), [
+      "- Review: review required, not approved yet.",
+      "- Merge: no conflicts with main.",
+    ]);
+    assert.deepEqual(
+      lines({
+        reviewers: { approved: ["alice"], changesRequested: [] },
+        mergeability: "conflicting",
+        isDraft: true,
+      }),
+      [
+        "- Review: review required, approved so far by alice.",
+        "- Merge: draft, conflicts with main.",
+      ],
+    );
+    assert.deepEqual(
+      lines({
+        reviewDecision: "changes-requested",
+        reviewers: { approved: [], changesRequested: ["bob"] },
+        mergeability: "unknown",
+        autoMergeEnabled: true,
+      }),
+      [
+        "- Review: changes requested by bob.",
+        "- Merge: conflict check against main still running, auto-merge on.",
+      ],
+    );
+    // Without a review rule the host reports no decision; the reviews are the state.
+    assert.deepEqual(
+      lines({ reviewDecision: null, reviewers: { approved: ["alice"], changesRequested: [] } }),
+      ["- Review: approved by alice.", "- Merge: no conflicts with main."],
+    );
+    assert.deepEqual(lines({ reviewDecision: null, reviewers: null }).slice(0, 1), [
+      "- Review: not known yet.",
+    ]);
   });
 
   it("reports a conflict once, until the branch is clean again", () => {
