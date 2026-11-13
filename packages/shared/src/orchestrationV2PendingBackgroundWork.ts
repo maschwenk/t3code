@@ -112,9 +112,7 @@ type PendingBackgroundWorkRun = Pick<OrchestrationV2Run, "id" | "ordinal" | "sta
 type PendingBackgroundWorkPullRequest = Pick<
   ThreadPullRequestLink,
   "host" | "repository" | "number" | "url" | "source" | "watch"
-> & {
-  readonly snapshot: Pick<NonNullable<ThreadPullRequestLink["snapshot"]>, "state"> | null;
-};
+>;
 
 type PendingBackgroundWorkProviderThread = Pick<
   OrchestrationV2ProviderThread,
@@ -293,10 +291,10 @@ function pullRequestWatchTasks(
   pullRequests: ReadonlyArray<PendingBackgroundWorkPullRequest> | undefined,
 ): Array<PendingBackgroundWorkTask> {
   return (pullRequests ?? []).flatMap((link) =>
-    // The watch reactor ends a merged PR's watch without waking the agent, so it holds nothing.
-    link.watch === undefined ||
-    link.source === "stack-dismissed" ||
-    link.snapshot?.state === "merged"
+    // A merged or closed PR's watch holds until the watch reactor ends it with a wake. Settling
+    // first would detach the session, and the orchestrator refuses wakes on settled threads, so the
+    // agent would never hear about the merge it was waiting for.
+    link.watch === undefined || link.source === "stack-dismissed"
       ? []
       : [
           {

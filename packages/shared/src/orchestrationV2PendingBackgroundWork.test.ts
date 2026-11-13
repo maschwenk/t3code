@@ -396,6 +396,7 @@ describe("derivePendingBackgroundWork kinds", () => {
       link(5, { state: "closed" }),
     ];
 
+    // Merged (#4) and closed (#5) hold too: the watch reactor still owes the agent that wake.
     it("keeps a settled run waiting on each visible watch, as an awaited monitor", () => {
       const tasks = derivePendingBackgroundWork({
         latestRun: { id: "run-1" as never, ordinal: 1, status: "completed" },
@@ -407,6 +408,12 @@ describe("derivePendingBackgroundWork kinds", () => {
         {
           taskId: "pull-request-watch:github.com/acme/app#1",
           description: "Watching pull request #1",
+          kind: "monitor",
+          awaited: true,
+        },
+        {
+          taskId: "pull-request-watch:github.com/acme/app#4",
+          description: "Watching pull request #4",
           kind: "monitor",
           awaited: true,
         },
@@ -430,6 +437,7 @@ describe("derivePendingBackgroundWork kinds", () => {
         }).map((task) => task.taskId),
       ).toEqual([
         "pull-request-watch:github.com/acme/app#1",
+        "pull-request-watch:github.com/acme/app#4",
         "pull-request-watch:github.com/acme/app#5",
       ]);
     });

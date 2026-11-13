@@ -399,26 +399,45 @@ export const make = Effect.gen(function* () {
       ),
   );
 
-  const closed = (target: WatchTarget) =>
-    record(target, null, {
-      text: `Pull request #${target.link.number} (${target.link.url}) was closed, so T3 Code stopped watching it. Call watch_pull_request if it reopens.`,
-      notification: {
-        source: { kind: "monitor" },
-        outcome: "updated",
-        summary: `#${target.link.number}: closed, stopped watching`,
-      },
-    }).pipe(
+  // An agent still watching at a merge may have planned work for after it, and this wake is its
+  // only way back in. A refused wake (say the thread's provider was removed) ends the watch
+  // silently: pending-work derivation counts a live watch as awaited, so a stuck one would hold
+  // auto-settle forever.
+  const finished = (target: WatchTarget, state: "merged" | "closed") =>
+    record(
+      target,
+      null,
+      state === "merged"
+        ? {
+            text: `Pull request #${target.link.number} (${target.link.url}) merged, so T3 Code stopped watching it. Do anything you planned for after the merge, such as checking the deploy, then end your turn.`,
+            notification: {
+              source: { kind: "monitor" },
+              outcome: "completed",
+              summary: `#${target.link.number}: merged, stopped watching`,
+            },
+          }
+        : {
+            text: `Pull request #${target.link.number} (${target.link.url}) was closed, so T3 Code stopped watching it. Call watch_pull_request if it reopens.`,
+            notification: {
+              source: { kind: "monitor" },
+              outcome: "updated",
+              summary: `#${target.link.number}: closed, stopped watching`,
+            },
+          },
+    ).pipe(
       Effect.tap(() => woke(target)),
-      Effect.tap(() => ended(target, "closed")),
+      Effect.catch(() => record(target, null)),
+      Effect.tap(() => ended(target, state)),
     );
 
+  // Settled and subagent threads first: the orchestrator refuses wakes on them.
   const endsWithoutRead = ({ thread, link }: WatchTarget): WatchEndReason | undefined =>
-    link.snapshot?.state === "merged"
-      ? "merged"
-      : thread.settledOverride === "settled" || thread.settledAt !== null
-        ? "settled"
-        : thread.lineage.relationshipToParent === "subagent"
-          ? "subagent"
+    thread.settledOverride === "settled" || thread.settledAt !== null
+      ? "settled"
+      : thread.lineage.relationshipToParent === "subagent"
+        ? "subagent"
+        : link.snapshot?.state === "merged"
+          ? "merged"
           : undefined;
 
   const eachTarget = <E>(
@@ -528,11 +547,8 @@ export const make = Effect.gen(function* () {
     }
     if (detail.state !== "open") {
       lastReads.delete(group.key);
-      return yield* eachTarget(group, (target) =>
-        detail.state === "closed"
-          ? closed(target)
-          : record(target, null).pipe(Effect.tap(() => ended(target, "merged"))),
-      );
+      const state = detail.state;
+      return yield* eachTarget(group, (target) => finished(target, state));
     }
 
     // Never advance the remark watermark past comments an incomplete read could have missed.
@@ -620,8 +636,10 @@ export const make = Effect.gen(function* () {
     yield* Effect.forEach(
       ending,
       ([target, reason]) =>
-        record(target, null).pipe(
-          Effect.tap(() => ended(target, reason)),
+        (reason === "merged"
+          ? finished(target, "merged")
+          : record(target, null).pipe(Effect.tap(() => ended(target, reason)))
+        ).pipe(
           Effect.catchCause(
             logFailure("pull request watch stop failed", {
               threadId: target.thread.id,
