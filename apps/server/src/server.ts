@@ -44,6 +44,7 @@ import * as NodePtyAdapter from "./terminal/NodePtyAdapter.ts";
 import * as PullRequestHttp from "./pullRequest/http.ts";
 import * as SpeechModelStore from "./speech/SpeechModelStore.ts";
 import * as SpeechService from "./speech/SpeechService.ts";
+import * as SpeechSynthesis from "./speech/SpeechSynthesis.ts";
 import * as CloudSpeech from "./speech/CloudSpeech.ts";
 import { speechHttpApiLayer } from "./speech/http.ts";
 import { speechStreamRouteLayer } from "./speech/stream.ts";
@@ -836,10 +837,10 @@ const layerMakeRoutes = Layer.mergeAll(
     ),
   ),
   Layer.provide(
-    SpeechService.layer.pipe(
-      Layer.provide(layerServerSettings),
-      Layer.provide(SpeechModelStore.layer),
-    ),
+    Layer.merge(
+      SpeechService.layer.pipe(Layer.provide(layerServerSettings)),
+      SpeechSynthesis.layer,
+    ).pipe(Layer.provide(SpeechModelStore.layer)),
   ),
   Layer.provide(CloudSpeech.layer.pipe(Layer.provide(SecretResolver.layer))),
   Layer.provide(layerServerSettings),

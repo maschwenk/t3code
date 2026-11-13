@@ -12,6 +12,8 @@ const CLI_RUNTIME_EXTERNAL_PREFIXES = [
   "@ff-labs/",
   "transcribe-cpp",
   "@transcribe-cpp/",
+  // sherpa-onnx-node loads its platform package (sherpa-onnx-darwin-arm64, ...) by name.
+  "sherpa-onnx-",
   "koffi",
   "@koromix/",
   "@napi-rs/keyring",

@@ -288,6 +288,8 @@ vi.mock("../features/threads/SecretRequestCard", () => ({}));
 vi.mock("../features/threads/LinkRequestCard", () => ({ LinkRequestCard: () => null }));
 vi.mock("../features/threads/worktree-setup-card", () => ({}));
 vi.mock("../features/threads/CopyTextButton", () => ({ CopyTextButton: () => null }));
+vi.mock("../features/read-aloud/ReadAloudButton", () => ({ ReadAloudButton: () => null }));
+vi.mock("../features/read-aloud/readAloud", () => ({ stopReadAloud: () => {} }));
 vi.mock("../features/threads/thread-work-log", () => ({ THREAD_DISCLOSURE_TRANSITION_MS: 100 }));
 vi.mock("../features/threads/HtmlRenderWebView", () => ({}));
 vi.mock("../features/threads/McpAppWebView", () => ({}));

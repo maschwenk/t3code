@@ -868,6 +868,28 @@
       "name": "iobuffer",
       "license": "MIT",
       "sourceUrl": "https://github.com/image-js/iobuffer"
+    },
+    {
+      "repositoryUrl": "https://github.com/csukuangfj/sherpa-onnx",
+      "license": "Apache-2.0 AND MIT AND GPL-3.0-or-later",
+      "sourceUrl": "https://github.com/k2-fsa/sherpa-onnx",
+      "generatedNotices": [
+        {
+          "licenseId": "Apache-2.0",
+          "preamble": ["sherpa-onnx, by the Next-gen Kaldi team (Xiaomi Corporation)."]
+        },
+        {
+          "licenseId": "MIT",
+          "preamble": ["The platform package bundles ONNX Runtime."],
+          "copyrights": ["Copyright (c) Microsoft Corporation"]
+        },
+        {
+          "licenseId": "GPL-3.0-or-later",
+          "preamble": [
+            "The platform package statically links espeak-ng, used to turn text into phonemes. Source: https://github.com/espeak-ng/espeak-ng"
+          ]
+        }
+      ]
     }
   ]
 }

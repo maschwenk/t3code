@@ -226,6 +226,12 @@ export const DEFAULT_SPEECH_TRANSCRIPTION_OPTIONS: SpeechTranscriptionOptions = 
 };
 export const SPEECH_MAX_OPTIONS_BYTES = 128_000;
 
+/** One request's worth of text to speak; clients split longer replies by sentence. */
+export const SPEECH_SYNTHESIS_MAX_CHARS = 2_000;
+export const EnvironmentSpeechSynthesisRequest = Schema.Struct({
+  text: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(SPEECH_SYNTHESIS_MAX_CHARS)),
+});
+
 export const SpeechPostProcessingOptions = Schema.Struct({
   speechCustomWords: SpeechCustomWords,
   speechPostProcessingPrompt: SpeechPostProcessingPromptSettings,

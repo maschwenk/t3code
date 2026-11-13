@@ -94,11 +94,15 @@ describe("global voice input", () => {
     },
   );
 
-  it.each(["complete", "activation failure"])(
-    "protects recording from inline playback and releases its session after %s",
-    async (outcome) => {
+  it.each(
+    (["playback", "speech"] as const).flatMap((kind) =>
+      ["complete", "activation failure"].map((outcome) => ({ kind, outcome })),
+    ),
+  )(
+    "protects recording from $kind and releases its session after $outcome",
+    async ({ kind, outcome }) => {
       const pause = vi.fn();
-      const playback = acquireAudioSession("playback", pause);
+      const playback = acquireAudioSession(kind, pause);
       await activateAudioSession(playback);
       let recording!: ReturnType<typeof acquireAudioSession>;
       const { session, recorder } = createSession({
@@ -125,7 +129,7 @@ describe("global voice input", () => {
         audio.setMode.mockClear();
         audio.setActive.mockClear();
         await releaseAudioSession(playback);
-        const blockedPlayback = acquireAudioSession("playback");
+        const blockedPlayback = acquireAudioSession(kind);
         expect(await activateAudioSession(blockedPlayback)).toBe(false);
         await releaseAudioSession(blockedPlayback);
         expect(audio.setMode).not.toHaveBeenCalled();
@@ -138,7 +142,7 @@ describe("global voice input", () => {
       }
       expect(audio.setActive).toHaveBeenLastCalledWith(false);
       expect(isAudioSessionOwner(recording)).toBe(false);
-      const replay = acquireAudioSession("playback");
+      const replay = acquireAudioSession(kind);
       expect(await activateAudioSession(replay)).toBe(true);
       expect(audio.setActive).toHaveBeenLastCalledWith(true);
       await releaseAudioSession(replay);

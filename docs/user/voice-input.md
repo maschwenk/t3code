@@ -140,3 +140,16 @@ cleanup even when it is on, so you see what the model heard. Browser recording
 needs HTTPS or localhost and microphone permission; for a remote server over
 plain HTTP, use the desktop app. If the selected microphone is missing, choose
 another or the system default.
+
+## Listen to a reply on mobile
+
+On iPhone and Android, the speaker button under a finished reply reads it aloud;
+press it again to stop. The computer running T3 Code makes the voice with
+Kokoro, an open-source speech model, so the first reply you play downloads about
+130 MB to that computer and takes a few extra seconds. Code blocks are skipped.
+Speech stops when you leave the thread, start dictation, or play other media. On
+iPhone it keeps going with the screen locked, and music and podcasts get quieter
+while it speaks.
+
+The button appears when the phone is connected to an environment on macOS,
+Windows x64, or Linux (x64 or arm64, glibc).

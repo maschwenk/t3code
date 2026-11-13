@@ -180,6 +180,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   /** Server can transcribe 16 kHz mono PCM audio on the environment machine. */
   voiceTranscription: Schema.optionalKey(Schema.Boolean),
   cloudVoiceTranscription: Schema.optionalKey(Schema.Boolean),
+  /** Server can read text aloud as 24 kHz WAV audio on the environment machine. */
+  voiceSynthesis: Schema.optionalKey(Schema.Boolean),
 });
 export type ExecutionEnvironmentCapabilities = typeof ExecutionEnvironmentCapabilities.Type;
 

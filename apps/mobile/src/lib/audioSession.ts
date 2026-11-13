@@ -1,7 +1,7 @@
 import { AudioModule, setAudioModeAsync, setIsAudioActiveAsync } from "expo-audio";
 
 type AudioSessionToken = {
-  readonly kind: "playback" | "recording";
+  readonly kind: "playback" | "recording" | "speech";
   readonly onCancel?: () => void;
   readonly onRelease?: () => void;
   released: boolean;
@@ -47,7 +47,7 @@ export function acquireAudioSession(
   onRelease?: () => void,
 ) {
   const token: AudioSessionToken = { kind, onCancel, onRelease, released: false };
-  if (kind === "playback" && owner?.kind === "recording" && !owner.released) return token;
+  if (kind !== "recording" && owner?.kind === "recording" && !owner.released) return token;
   const previous = owner;
   // Publish before cancelling the old player, including callbacks already queued by Expo.
   AudioModule.setAudioSessionOwner?.(true);
@@ -70,9 +70,12 @@ export function activateAudioSession(
     if (nativePlayback) return true;
     await setAudioModeAsync({
       allowsRecording: token.kind === "recording",
-      interruptionMode: "doNotMix",
+      // Speech lowers music and podcasts rather than stopping them.
+      interruptionMode: token.kind === "speech" ? "duckOthers" : "doNotMix",
       playsInSilentMode: true,
-      shouldPlayInBackground: false,
+      // A reply read aloud keeps going with the screen locked. iOS already declares background
+      // audio for picture in picture; Android would need expo-audio's foreground service.
+      shouldPlayInBackground: token.kind === "speech" && process.env.EXPO_OS === "ios",
     });
     if (!isAudioSessionOwner(token)) return false;
     await setIsAudioActiveAsync(true);
