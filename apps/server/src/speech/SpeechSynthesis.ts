@@ -37,6 +37,7 @@ interface KokoroVoice {
     readonly text: string;
     readonly sid: number;
     readonly speed: number;
+    readonly enableExternalBuffer: boolean;
   }): Promise<{ readonly samples: Float32Array; readonly sampleRate: number }>;
 }
 
@@ -154,7 +155,14 @@ const make = Effect.gen(function* () {
         Effect.gen(function* () {
           const loaded = yield* load();
           const audio = yield* Effect.tryPromise({
-            try: () => loaded.generateAsync({ text, sid: HEART_SPEAKER_ID, speed: 1 }),
+            // Electron's V8 memory cage rejects external buffers, so copy the samples out.
+            try: () =>
+              loaded.generateAsync({
+                text,
+                sid: HEART_SPEAKER_ID,
+                speed: 1,
+                enableExternalBuffer: false,
+              }),
             catch: failed("synthesis"),
           });
           return encodeWave(audio.samples, audio.sampleRate);
