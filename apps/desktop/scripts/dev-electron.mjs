@@ -112,13 +112,23 @@ NodeFS.writeFileSync(runnerPidPath, String(process.pid));
 // them until the desktop main restarts it on the new bundle.
 const serverDir = NodePath.join(desktopDir, "../server");
 const serverWatch = NodeChildProcess.spawn(
-  NodePath.join(serverDir, "node_modules/.bin/vp"),
-  ["pack", "--watch", "--no-clean", "--logLevel", "warn"],
+  process.execPath,
+  [
+    NodePath.join(desktopDir, "scripts/exit-with-parent.mjs"),
+    NodePath.join(serverDir, "node_modules/.bin/vp"),
+    "pack",
+    "--watch",
+    "--no-clean",
+    "--logLevel",
+    "warn",
+  ],
   {
     cwd: serverDir,
     env: process.env,
-    stdio: ["ignore", "inherit", "inherit"],
-    // vp runs the real watcher as its own child, so give the pair a process
+    // The watcher stops when this pipe closes, so it cannot outlive a runner
+    // that dies without reaching shutdown (SIGKILL, a crash).
+    stdio: ["pipe", "inherit", "inherit"],
+    // vp runs the real watcher as its own child, so give them a process
     // group that shutdown can signal as a whole.
     detached: hostPlatform !== "win32",
   },
