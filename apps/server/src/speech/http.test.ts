@@ -15,6 +15,7 @@ import {
   DEFAULT_SERVER_SETTINGS,
   EnvironmentAuthenticatedAuth,
   EnvironmentAuthenticatedPrincipal,
+  type EnvironmentSpeechSynthesisRequest,
   EnvironmentVoiceHttpApi,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -329,7 +330,7 @@ effectIt.effect.each([
 effectIt.effect("speaks text as WAV and reports a machine without a voice as unavailable", () =>
   Effect.gen(function* () {
     const wave = new Uint8Array([82, 73, 70, 70, 1, 2, 3]);
-    const speak = vi.fn((text: string) =>
+    const speak = vi.fn(({ text }: EnvironmentSpeechSynthesisRequest) =>
       text === "unsupported"
         ? Effect.fail(
             new SpeechService.SpeechUnsupportedPlatformError({
@@ -337,7 +338,9 @@ effectIt.effect("speaks text as WAV and reports a machine without a voice as una
               architecture: "riscv64",
             }),
           )
-        : Effect.succeed(wave),
+        : text === "rejected"
+          ? Effect.fail(new CloudSpeechError({ provider: "elevenlabs", reason: "rejected-key" }))
+          : Effect.succeed(wave),
     );
     const api = HttpApi.make("environment").add(EnvironmentVoiceHttpApi);
     const { handler, dispose } = HttpRouter.toWebHandler(
@@ -378,7 +381,15 @@ effectIt.effect("speaks text as WAV and reports a machine without a voice as una
       reason: "speech_unavailable",
     });
 
+    const rejected = yield* call("rejected");
+    expect(rejected.status).toBe(422);
+    expect(yield* Effect.promise(() => rejected.json())).toMatchObject({
+      _tag: "CloudSpeechError",
+      provider: "elevenlabs",
+      reason: "rejected-key",
+    });
+
     expect((yield* call("")).status).toBe(400);
-    expect(speak).toHaveBeenCalledTimes(2);
+    expect(speak).toHaveBeenCalledTimes(3);
   }).pipe(Effect.scoped),
 );

@@ -9,21 +9,32 @@ export const CloudSpeechApiKey = TrimmedNonEmptyString.check(
 
 export const CloudSpeechProvider = Schema.Literals(["openai", "xai", "openrouter"]);
 export type CloudSpeechProvider = typeof CloudSpeechProvider.Type;
+/** Every cloud key an environment can hold: the transcription providers, plus ElevenLabs for read aloud. */
+export const CloudSpeechKeyProvider = Schema.Literals([
+  "openai",
+  "xai",
+  "openrouter",
+  "elevenlabs",
+]);
+export type CloudSpeechKeyProvider = typeof CloudSpeechKeyProvider.Type;
 export const CLOUD_SPEECH_LABELS = {
   openai: "OpenAI",
   xai: "Grok Voice Transcribe",
   openrouter: "OpenRouter",
+  elevenlabs: "ElevenLabs",
 } as const;
 export const CLOUD_SPEECH_PROVIDER_NAMES = {
   openai: "OpenAI",
   xai: "xAI",
   openrouter: "OpenRouter",
+  elevenlabs: "ElevenLabs",
 } as const;
-/** Servers that predate OpenRouter report only the first two providers. */
+/** Servers that predate OpenRouter or ElevenLabs omit those providers. */
 export const CloudSpeechKeys = Schema.Struct({
   openai: Schema.Boolean,
   xai: Schema.Boolean,
   openrouter: Schema.optionalKey(Schema.Boolean),
+  elevenlabs: Schema.optionalKey(Schema.Boolean),
 });
 export type CloudSpeechKeys = typeof CloudSpeechKeys.Type;
 
@@ -42,7 +53,7 @@ export type CloudSpeechModels = typeof CloudSpeechModels.Type;
 export class CloudSpeechError extends Schema.TaggedError<CloudSpeechError>()(
   "CloudSpeechError",
   {
-    provider: CloudSpeechProvider,
+    provider: CloudSpeechKeyProvider,
     reason: Schema.Literals([
       "missing-key",
       "key-changed",
@@ -57,13 +68,14 @@ export class CloudSpeechError extends Schema.TaggedError<CloudSpeechError>()(
 ) {
   override get message() {
     const name = CLOUD_SPEECH_PROVIDER_NAMES[this.provider];
+    const speaking = this.provider === "elevenlabs";
     switch (this.reason) {
       case "missing-key":
         return `Add your ${name} API key in Settings → Voice.`;
       case "key-changed":
         return `The ${name} key changed before your recording was sent. Try again.`;
       case "unreadable-key":
-        return `Couldn’t read the ${name} API key. Unlock the vault on the selected environment or update the key in Settings → Voice. No audio was sent to ${name}.`;
+        return `Couldn’t read the ${name} API key. Unlock the vault on the selected environment or update the key in Settings → Voice. No ${speaking ? "text" : "audio"} was sent to ${name}.`;
       case "rejected-key":
         return `${name} rejected this API key. Check its permissions and billing in Settings → Voice.`;
       case "rate-limit":
@@ -71,7 +83,9 @@ export class CloudSpeechError extends Schema.TaggedError<CloudSpeechError>()(
       case "model-unavailable":
         return `The chosen model isn’t available on ${name}. Choose another model in Settings → Voice.`;
       case "unavailable":
-        return `${name} couldn’t transcribe this recording. Try again later.`;
+        return speaking
+          ? `${name} couldn’t read this reply aloud. Try again later.`
+          : `${name} couldn’t transcribe this recording. Try again later.`;
     }
   }
 }
@@ -228,9 +242,14 @@ export const SPEECH_MAX_OPTIONS_BYTES = 128_000;
 
 /** One request's worth of text to speak; clients split longer replies by sentence. */
 export const SPEECH_SYNTHESIS_MAX_CHARS = 2_000;
+const SpeechSynthesisText = Schema.String.check(Schema.isMaxLength(SPEECH_SYNTHESIS_MAX_CHARS));
 export const EnvironmentSpeechSynthesisRequest = Schema.Struct({
-  text: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(SPEECH_SYNTHESIS_MAX_CHARS)),
+  text: SpeechSynthesisText.check(Schema.isMinLength(1)),
+  /** Neighboring pieces of the same reply, so a cloud voice keeps one delivery across pieces. */
+  previousText: Schema.optionalKey(SpeechSynthesisText),
+  nextText: Schema.optionalKey(SpeechSynthesisText),
 });
+export type EnvironmentSpeechSynthesisRequest = typeof EnvironmentSpeechSynthesisRequest.Type;
 
 export const SpeechPostProcessingOptions = Schema.Struct({
   speechCustomWords: SpeechCustomWords,

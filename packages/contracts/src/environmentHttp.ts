@@ -51,6 +51,7 @@ import {
 import {
   CloudSpeechApiKey,
   CloudSpeechError,
+  CloudSpeechKeyProvider,
   CloudSpeechKeys,
   CloudSpeechModelId,
   CloudSpeechModels,
@@ -793,7 +794,7 @@ export class EnvironmentVoiceHttpApi extends HttpApiGroup.make("voice")
   .add(
     HttpApiEndpoint.post("setCloudKey", "/api/voice/cloud/:provider/key", {
       headers: OptionalBearerHeaders,
-      params: Schema.Struct({ provider: CloudSpeechProvider }),
+      params: Schema.Struct({ provider: CloudSpeechKeyProvider }),
       payload: Schema.Struct({
         key: Schema.NullOr(
           Schema.Union([Schema.RedactedFromValue(CloudSpeechApiKey), SecretReference]),
@@ -832,7 +833,11 @@ export class EnvironmentVoiceHttpApi extends HttpApiGroup.make("voice")
       headers: OptionalBearerHeaders,
       payload: EnvironmentSpeechSynthesisRequest,
       success: Schema.Uint8Array.pipe(HttpApiSchema.asUint8Array({ contentType: "audio/wav" })),
-      error: [...EnvironmentScopedOperationErrors, EnvironmentRequestInvalidError],
+      error: [
+        ...EnvironmentScopedOperationErrors,
+        EnvironmentRequestInvalidError,
+        CloudSpeechError,
+      ],
     }).middleware(EnvironmentAuthenticatedAuth),
   )
   .add(
