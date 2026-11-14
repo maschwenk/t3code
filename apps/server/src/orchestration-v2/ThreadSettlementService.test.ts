@@ -28,6 +28,7 @@ import {
 } from "@t3tools/contracts";
 import type { SettlementReplyCheckInput } from "@t3tools/provider-core/server/textGeneration";
 import { applyServerSettingsPatch } from "@t3tools/shared/serverSettings";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -39,9 +40,11 @@ import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
+import * as SqlClient from "effect/sql/SqlClient";
 import { TestClock } from "effect/testing";
 
 import * as GitManager from "../git/GitManager.ts";
+import * as SettlementDecisions from "../persistence/SettlementDecisions.ts";
 import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import * as ServerActivation from "../serverActivation.ts";
@@ -1004,8 +1007,31 @@ const makeHarness = Effect.fn("makeThreadSettlementHarness")(function* (options:
     layer: Layer.effect(
       ThreadSettlementService.ThreadSettlementServiceV2,
       ThreadSettlementService.make,
-    ).pipe(Layer.provide(layerDependencies)),
+    ).pipe(
+      Layer.provide(layerDependencies),
+      Layer.provideMerge(SettlementDecisions.layer),
+      Layer.provideMerge(NodeSqliteClient.layer({ filename: ":memory:" })),
+    ),
   };
+});
+
+/** The settlement decision log, oldest first. */
+const recordedDecisions = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  return yield* sql<{
+    readonly thread_id: string;
+    readonly outcome: string;
+    readonly rule: string;
+    readonly hold_reason: string | null;
+    readonly run_id: string | null;
+    readonly reply_check_json: string | null;
+    readonly inputs_json: string;
+    readonly server_version: string;
+  }>`
+    SELECT thread_id, outcome, rule, hold_reason, run_id, reply_check_json, inputs_json,
+      server_version
+    FROM settlement_decisions ORDER BY id
+  `;
 });
 
 const startHarness = Effect.fn("startThreadSettlementHarness")(function* (
@@ -1142,8 +1168,20 @@ describe("ThreadSettlementServiceV2 worker", () => {
           latestUserMessageAt: DateTime.makeUnsafe("2026-08-28T10:00:00.000Z"),
         });
         const idle = makeThread("idle");
+        // Its pull request merged, but the agent still waits on a watch, which holds it.
+        const watched = makeThread("watched-pull-request", {
+          pullRequests: [finishedLink("merged", "2026-08-20T00:00:00.000Z", NOW)],
+          pendingBackgroundTasks: [
+            {
+              taskId: "pull-request-watch:example.test/owner/repository#42",
+              description: "Watching pull request #42",
+              kind: "monitor",
+              awaited: true,
+            },
+          ],
+        });
         const fixture = yield* makeHarness({
-          snapshot: makeSnapshot([closed, merged, onBranch, idle]),
+          snapshot: makeSnapshot([closed, merged, onBranch, idle, watched]),
           settings: {
             ...DEFAULT_SERVER_SETTINGS,
             sidebarAutoSettleAfterDays: 3,
@@ -1165,6 +1203,24 @@ describe("ThreadSettlementServiceV2 worker", () => {
               [idle.id, "auto_inactivity"],
             ]),
           );
+          // Each settle is logged with its rule, and so is the rule the watch is holding back.
+          const decisions = yield* recordedDecisions;
+          expect(
+            new Map(
+              decisions.map((row) => [row.thread_id, [row.outcome, row.rule, row.hold_reason]]),
+            ),
+          ).toEqual(
+            new Map([
+              [closed.id, ["settled", "auto_pull_request_closed", null]],
+              [merged.id, ["settled", "auto_pull_request_merged", null]],
+              [onBranch.id, ["settled", "auto_branch_pull_request_merged", null]],
+              [idle.id, ["settled", "auto_inactivity", null]],
+              [watched.id, ["held", "auto_pull_request_merged", "background_work"]],
+            ]),
+          );
+          const watchedRow = decisions.find((row) => row.thread_id === watched.id);
+          expect(JSON.parse(watchedRow?.inputs_json ?? "null")?.thread.id).toBe(watched.id);
+          expect(decisions.every((row) => row.server_version !== "")).toBe(true);
         }).pipe(Effect.provide(fixture.layer));
       }),
     ),
@@ -1861,6 +1917,54 @@ describe("ThreadSettlementServiceV2 reply check", () => {
             new Map([[asks.id, "auto_pull_request_merged"]]),
           );
           assert.equal((yield* Ref.get(fixture.replyChecks)).length, 3);
+
+          // Three sweeps held each first run once, with what the model said; then the next run settled.
+          const decisions = (yield* recordedDecisions).map((row) => ({
+            thread: row.thread_id,
+            run: row.run_id,
+            outcome: row.outcome,
+            rule: row.rule,
+            hold: row.hold_reason,
+            check: JSON.parse(row.reply_check_json ?? "null"),
+          }));
+          const model = `${settings.textGenerationModelSelection.instanceId}:${settings.textGenerationModelSelection.model}`;
+          expect(decisions).toEqual([
+            {
+              thread: asks.id,
+              run: asks.latestRunId,
+              outcome: "held",
+              rule: "auto_pull_request_merged",
+              hold: "needs_user",
+              check: {
+                outcome: "holds",
+                reason: "needs_user",
+                verdict: { model, requestOrigin: "user", needsUser: true, attempt: 1 },
+              },
+            },
+            {
+              thread: onBranch.id,
+              run: onBranch.latestRunId,
+              outcome: "held",
+              rule: "auto_branch_pull_request_merged",
+              hold: "needs_user",
+              check: {
+                outcome: "holds",
+                reason: "needs_user",
+                verdict: { model, requestOrigin: "user", needsUser: true, attempt: 1 },
+              },
+            },
+            {
+              thread: asks.id,
+              run: nextRun.latestRunId,
+              outcome: "settled",
+              rule: "auto_pull_request_merged",
+              hold: null,
+              check: {
+                outcome: "settles",
+                verdict: { model, requestOrigin: "scheduled", needsUser: false, attempt: 1 },
+              },
+            },
+          ]);
         }).pipe(Effect.provide(fixture.layer));
       }),
     ),

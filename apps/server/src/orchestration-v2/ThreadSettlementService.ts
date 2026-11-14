@@ -27,6 +27,7 @@ import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
 import * as GitManager from "../git/GitManager.ts";
+import * as SettlementDecisions from "../persistence/SettlementDecisions.ts";
 import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -47,6 +48,14 @@ export interface SettlementPullRequest {
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
 const QUEUED_TURN_START_GRACE_MS = 2 * 60 * 1_000;
+// Holds a rule change could alter. Pins, snoozes and running turns say nothing about the rules,
+// and recording them would add a row for every turn of every pinned thread.
+const RECORDED_HOLDS: ReadonlySet<string> = new Set([
+  "background_work",
+  "pending_request",
+  "guest_waiting",
+  "reply_check",
+]);
 
 function toMillis(value: DateTime.Utc | null | undefined): number | null {
   return value == null ? null : DateTime.toEpochMillis(value);
@@ -161,20 +170,44 @@ function pullRequestSettles(
   return pullRequestAtMs >= userAnchorMs;
 }
 
+/** Why a thread may not auto-settle right now, whatever its rules say. */
+export type AutoSettlementHold =
+  | "archived"
+  | "settled"
+  | "kept_active"
+  | "pinned"
+  | "auto_settle_off"
+  | "pending_request"
+  | "guest_waiting"
+  | "run_active"
+  | "background_work"
+  | "queued_turn"
+  | "snoozed";
+
+function autoSettlementHold(
+  thread: Omit<ProjectionStore.ProjectionSettlementCandidate, "latestUserAuthoredMessageAt">,
+  nowMs: number,
+): AutoSettlementHold | null {
+  if (thread.archivedAt !== null) return "archived";
+  if (thread.settledOverride === "settled") return "settled";
+  if (thread.settledOverride === "active") return "kept_active";
+  if (thread.pinnedAt != null) return "pinned";
+  if (thread.autoSettleDisabledAt != null) return "auto_settle_off";
+  if (thread.pendingRuntimeRequest !== null) return "pending_request";
+  // A guest is waiting on the owner; settling would hide the Request.
+  if ((thread.pendingGuestMessageCount ?? 0) > 0) return "guest_waiting";
+  if (thread.activityRunStatus != null) return "run_active";
+  if (backgroundWorkHoldsCompletion(thread.pendingBackgroundTasks ?? [])) return "background_work";
+  if (threadHasQueuedTurnStart(thread, nowMs)) return "queued_turn";
+  // Interrupted runs must keep the same snooze protection the sidebar shows.
+  return isSnoozed(thread, nowMs) ? "snoozed" : null;
+}
+
 export function isAutoSettlementCandidate(
   thread: Omit<ProjectionStore.ProjectionSettlementCandidate, "latestUserAuthoredMessageAt">,
   nowMs: number,
 ): boolean {
-  if (thread.archivedAt !== null || thread.settledOverride !== null) return false;
-  if (thread.pinnedAt != null || thread.autoSettleDisabledAt != null) return false;
-  if (thread.pendingRuntimeRequest !== null) return false;
-  // A guest is waiting on the owner; settling would hide the Request.
-  if ((thread.pendingGuestMessageCount ?? 0) > 0) return false;
-  if (thread.activityRunStatus != null) return false;
-  if (backgroundWorkHoldsCompletion(thread.pendingBackgroundTasks ?? [])) return false;
-  if (threadHasQueuedTurnStart(thread, nowMs)) return false;
-  // Interrupted runs must keep the same snooze protection the sidebar shows.
-  return !isSnoozed(thread, nowMs);
+  return autoSettlementHold(thread, nowMs) === null;
 }
 
 /** Match client effectiveSnoozed so agents and sidebar agree. */
@@ -222,16 +255,27 @@ type AutoSettlementInput = {
 };
 
 export function resolveAutoSettlementAt(input: AutoSettlementInput): DateTime.Utc | null {
-  return resolveAutoSettlement(input)?.settledAt ?? null;
+  const settlement = resolveAutoSettlement(input);
+  return settlement?.outcome === "settle" ? settlement.settledAt : null;
 }
 
-/** When the thread should settle and which rule settles it, or null if none does yet. */
-function resolveAutoSettlement(input: AutoSettlementInput): {
-  readonly settledAt: DateTime.Utc;
-  readonly source: OrchestrationV2AutoSettlementSource;
-  /** Set when a merged or closed pull request settles the thread. */
-  readonly pullRequest?: SettlementPullRequest & { readonly state: "merged" | "closed" };
-} | null {
+export type AutoSettlement =
+  | {
+      readonly outcome: "settle";
+      readonly settledAt: DateTime.Utc;
+      readonly source: OrchestrationV2AutoSettlementSource;
+      /** Set when a merged or closed pull request settles the thread. */
+      readonly pullRequest?: SettlementPullRequest & { readonly state: "merged" | "closed" };
+    }
+  | {
+      /** A rule would settle the thread, but a hold, or the reply check for a PR rule, stops it. */
+      readonly outcome: "hold";
+      readonly source: OrchestrationV2AutoSettlementSource;
+      readonly hold: AutoSettlementHold | "reply_check";
+    };
+
+/** Which rule settles the thread, or holds it from settling, or null when no rule applies. */
+export function resolveAutoSettlement(input: AutoSettlementInput): AutoSettlement | null {
   const { thread } = input;
   let pullRequest = input.pullRequest;
   const visibleLinks = visibleThreadPullRequests(thread.pullRequests ?? []);
@@ -257,7 +301,7 @@ function resolveAutoSettlement(input: AutoSettlementInput): {
             closedAt: latest.snapshot.closedAt ?? null,
           };
   }
-  if (!isAutoSettlementCandidate(thread, input.nowMs)) return null;
+  const hold = autoSettlementHold(thread, input.nowMs);
   const activityAtMs =
     latestMillis([
       toMillis(thread.latestUserMessageAt),
@@ -265,34 +309,54 @@ function resolveAutoSettlement(input: AutoSettlementInput): {
       toMillis(thread.latestRunStartedAt),
       toMillis(thread.latestRunCompletedAt),
     ]) ?? DateTime.toEpochMillis(thread.createdAt);
-  if (
-    pullRequest !== null &&
-    input.pullRequestHeld !== true &&
-    pullRequestSettles(thread, pullRequest, input.autoSettleOnMerge)
-  ) {
+  let heldPullRequestSource: OrchestrationV2AutoSettlementSource | null = null;
+  if (pullRequest !== null && pullRequestSettles(thread, pullRequest, input.autoSettleOnMerge)) {
     // With no link, the sweep found this pull request from the thread's branch.
     const fromBranch = visibleLinks.length === 0 && thread.linkedPullRequest == null;
     const state = pullRequest.state === "merged" ? "merged" : "closed";
-    return {
-      settledAt: DateTime.makeUnsafe(activityAtMs),
-      source: fromBranch ? `auto_branch_pull_request_${state}` : `auto_pull_request_${state}`,
-      pullRequest: { ...pullRequest, state },
-    };
+    const source = fromBranch
+      ? (`auto_branch_pull_request_${state}` as const)
+      : (`auto_pull_request_${state}` as const);
+    if (hold === null && input.pullRequestHeld !== true) {
+      return {
+        outcome: "settle",
+        settledAt: DateTime.makeUnsafe(activityAtMs),
+        source,
+        pullRequest: { ...pullRequest, state },
+      };
+    }
+    heldPullRequestSource = source;
   }
   const hasPullRequest =
     hasOpenLink ||
     pullRequest !== null ||
     thread.linkedPullRequest != null ||
     thread.branchPullRequest != null;
-  if (input.autoSettleKeepPullRequests === true && hasPullRequest) return null;
-  if (input.autoSettleAfterDays === null) return null;
-  const snoozedUntilMs = toMillis(thread.snoozedUntil);
-  const timerWakeAtMs =
-    snoozedUntilMs !== null && snoozedUntilMs <= input.nowMs ? snoozedUntilMs : null;
-  const inactivityAtMs =
-    latestMillis([activityAtMs, toMillis(thread.lastSnoozeWakeAt), timerWakeAtMs]) ?? activityAtMs;
-  return inactivityAtMs < input.nowMs - input.autoSettleAfterDays * DAY_MS
-    ? { settledAt: DateTime.makeUnsafe(inactivityAtMs), source: "auto_inactivity" }
+  const inactivityAtMs = (() => {
+    if (input.autoSettleKeepPullRequests === true && hasPullRequest) return null;
+    if (input.autoSettleAfterDays === null) return null;
+    const snoozedUntilMs = toMillis(thread.snoozedUntil);
+    const timerWakeAtMs =
+      snoozedUntilMs !== null && snoozedUntilMs <= input.nowMs ? snoozedUntilMs : null;
+    const inactiveSinceMs =
+      latestMillis([activityAtMs, toMillis(thread.lastSnoozeWakeAt), timerWakeAtMs]) ??
+      activityAtMs;
+    return inactiveSinceMs < input.nowMs - input.autoSettleAfterDays * DAY_MS
+      ? inactiveSinceMs
+      : null;
+  })();
+  if (inactivityAtMs !== null && hold === null) {
+    return {
+      outcome: "settle",
+      settledAt: DateTime.makeUnsafe(inactivityAtMs),
+      source: "auto_inactivity",
+    };
+  }
+  if (heldPullRequestSource !== null) {
+    return { outcome: "hold", source: heldPullRequestSource, hold: hold ?? "reply_check" };
+  }
+  return inactivityAtMs !== null && hold !== null
+    ? { outcome: "hold", source: "auto_inactivity", hold }
     : null;
 }
 
@@ -359,8 +423,68 @@ export const make = Effect.gen(function* () {
   const terminals = yield* TerminalManager.TerminalManager;
   const projectScripts = yield* ProjectSetupScriptRunner.ProjectSetupScriptRunner;
   const replyGate = yield* SettlementReplyGate.make;
+  const decisionLog = yield* SettlementDecisions.SettlementDecisionLog;
   // Repeated thread.settled retains settledAt; run the action only once per settlement.
   const settleActionRunAt = new Map<ThreadId, number>();
+  // The last hold recorded per thread, so a hold that every sweep repeats is written once.
+  const recordedHolds = new Map<ThreadId, string>();
+
+  const recordDecision = (input: {
+    readonly thread: ProjectionStore.ProjectionSettlementCandidate;
+    readonly pullRequest: SettlementPullRequest | null;
+    readonly settlement: AutoSettlement;
+    readonly settings: Pick<
+      import("@t3tools/contracts").ServerSettings,
+      | "sidebarAutoSettleOnMerge"
+      | "sidebarAutoSettleAfterDays"
+      | "sidebarAutoSettleKeepPullRequests"
+      | "sidebarAutoSettleReplyCheck"
+      | "textGenerationModelSelection"
+    >;
+    readonly trigger: SettlementDecisions.SettlementDecisionTrigger;
+    readonly nowMs: number;
+  }) =>
+    Effect.suspend(() => {
+      const { thread, settlement, settings } = input;
+      if (settlement.outcome === "hold" && !RECORDED_HOLDS.has(settlement.hold)) {
+        return Effect.void;
+      }
+      const replyCheck = replyGate.describe(thread.latestRunId);
+      const holdReason =
+        settlement.outcome === "settle"
+          ? null
+          : settlement.hold === "reply_check"
+            ? (replyCheck?.reason ?? settlement.hold)
+            : settlement.hold;
+      if (settlement.outcome === "hold") {
+        const key = [settlement.source, holdReason, thread.latestRunId].join(" ");
+        if (recordedHolds.get(thread.id) === key) return Effect.void;
+        recordedHolds.set(thread.id, key);
+      } else {
+        recordedHolds.delete(thread.id);
+      }
+      return decisionLog.record({
+        decidedAt: DateTime.formatIso(DateTime.makeUnsafe(input.nowMs)),
+        threadId: thread.id,
+        projectId: thread.projectId,
+        outcome: settlement.outcome === "settle" ? "settled" : "held",
+        rule: settlement.source,
+        holdReason,
+        trigger: input.trigger,
+        runId: thread.latestRunId,
+        settledAt:
+          settlement.outcome === "settle" ? DateTime.formatIso(settlement.settledAt) : null,
+        replyCheck,
+        inputs: { thread, pullRequest: input.pullRequest },
+        settings: {
+          onMerge: settings.sidebarAutoSettleOnMerge,
+          afterDays: settings.sidebarAutoSettleAfterDays,
+          keepPullRequests: settings.sidebarAutoSettleKeepPullRequests,
+          replyCheck: settings.sidebarAutoSettleReplyCheck,
+          replyCheckModel: settings.textGenerationModelSelection,
+        },
+      });
+    });
 
   const sweep = Effect.fn("ThreadSettlementServiceV2.sweep")(function* (
     mergedPullRequest: PullRequestService.PullRequestMergeEvent | null,
@@ -375,8 +499,50 @@ export const make = Effect.gen(function* () {
     const projectShells = yield* projectStore.listShells();
     const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
     const projects = new Map(projectShells.map((project) => [project.id, project]));
+    const trigger: SettlementDecisions.SettlementDecisionTrigger =
+      mergedPullRequest !== null
+        ? "merge_event"
+        : threadId !== undefined
+          ? "thread_event"
+          : "full_sweep";
     // Merge events resweep all candidates because unlinked threads settle through branch lookup.
     const candidates = threads.filter((thread) => isAutoSettlementCandidate(thread, nowMs));
+    const settlementFromLinks = (thread: (typeof threads)[number]) => {
+      const projectSettings = resolveProjectSettings(settings, thread.projectId).settings;
+      return resolveAutoSettlement({
+        thread,
+        pullRequest: null,
+        nowMs,
+        autoSettleAfterDays: projectSettings.sidebarAutoSettleAfterDays,
+        autoSettleOnMerge: projectSettings.sidebarAutoSettleOnMerge,
+        autoSettleKeepPullRequests: projectSettings.sidebarAutoSettleKeepPullRequests,
+        pullRequestHeld: replyGate.holds(
+          thread,
+          nowMs,
+          projectSettings.sidebarAutoSettleReplyCheck,
+        ),
+      });
+    };
+    const recordHold = (thread: (typeof threads)[number], settlement: AutoSettlement | null) =>
+      settlement?.outcome === "hold"
+        ? recordDecision({
+            thread,
+            pullRequest: null,
+            settlement,
+            settings: resolveProjectSettings(settings, thread.projectId).settings,
+            trigger,
+            nowMs,
+          })
+        : Effect.void;
+    // A thread a hold keeps out of the candidates still has its blocked rule recorded.
+    yield* Effect.forEach(
+      threads,
+      (thread) =>
+        isAutoSettlementCandidate(thread, nowMs)
+          ? Effect.void
+          : recordHold(thread, settlementFromLinks(thread)),
+      { discard: true },
+    );
 
     // Runs per candidate thread, thousands per sweep on busy servers; the sweep owns the span.
     const settleThread = Effect.fnUntraced(
@@ -399,7 +565,7 @@ export const make = Effect.gen(function* () {
             pullRequestHeld,
           });
         let settlement = decide(replyGate.holds(thread, decisionNowMs, checkReply));
-        if (settlement?.pullRequest !== undefined) {
+        if (settlement?.outcome === "settle" && settlement.pullRequest !== undefined) {
           const { state, mergedAt, closedAt } = settlement.pullRequest;
           const held = yield* replyGate.check({
             thread,
@@ -414,6 +580,18 @@ export const make = Effect.gen(function* () {
           if (held !== null) settlement = decide(true);
         }
         if (settlement === null) return thread;
+        const decided = {
+          thread,
+          pullRequest,
+          settlement,
+          settings: currentSettings,
+          trigger,
+          nowMs: decisionNowMs,
+        };
+        if (settlement.outcome === "hold") {
+          yield* recordDecision(decided);
+          return thread;
+        }
         const uuid = yield* random.uuidV4();
         yield* orchestrator.dispatch({
           type: "thread.auto-settle",
@@ -423,6 +601,7 @@ export const make = Effect.gen(function* () {
           settledAt: settlement.settledAt,
           settlementSource: settlement.source,
         });
+        yield* recordDecision(decided);
         return null;
       },
       (effect, thread) =>
@@ -441,22 +620,11 @@ export const make = Effect.gen(function* () {
     const lookupCandidates = (yield* Effect.forEach(
       candidates,
       (thread) => {
-        const projectSettings = resolveProjectSettings(settings, thread.projectId).settings;
         // Skip no-op decisions; actual settlement still reads fresh settings before dispatch.
-        const settledAt = resolveAutoSettlementAt({
-          thread,
-          pullRequest: null,
-          nowMs,
-          autoSettleAfterDays: projectSettings.sidebarAutoSettleAfterDays,
-          autoSettleOnMerge: projectSettings.sidebarAutoSettleOnMerge,
-          autoSettleKeepPullRequests: projectSettings.sidebarAutoSettleKeepPullRequests,
-          pullRequestHeld: replyGate.holds(
-            thread,
-            nowMs,
-            projectSettings.sidebarAutoSettleReplyCheck,
-          ),
-        });
-        return settledAt === null ? Effect.succeed(thread) : settleThread(thread, null);
+        const settlement = settlementFromLinks(thread);
+        return settlement?.outcome === "settle"
+          ? settleThread(thread, null)
+          : recordHold(thread, settlement).pipe(Effect.as(thread));
       },
       { concurrency: 8 },
     ))
