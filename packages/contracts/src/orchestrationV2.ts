@@ -472,6 +472,28 @@ const LenientThreadSettlementSource = Schema.NullOr(OrchestrationV2ThreadSettlem
   Schema.catchDecoding(() => Effect.succeedSome(null)),
 );
 
+/**
+ * What brought a settled thread back. `user` and `agent` are an explicit unsettle from the app or
+ * an agent's MCP call; the message causes name who sent the message that reopened it. Recorded so
+ * a settle that someone undid can be told apart from one a schedule or a wake reopened.
+ */
+export const OrchestrationV2ThreadUnsettleCause = Schema.Literals([
+  "user",
+  "agent",
+  "pin",
+  "user_message",
+  "agent_message",
+  "scheduled_task",
+  "notification",
+  "subagent_result",
+  "guest",
+]);
+export type OrchestrationV2ThreadUnsettleCause = typeof OrchestrationV2ThreadUnsettleCause.Type;
+
+const LenientThreadUnsettleCause = Schema.NullOr(OrchestrationV2ThreadUnsettleCause).pipe(
+  Schema.catchDecoding(() => Effect.succeedSome(null)),
+);
+
 export const OrchestrationV2AppThread = Schema.Struct({
   ...OrchestrationV2CreationFields,
   id: ThreadId,
@@ -513,6 +535,7 @@ export const OrchestrationV2AppThread = Schema.Struct({
   ),
   settlementSource: Schema.optional(LenientThreadSettlementSource),
   unsettledAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
+  unsettleCause: Schema.optional(LenientThreadUnsettleCause),
   snoozedUntil: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
   snoozedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
   lastSnoozeWakeAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
@@ -3042,7 +3065,8 @@ export const OrchestrationV2Command = Schema.Union([
     type: Schema.Literal("thread.unsettle"),
     commandId: CommandId,
     threadId: ThreadId,
-    reason: Schema.Literal("user"),
+    /** `agent` is an agent's MCP unsettle; the app always sends `user`. */
+    reason: Schema.Literals(["user", "agent"]),
   }),
   Schema.Struct({
     type: Schema.Literal("thread.snooze"),
