@@ -58,6 +58,7 @@ import {
   type OrchestrationV2StoredEvent,
   type OrchestrationV2Subagent,
   type OrchestrationV2ThreadProjection,
+  type OrchestrationV2ThreadUnsettleCause,
   type OrchestrationV2TurnItem,
   latestProviderTurnForAttempt,
   parseGoalCommand,
@@ -721,6 +722,20 @@ function isLiveRun(run: OrchestrationV2Run): boolean {
 
 function hasLiveRun(projection: Pick<OrchestrationV2ThreadProjection, "runs">): boolean {
   return projection.runs.some(isLiveRun);
+}
+
+/** Who sent the message that reopens a settled thread; the settle audit reads it. */
+function messageUnsettleCause(
+  command: Pick<
+    Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }>,
+    "createdBy" | "scheduledTaskId" | "guestMessageId" | "delegatedCompletion" | "notification"
+  >,
+): OrchestrationV2ThreadUnsettleCause {
+  if (command.scheduledTaskId !== undefined) return "scheduled_task";
+  if (command.guestMessageId !== undefined) return "guest";
+  if (command.delegatedCompletion !== undefined) return "subagent_result";
+  if (command.notification !== undefined) return "notification";
+  return command.createdBy === "user" ? "user_message" : "agent_message";
 }
 
 function withPullRequestWatch(
@@ -3810,6 +3825,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               : (command.settlementSource ?? null),
             pullRequests: thread.pullRequests?.map((link) => withPullRequestWatch(link, undefined)),
             unsettledAt: null,
+            unsettleCause: null,
             pinnedAt: null,
             pinOrderKey: null,
             activeOrderKey: null,
@@ -3829,6 +3845,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             settledAt: null,
             settlementSource: null,
             unsettledAt: alreadyPinnedActive ? (thread.unsettledAt ?? null) : now,
+            unsettleCause: alreadyPinnedActive ? (thread.unsettleCause ?? null) : command.reason,
             updatedAt: alreadyPinnedActive ? thread.updatedAt : now,
           };
         }
@@ -3873,7 +3890,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               thread.settledOverride === "settled" ? "active" : thread.settledOverride,
             settledAt: thread.settledOverride === "settled" ? null : thread.settledAt,
             ...(thread.settledOverride === "settled"
-              ? { unsettledAt: now, settlementSource: null }
+              ? { unsettledAt: now, unsettleCause: "pin" as const, settlementSource: null }
               : {}),
             snoozedUntil: null,
             snoozedAt: null,
@@ -5858,6 +5875,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           projection.thread.settledOverride === "active"
             ? (projection.thread.unsettledAt ?? null)
             : now,
+        unsettleCause:
+          projection.thread.settledOverride === "active"
+            ? (projection.thread.unsettleCause ?? null)
+            : messageUnsettleCause(command),
         updatedAt: now,
       };
       const event = yield* emit(

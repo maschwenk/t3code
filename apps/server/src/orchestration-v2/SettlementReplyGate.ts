@@ -29,14 +29,37 @@ const REMEMBERED_RUNS = 2_000;
 const RETRY_DELAYS_MS = [5 * 60_000, 30 * 60_000];
 const CONCURRENT_CHECKS = 4;
 
+/** The model's answer for a run; absent when a run status decided without asking. */
+export interface SettlementReplyVerdict {
+  readonly model: string;
+  readonly requestOrigin: SettlementReplyCheckInput["requestOrigin"];
+  readonly needsUser: boolean;
+  readonly attempt: number;
+}
+
 type Decision =
-  | { readonly kind: "settles" }
+  | { readonly kind: "settles"; readonly verdict?: SettlementReplyVerdict }
   | {
       readonly kind: "holds";
       readonly reason: Exclude<SettlementHoldReason, "no_verdict">;
+      readonly verdict?: SettlementReplyVerdict;
     }
   | { readonly kind: "deciding"; readonly decided: Deferred.Deferred<void> }
-  | { readonly kind: "failed"; readonly attempts: number; readonly retryAtMs: number | null };
+  | {
+      readonly kind: "failed";
+      readonly attempts: number;
+      readonly retryAtMs: number | null;
+      readonly error: string;
+    };
+
+/** What the gate decided for a run, as the settlement decision log stores it. */
+export interface SettlementReplyCheckRecord {
+  readonly outcome: "settles" | "holds" | "deciding" | "failed";
+  readonly reason?: SettlementHoldReason;
+  readonly verdict?: SettlementReplyVerdict;
+  readonly attempts?: number;
+  readonly error?: string;
+}
 
 type ReplyMessage = Pick<
   OrchestrationV2ConversationMessage,
@@ -166,10 +189,42 @@ export const make = Effect.gen(function* () {
       needsUser,
       attempt: attempts + 1,
     });
+    const verdict: SettlementReplyVerdict = {
+      model: `${input.modelSelection.instanceId}:${input.modelSelection.model}`,
+      requestOrigin: subject.requestOrigin,
+      needsUser,
+      attempt: attempts + 1,
+    };
     return needsUser
-      ? ({ kind: "holds", reason: "needs_user" } as const)
-      : ({ kind: "settles" } as const);
+      ? ({ kind: "holds", reason: "needs_user", verdict } as const)
+      : ({ kind: "settles", verdict } as const);
   });
+
+  /** The gate's decision for a run, or null when it never decided one. */
+  const describe = (runId: RunId | null): SettlementReplyCheckRecord | null => {
+    const decision = runId === null ? undefined : decisions.get(runId);
+    switch (decision?.kind) {
+      case undefined:
+        return null;
+      case "deciding":
+        return { outcome: "deciding" };
+      case "failed":
+        return {
+          outcome: "failed",
+          reason: "no_verdict",
+          attempts: decision.attempts,
+          error: decision.error,
+        };
+      case "settles":
+        return decision.verdict === undefined
+          ? { outcome: "settles" }
+          : { outcome: "settles", verdict: decision.verdict };
+      case "holds":
+        return decision.verdict === undefined
+          ? { outcome: "holds", reason: decision.reason }
+          : { outcome: "holds", reason: decision.reason, verdict: decision.verdict };
+    }
+  };
 
   /** Why the pull request may not settle the thread yet, or null when it may. */
   const check = (input: SettlementReplyGateInput): Effect.Effect<SettlementHoldReason | null> =>
@@ -225,7 +280,12 @@ export const make = Effect.gen(function* () {
                 delayMs === undefined
                   ? null
                   : DateTime.toEpochMillis(yield* DateTime.now) + delayMs;
-              remember(runId, { kind: "failed", attempts: attempts + 1, retryAtMs });
+              remember(runId, {
+                kind: "failed",
+                attempts: attempts + 1,
+                retryAtMs,
+                error: Cause.pretty(cause).slice(0, 500),
+              });
               yield* Effect.logWarning("auto-settle reply check failed; holding the thread", {
                 threadId: input.thread.id,
                 runId,
@@ -250,7 +310,7 @@ export const make = Effect.gen(function* () {
     );
   };
 
-  return { holds, check };
+  return { holds, check, describe };
 });
 
 export type SettlementReplyGate = Effect.Success<typeof make>;
