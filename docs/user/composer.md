@@ -164,7 +164,9 @@ press `Escape` to dismiss it. Each suggestion is one extra request that reuses t
 cache, so it uses a little of your plan's usage. Claude skips suggestions on the first turn of a
 thread and near usage limits. Codex needs version 0.165 or later; if T3 Code manages
 Codex, update it in Settings > Providers. Codex follows a change to the setting at once; open Claude
-threads follow it after they restart. Suggestions show on web and desktop.
+threads follow it after they restart. On mobile, the suggestion shows in the empty composer and the
+send button becomes a sparkles button; tap it to fill the suggestion in, then edit or send it. You
+can also turn the setting on for each machine in the mobile app's Settings > Labs.
 
 ## Edit an earlier prompt
 

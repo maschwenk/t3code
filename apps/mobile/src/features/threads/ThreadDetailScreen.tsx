@@ -1885,6 +1885,11 @@ function ThreadDetailBody(
                           props.activePendingApproval === null &&
                           props.activePendingUserInput === null
                         }
+                        offersPromptSuggestion={
+                          props.queuedRunEdit === null &&
+                          props.activePendingApproval === null &&
+                          props.activePendingUserInput === null
+                        }
                         serverConfig={props.serverConfig}
                         queueCount={props.selectedThreadQueueCount}
                         activeThreadBusy={props.activeThreadBusy}
