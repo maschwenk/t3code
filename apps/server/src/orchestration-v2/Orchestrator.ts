@@ -99,6 +99,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
 import * as ProjectStore from "./ProjectStore.ts";
+import { PULL_REQUEST_WATCH_VERDICT_LOOKBACK_MS } from "./pullRequestWatch.ts";
 import {
   isCheckpointRestoreIsolated,
   SHARED_WORKSPACE_RESTORE_MESSAGE,
@@ -721,6 +722,20 @@ function isLiveRun(run: OrchestrationV2Run): boolean {
 
 function hasLiveRun(projection: Pick<OrchestrationV2ThreadProjection, "runs">): boolean {
   return projection.runs.some(isLiveRun);
+}
+
+/**
+ * A new watch reads remarks from a little before it starts, so an approval that landed just
+ * before still wakes the agent. Watching again never repeats what the last watch reported.
+ */
+function watchRemarksFrom(
+  now: DateTime.Utc,
+  ended: ThreadPullRequestWatch | undefined,
+): Pick<ThreadPullRequestWatch, "remarksThrough" | "remarkIds"> {
+  const lookback = DateTime.toEpochMillis(now) - PULL_REQUEST_WATCH_VERDICT_LOOKBACK_MS;
+  return ended !== undefined && Date.parse(ended.remarksThrough) > lookback
+    ? { remarksThrough: ended.remarksThrough, remarkIds: ended.remarkIds }
+    : { remarksThrough: DateTime.formatIso(DateTime.makeUnsafe(lookback)), remarkIds: [] };
 }
 
 function withPullRequestWatch(
@@ -4167,8 +4182,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                     ...(existing.endedWatch?.checksAwaitedSince !== undefined && {
                       checksAwaitedSince: existing.endedWatch.checksAwaitedSince,
                     }),
-                    remarksThrough: startedAt,
-                    remarkIds: [],
+                    ...watchRemarksFrom(now, existing.endedWatch),
                     wakes: 0,
                   });
           if (watch === existing.watch && links === linked) return thread;

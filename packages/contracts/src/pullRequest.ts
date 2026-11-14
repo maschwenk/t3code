@@ -624,6 +624,8 @@ export const PullRequestDetail = Schema.Struct({
   mergedAt: Schema.NullOr(IsoDateTime),
   closedAt: Schema.NullOr(IsoDateTime),
   reviewers: Schema.Array(PullRequestActor),
+  /** Null when the host has no review rule for the branch; absent when it does not report one. */
+  reviewDecision: Schema.optional(Schema.NullOr(PullRequestReviewDecision)),
   labels: Schema.Array(PullRequestLabel),
   checks: Schema.Array(PullRequestCheck),
   mergeCapabilities: PullRequestMergeCapabilities,
