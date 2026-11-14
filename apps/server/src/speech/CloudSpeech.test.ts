@@ -49,7 +49,12 @@ it.effect.each(["openai", "xai"] as const)("sends only to %s using its own saved
     yield* service.setKey(provider === "openai" ? "xai" : "openai", Redacted.make("other"));
     expect((yield* Effect.flip(transcribe()))._tag).toBe("CloudSpeechError");
     yield* service.setKey(provider, Redacted.make("chosen"));
-    expect(yield* service.configured).toEqual({ openai: true, xai: true, openrouter: false });
+    expect(yield* service.configured).toEqual({
+      openai: true,
+      xai: true,
+      openrouter: false,
+      elevenlabs: false,
+    });
     yield* Effect.flip(transcribe(new Uint8Array(3)));
     expect(upstream).not.toHaveBeenCalled();
     expect(yield* transcribe()).toBe("hello");
@@ -156,6 +161,52 @@ it.effect("uploads to OpenRouter only for a listed exact model, as zero-retentio
     const wav = Buffer.from(body.input_audio.data, "base64");
     expect(wav.toString("ascii", 0, 4)).toBe("RIFF");
     expect(wav.readInt16LE(46)).toBe(16384);
+  }),
+);
+
+it.effect("reads aloud with ElevenLabs only through its own key, with neighboring text", () =>
+  Effect.gen(function* () {
+    const pcm = new Uint8Array([1, 0, 255, 127]);
+    const upstream = vi.fn<typeof fetch>(async () => new Response(pcm));
+    const service = yield* CloudSpeech.CloudSpeech.pipe(
+      Effect.provide(
+        CloudSpeech.layer.pipe(
+          Layer.provide(FetchHttpClient.layer),
+          Layer.provide(ServerSettings.ServerSettingsService.layerTest()),
+          Layer.provide(Layer.mock(SecretResolver.SecretResolver)({})),
+        ),
+      ),
+    );
+    const speak = service
+      .speak({ text: "Ready for review.", previousText: "Tests pass.", nextText: "Open it?" })
+      .pipe(Effect.provideService(FetchHttpClient.Fetch, upstream));
+    yield* service.setKey("openai", Redacted.make("transcription-only"));
+    expect(yield* Effect.flip(speak)).toMatchObject({
+      provider: "elevenlabs",
+      reason: "missing-key",
+    });
+    expect(upstream).not.toHaveBeenCalled();
+    yield* service.setKey("elevenlabs", Redacted.make("voice-key"));
+    expect((yield* service.configured).elevenlabs).toBe(true);
+    expect(yield* speak).toEqual({ pcm, sampleRate: 24_000 });
+    const [url, init] = upstream.mock.calls[0]!;
+    expect(String(url)).toBe(
+      "https://api.elevenlabs.io/v1/text-to-speech/EXAVITQu4vr4xnSDxMaL?output_format=pcm_24000",
+    );
+    expect(init?.redirect).toBe("error");
+    const headers = new Headers(init?.headers);
+    expect(headers.get("xi-api-key")).toBe("voice-key");
+    expect(headers.get("authorization")).toBeNull();
+    expect(JSON.parse(yield* Effect.promise(() => new Response(init?.body).text()))).toEqual({
+      text: "Ready for review.",
+      model_id: "eleven_v4_turbo",
+      previous_text: "Tests pass.",
+      next_text: "Open it?",
+    });
+    upstream.mockResolvedValueOnce(new Response("quota_exceeded", { status: 401 }));
+    expect(yield* Effect.flip(speak)).toMatchObject({ reason: "rejected-key" });
+    upstream.mockResolvedValueOnce(new Response(null, { status: 429 }));
+    expect(yield* Effect.flip(speak)).toMatchObject({ reason: "rate-limit" });
   }),
 );
 

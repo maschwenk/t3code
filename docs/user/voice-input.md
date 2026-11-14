@@ -146,7 +146,10 @@ another or the system default.
 On iPhone and Android, the speaker button under a finished reply reads it aloud;
 press it again to stop. The computer running T3 Code makes the voice with
 Kokoro, an open-source speech model, so the first reply you play downloads about
-130 MB to that computer and takes a few extra seconds. Code blocks are skipped.
+130 MB to that computer and takes a few extra seconds. For a more natural voice,
+add an ElevenLabs API key with Text to Speech access under **Settings → Voice →
+Read aloud**. That computer then sends the text of each reply you play to
+ElevenLabs, and everyone who uses it hears that voice. Code blocks are skipped.
 Speech stops when you leave the thread, start dictation, or play other media. On
 iPhone it keeps going with the screen locked, and music and podcasts get quieter
 while it speaks.

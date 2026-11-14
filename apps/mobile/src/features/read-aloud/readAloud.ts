@@ -1,10 +1,12 @@
 import type { PreparedConnection } from "@t3tools/client-runtime/connection";
-import { speakEnvironmentText } from "@t3tools/client-runtime/voice-input";
+import { speakEnvironmentText, VoiceTranscriptionError } from "@t3tools/client-runtime/voice-input";
 import { SPEECH_SYNTHESIS_MAX_CHARS } from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
 import { createAudioPlayer, type AudioPlayer } from "expo-audio";
 import { File, Paths } from "expo-file-system";
 import { useSyncExternalStore } from "react";
 
+import * as Dialog from "../../components/ui/Dialog";
 import {
   acquireAudioSession,
   activateAudioSession,
@@ -20,6 +22,7 @@ import { markdownToSpeechText, splitSpeechText } from "./readAloudModel";
 // synthesizing a long reply nobody stays to hear.
 const PIECES_AHEAD = 2;
 const MAX_PIECE_CHARS = Math.min(400, SPEECH_SYNTHESIS_MAX_CHARS);
+const isVoiceError = Schema.is(VoiceTranscriptionError);
 
 interface Reading {
   readonly scope: string;
@@ -81,7 +84,11 @@ async function speak(current: Reading, prepared: PreparedConnection, text: strin
   const files: Promise<File>[] = [];
   const fetchPiece = (index: number) =>
     (files[index] ??= runSpeech(
-      speakEnvironmentText(prepared, pieces[index]!),
+      speakEnvironmentText(prepared, {
+        text: pieces[index]!,
+        ...(index > 0 && { previousText: pieces[index - 1]! }),
+        ...(index + 1 < pieces.length && { nextText: pieces[index + 1]! }),
+      }),
       current.abort.signal,
     ).then(async (audio) => {
       const file = new File(Paths.cache, `read-aloud-${uuidv4()}.wav`);
@@ -99,6 +106,15 @@ async function speak(current: Reading, prepared: PreparedConnection, text: strin
       await playToEnd(current, file.uri);
       if (reading !== current) return;
     }
+  } catch (error) {
+    // A stop, or another sound taking the session, has already cleared `reading`.
+    if (reading === current)
+      Dialog.alert(
+        "Couldn’t read this reply aloud",
+        isVoiceError(error)
+          ? error.message
+          : "Check the connection to your environment and try again.",
+      );
   } finally {
     finish(current);
     for (const file of files) void file?.then(deleteQuietly, () => {});

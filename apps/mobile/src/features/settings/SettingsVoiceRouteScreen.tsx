@@ -32,6 +32,7 @@ import {
 import { VoiceModelSection } from "./VoiceModelSection";
 import { CloudVoiceSection } from "./CloudVoiceSection";
 import { OnDeviceVoiceSection } from "./OnDeviceVoiceSection";
+import { ReadAloudVoiceSection } from "./ReadAloudVoiceSection";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { ThreadSwipeable } from "../home/thread-swipe-actions";
 import { ListActionRow as SettingsActionRow } from "../../components/ui/ListActionRow";
@@ -354,6 +355,13 @@ export function SettingsVoiceRouteScreen() {
             ? " Android may still use a different microphone if the preferred one can’t be routed."
             : null}
         </Text>
+        {environments
+          .filter(
+            (environment) => environment.serverConfig?.environment.capabilities.voiceSynthesis,
+          )
+          .map((environment) => (
+            <ReadAloudVoiceSection key={environment.environmentId} environment={environment} />
+          ))}
       </ScrollView>
     </SettingsScreen>
   );

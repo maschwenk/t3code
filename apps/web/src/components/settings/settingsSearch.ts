@@ -532,6 +532,15 @@ export const SETTINGS_SEARCH_ITEMS = [
     ],
   },
   {
+    id: "read-aloud-voice",
+    title: "Read-aloud voice",
+    fork: true,
+    to: "/settings/voice",
+    searchTerms: [
+      "read aloud speak reply listen text to speech tts voice ElevenLabs Kokoro phone mobile api key",
+    ],
+  },
+  {
     id: "voice-microphone",
     title: "Microphone",
     to: "/settings/voice",

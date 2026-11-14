@@ -8,7 +8,9 @@ import {
   type SecretReference,
   type ServerSettingsError,
   type CloudSpeechKeys,
+  type CloudSpeechKeyProvider,
   type CloudSpeechProvider,
+  type EnvironmentSpeechSynthesisRequest,
   EnvironmentSpeechTranscriptionResult,
   type SpeechTranscriptionOptions,
 } from "@t3tools/contracts";
@@ -34,6 +36,12 @@ const endpoints = {
 };
 const OPENROUTER_CATALOG_URL =
   "https://openrouter.ai/api/v1/models?output_modalities=transcription&zdr=true";
+const ELEVENLABS_SPEECH = {
+  // Sarah, a premade voice every ElevenLabs account can use. PCM is 16-bit little-endian mono.
+  url: "https://api.elevenlabs.io/v1/text-to-speech/EXAVITQu4vr4xnSDxMaL?output_format=pcm_24000",
+  model: "eleven_v4_turbo",
+  sampleRate: 24_000,
+};
 const isApiKey = Schema.is(CloudSpeechApiKey);
 const isModelId = Schema.is(CloudSpeechModelId);
 const sameCredential = Schema.toEquivalence(SettingsSecretValue);
@@ -108,7 +116,7 @@ export class CloudSpeech extends Context.Service<
     /** OpenRouter's public transcription catalog, cached briefly on this server. */
     readonly models: Effect.Effect<ReadonlyArray<CloudSpeechModel>, CloudSpeechError>;
     readonly setKey: (
-      provider: CloudSpeechProvider,
+      provider: CloudSpeechKeyProvider,
       key: Redacted.Redacted<string> | SecretReference | null,
     ) => Effect.Effect<void, ServerSettingsError>;
     readonly transcribe: (
@@ -117,8 +125,23 @@ export class CloudSpeech extends Context.Service<
       options: SpeechTranscriptionOptions,
       model?: string | undefined,
     ) => Effect.Effect<string, CloudSpeechError | SpeechInvalidAudioError | ServerSettingsError>;
+    /** Speaks text with ElevenLabs using the environment's key, as raw 16-bit mono PCM. */
+    readonly speak: (
+      request: EnvironmentSpeechSynthesisRequest,
+    ) => Effect.Effect<
+      { readonly pcm: Uint8Array; readonly sampleRate: number },
+      CloudSpeechError | ServerSettingsError
+    >;
   }
 >()("t3/speech/CloudSpeech") {}
+
+function rejection(status: number) {
+  return status === 429
+    ? "rate-limit"
+    : [401, 402, 403].includes(status)
+      ? "rejected-key"
+      : "unavailable";
+}
 
 export const layer = Layer.effect(
   CloudSpeech,
@@ -130,10 +153,11 @@ export const layer = Layer.effect(
       Effect.map((value) => value.cloudSpeechCredentials),
     );
     const configured = credentials.pipe(
-      Effect.map(({ openai, xai, openrouter }) => ({
+      Effect.map(({ openai, xai, openrouter, elevenlabs }) => ({
         openai: Boolean(openai),
         xai: Boolean(xai),
         openrouter: Boolean(openrouter),
+        elevenlabs: Boolean(elevenlabs),
       })),
     );
     const execute = (request: HttpClientRequest.HttpClientRequest) =>
@@ -169,7 +193,7 @@ export const layer = Layer.effect(
       (exit) => (Exit.isSuccess(exit) ? "10 minutes" : 0),
     );
     const setKey = Effect.fn("CloudSpeech.setKey")(function* (
-      provider: CloudSpeechProvider,
+      provider: CloudSpeechKeyProvider,
       key: Redacted.Redacted<string> | SecretReference | null,
     ) {
       yield* settings.updateSettings({
@@ -177,6 +201,17 @@ export const layer = Layer.effect(
           [provider]: Redacted.isRedacted(key) ? Redacted.value(key) : (key ?? ""),
         },
       });
+    });
+    const readKey = Effect.fn("CloudSpeech.readKey")(function* (
+      provider: CloudSpeechKeyProvider,
+      source: SettingsSecretValue,
+    ) {
+      // A vault that locked since the last request must not authorize a new upload.
+      if (isSecretReference(source)) yield* resolver.invalidate([source]);
+      const unreadable = () => new CloudSpeechError({ provider, reason: "unreadable-key" });
+      const key = yield* requireSettingsSecret(resolver, source).pipe(Effect.mapError(unreadable));
+      if (!isApiKey(key)) return yield* unreadable();
+      return key;
     });
     const transcribe = Effect.fn("CloudSpeech.transcribe")(
       function* (
@@ -200,13 +235,7 @@ export const layer = Layer.effect(
         const language = effectiveSpeechLanguage(cloudSpeechLanguages, options.speechLanguage);
         if (provider === "openrouter" && !(yield* models).some((entry) => entry.id === model))
           return yield* new CloudSpeechError({ provider, reason: "model-unavailable" });
-        // A vault that locked since the last recording must not authorize a new upload.
-        if (isSecretReference(source)) yield* resolver.invalidate([source]);
-        const unreadable = () => new CloudSpeechError({ provider, reason: "unreadable-key" });
-        const key = yield* requireSettingsSecret(resolver, source).pipe(
-          Effect.mapError(unreadable),
-        );
-        if (!isApiKey(key)) return yield* unreadable();
+        const key = yield* readKey(provider, source);
         const audio = wave(samples);
         const request = HttpClientRequest.post(endpoints[provider].url).pipe(
           HttpClientRequest.bearerToken(Redacted.make(key)),
@@ -227,13 +256,9 @@ export const layer = Layer.effect(
           return yield* new CloudSpeechError({
             provider,
             reason:
-              response.status === 429
-                ? "rate-limit"
-                : [401, 402, 403].includes(response.status)
-                  ? "rejected-key"
-                  : response.status === 404 && provider === "openrouter"
-                    ? "model-unavailable"
-                    : "unavailable",
+              response.status === 404 && provider === "openrouter"
+                ? "model-unavailable"
+                : rejection(response.status),
           });
         const { text } = yield* HttpClientResponse.schemaBodyJson(
           EnvironmentSpeechTranscriptionResult,
@@ -253,6 +278,38 @@ export const layer = Layer.effect(
           }),
         ),
     );
-    return CloudSpeech.of({ configured, models, setKey, transcribe });
+    const speak = Effect.fn("CloudSpeech.speak")(
+      function* (request: EnvironmentSpeechSynthesisRequest) {
+        const provider = "elevenlabs";
+        const source = (yield* credentials).elevenlabs;
+        if (!source) return yield* new CloudSpeechError({ provider, reason: "missing-key" });
+        const key = yield* readKey(provider, source);
+        const unavailable = () => new CloudSpeechError({ provider, reason: "unavailable" });
+        const response = yield* execute(
+          HttpClientRequest.post(ELEVENLABS_SPEECH.url).pipe(
+            HttpClientRequest.setHeader("xi-api-key", key),
+            HttpClientRequest.bodyJsonUnsafe({
+              text: request.text,
+              model_id: ELEVENLABS_SPEECH.model,
+              previous_text: request.previousText,
+              next_text: request.nextText,
+            }),
+          ),
+        ).pipe(Effect.mapError(unavailable));
+        if (response.status < 200 || response.status >= 300)
+          return yield* new CloudSpeechError({ provider, reason: rejection(response.status) });
+        const pcm = yield* response.arrayBuffer.pipe(Effect.mapError(unavailable));
+        return { pcm: new Uint8Array(pcm), sampleRate: ELEVENLABS_SPEECH.sampleRate };
+      },
+      (effect) =>
+        effect.pipe(
+          Effect.timeoutOrElse({
+            duration: "30 seconds",
+            orElse: () =>
+              Effect.fail(new CloudSpeechError({ provider: "elevenlabs", reason: "unavailable" })),
+          }),
+        ),
+    );
+    return CloudSpeech.of({ configured, models, setKey, transcribe, speak });
   }),
 );

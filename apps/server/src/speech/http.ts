@@ -74,7 +74,14 @@ export const speechHttpApiLayer = HttpApiBuilder.group(
         "speak",
         Effect.fn("environment.voice.speak")(function* (args) {
           yield* guard(args.endpoint.name);
-          return yield* mapSpeechError(synthesis.speak(args.payload.text));
+          return yield* synthesis.speak(args.payload).pipe(
+            Effect.catchTags({
+              SpeechUnsupportedPlatformError: () =>
+                failEnvironmentInvalidRequest("speech_unavailable"),
+              SpeechOperationError: (error) => failEnvironmentInternal("internal_error", error),
+              ServerSettingsError: (error) => failEnvironmentInternal("internal_error", error),
+            }),
+          );
         }),
       )
       .handle(

@@ -4,8 +4,10 @@ import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import { CloudSpeechError, SPEECH_STREAM_PATH } from "@t3tools/contracts";
 import type {
+  CloudSpeechKeyProvider,
   CloudSpeechModelId,
   CloudSpeechProvider,
+  EnvironmentSpeechSynthesisRequest,
   SettingsSecretValue,
   SpeechAcceleration,
   SpeechModelUnloadTimeout,
@@ -108,7 +110,7 @@ export const requireCloudSpeechKey = (
 
 export const setCloudSpeechKey = (
   prepared: PreparedConnection,
-  provider: CloudSpeechProvider,
+  provider: CloudSpeechKeyProvider,
   key: SettingsSecretValue | null,
 ) =>
   request({
@@ -160,7 +162,10 @@ export const transcribeCloudPcm = (
 };
 
 /** WAV audio of the text in the environment's read-aloud voice. */
-export const speakEnvironmentText = (prepared: PreparedConnection, text: string) =>
+export const speakEnvironmentText = (
+  prepared: PreparedConnection,
+  payload: EnvironmentSpeechSynthesisRequest,
+) =>
   request({
     group: "voice",
     prepared,
@@ -168,8 +173,14 @@ export const speakEnvironmentText = (prepared: PreparedConnection, text: string)
     // The first request downloads the voice model on the environment machine.
     timeoutMs: INFERENCE_OR_DOWNLOAD_TIMEOUT_MS,
     path: (urls) => urls.speak(),
-    run: ({ client, headers }) => client.speak({ headers, payload: { text } }),
-  });
+    run: ({ client, headers }) => client.speak({ headers, payload }),
+  }).pipe(
+    Effect.mapError((error) =>
+      error._tag === "RemoteEnvironmentAuthFetchError" && isCloudSpeechError(error.cause)
+        ? new VoiceTranscriptionError({ code: "unavailable", message: error.cause.message })
+        : error,
+    ),
+  );
 
 export const getEnvironmentSpeechStreamUrl = (prepared: PreparedConnection) => {
   let endpoint = prepared.httpBaseUrl;

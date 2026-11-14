@@ -6,8 +6,14 @@ import * as UrlParams from "effect/http/UrlParams";
 export const layer = Layer.mergeAll(
   Layer.effect(
     Headers.CurrentRedactedNames,
-    // `expo-session` carries the `eas login` session secret on Expo API requests.
-    Effect.map(Headers.CurrentRedactedNames, (names) => [...names, "dpop", "expo-session"]),
+    // `expo-session` carries the `eas login` session secret on Expo API requests, and
+    // `xi-api-key` the ElevenLabs key.
+    Effect.map(Headers.CurrentRedactedNames, (names) => [
+      ...names,
+      "dpop",
+      "expo-session",
+      "xi-api-key",
+    ]),
   ),
   Layer.effect(
     UrlParams.CurrentRedactedNames,

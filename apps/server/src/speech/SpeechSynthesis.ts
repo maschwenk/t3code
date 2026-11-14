@@ -2,6 +2,11 @@
 import * as NodeChildProcess from "node:child_process";
 import * as NodeModule from "node:module";
 import * as NodeUtil from "node:util";
+import type {
+  CloudSpeechError,
+  EnvironmentSpeechSynthesisRequest,
+  ServerSettingsError,
+} from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Context from "effect/Context";
 import * as SecureRandom from "effect/crypto/SecureRandom";
@@ -12,6 +17,7 @@ import * as Path from "effect/Path";
 import * as Semaphore from "effect/Semaphore";
 
 import * as ServerConfig from "../config.ts";
+import * as CloudSpeech from "./CloudSpeech.ts";
 import * as SpeechModelStore from "./SpeechModelStore.ts";
 import { SpeechOperationError, SpeechUnsupportedPlatformError } from "./SpeechService.ts";
 
@@ -46,8 +52,8 @@ interface SherpaOnnx {
 }
 
 /** 16-bit mono PCM WAV, which every client can play without a decoder. */
-function encodeWave(samples: Float32Array, sampleRate: number): Uint8Array {
-  const bytes = new Uint8Array(44 + samples.length * 2);
+function waveFile(dataBytes: number, sampleRate: number) {
+  const bytes = new Uint8Array(44 + dataBytes);
   const view = new DataView(bytes.buffer);
   const tag = (at: number, value: string) => bytes.set(new TextEncoder().encode(value), at);
   tag(0, "RIFF");
@@ -62,7 +68,12 @@ function encodeWave(samples: Float32Array, sampleRate: number): Uint8Array {
   view.setUint16(32, 2, true);
   view.setUint16(34, 16, true);
   tag(36, "data");
-  view.setUint32(40, samples.length * 2, true);
+  view.setUint32(40, dataBytes, true);
+  return { bytes, view };
+}
+
+function encodeWave(samples: Float32Array, sampleRate: number): Uint8Array {
+  const { bytes, view } = waveFile(samples.length * 2, sampleRate);
   for (let index = 0; index < samples.length; index += 1) {
     const sample = Math.max(-1, Math.min(1, samples[index] ?? 0));
     view.setInt16(44 + index * 2, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
@@ -70,13 +81,25 @@ function encodeWave(samples: Float32Array, sampleRate: number): Uint8Array {
   return bytes;
 }
 
+function wrapPcm16(pcm: Uint8Array, sampleRate: number): Uint8Array {
+  const { bytes } = waveFile(pcm.byteLength, sampleRate);
+  bytes.set(pcm, 44);
+  return bytes;
+}
+
 export class SpeechSynthesis extends Context.Service<
   SpeechSynthesis,
   {
-    /** Speaks text in Kokoro's Heart voice as WAV, downloading the model on first use. */
+    /**
+     * Speaks text as WAV: with ElevenLabs when the environment has its key, otherwise in
+     * Kokoro's Heart voice, downloading that model on first use.
+     */
     readonly speak: (
-      text: string,
-    ) => Effect.Effect<Uint8Array, SpeechOperationError | SpeechUnsupportedPlatformError>;
+      request: EnvironmentSpeechSynthesisRequest,
+    ) => Effect.Effect<
+      Uint8Array,
+      SpeechOperationError | SpeechUnsupportedPlatformError | CloudSpeechError | ServerSettingsError
+    >;
   }
 >()("t3/speech/SpeechSynthesis") {}
 
@@ -85,6 +108,7 @@ const make = Effect.gen(function* () {
   const path = yield* Path.Path;
   const random = yield* SecureRandom.SecureRandom;
   const store = yield* SpeechModelStore.SpeechModelStore;
+  const cloud = yield* CloudSpeech.CloudSpeech;
   const config = yield* ServerConfig.ServerConfig;
   const platform = yield* HostProcess.Platform;
   const architecture = yield* HostProcess.Architecture;
@@ -149,26 +173,31 @@ const make = Effect.gen(function* () {
     return voice;
   });
 
+  const speakLocally = (text: string) =>
+    lock.withPermits(1)(
+      Effect.gen(function* () {
+        const loaded = yield* load();
+        const audio = yield* Effect.tryPromise({
+          // Electron's V8 memory cage rejects external buffers, so copy the samples out.
+          try: () =>
+            loaded.generateAsync({
+              text,
+              sid: HEART_SPEAKER_ID,
+              speed: 1,
+              enableExternalBuffer: false,
+            }),
+          catch: failed("synthesis"),
+        });
+        return encodeWave(audio.samples, audio.sampleRate);
+      }),
+    );
+
   return SpeechSynthesis.of({
-    speak: Effect.fn("SpeechSynthesis.speak")((text: string) =>
-      lock.withPermits(1)(
-        Effect.gen(function* () {
-          const loaded = yield* load();
-          const audio = yield* Effect.tryPromise({
-            // Electron's V8 memory cage rejects external buffers, so copy the samples out.
-            try: () =>
-              loaded.generateAsync({
-                text,
-                sid: HEART_SPEAKER_ID,
-                speed: 1,
-                enableExternalBuffer: false,
-              }),
-            catch: failed("synthesis"),
-          });
-          return encodeWave(audio.samples, audio.sampleRate);
-        }),
-      ),
-    ),
+    speak: Effect.fn("SpeechSynthesis.speak")(function* (request) {
+      if (!(yield* cloud.configured).elevenlabs) return yield* speakLocally(request.text);
+      const { pcm, sampleRate } = yield* cloud.speak(request);
+      return wrapPcm16(pcm, sampleRate);
+    }),
   });
 });
 
