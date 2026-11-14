@@ -112,6 +112,8 @@ const SETTINGS_SEARCH_TERMS = {
     "link machine",
     "fast worktree checkout",
     "clone cache",
+    "suggest next prompt",
+    "autocomplete",
   ],
   SettingsEnvironmentMaintenance: ["updates", "provider updates", "restart", "manage environments"],
   SettingsAbout: [
