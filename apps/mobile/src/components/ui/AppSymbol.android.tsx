@@ -8,6 +8,7 @@ import IconApps from "@tabler/icons-react-native/IconApps";
 import IconArchive from "@tabler/icons-react-native/IconArchive";
 import IconCalendarClock from "@tabler/icons-react-native/IconCalendarClock";
 import IconArrowBackUp from "@tabler/icons-react-native/IconArrowBackUp";
+import IconArrowBarToRight from "@tabler/icons-react-native/IconArrowBarToRight";
 import IconArrowDown from "@tabler/icons-react-native/IconArrowDown";
 import IconArrowForwardUp from "@tabler/icons-react-native/IconArrowForwardUp";
 import IconArrowLeft from "@tabler/icons-react-native/IconArrowLeft";
@@ -155,6 +156,7 @@ const ANDROID_ICON_BY_SF_SYMBOL = {
   "arrow.down": IconArrowDown,
   "arrow.down.circle": IconArrowDownCircle,
   "arrow.right.circle": IconArrowRightCircle,
+  "arrow.right.to.line": IconArrowBarToRight,
   "arrow.triangle.branch": IconGitBranch,
   "arrow.triangle.merge": IconGitMerge,
   "arrow.triangle.pull": IconGitPullRequest,

@@ -105,6 +105,7 @@ import { compactEditorInsets } from "./compactEditorInsets";
 import { ComposerCommandPopover } from "./ComposerCommandPopover";
 import { ComposerPopoverAnchor } from "./ComposerPopoverAnchor";
 import { ComposerQueuedEditAttachments } from "./ComposerQueuedEdit";
+import { usePromptSuggestion } from "./usePromptSuggestion";
 import { useComposerCommandMenu } from "./use-composer-command-menu";
 import type { ComposerEnvironmentCandidate } from "@t3tools/client-runtime/composerThreadItems";
 import { offersLinkedEnvironments } from "@t3tools/client-runtime/link-request";
@@ -222,6 +223,7 @@ export interface ThreadComposerProps {
   /** Arms a fresh session for the next message; absent where `/clear` is unavailable. */
   readonly onFreshSession?: () => void;
   readonly offersSideChat?: boolean;
+  readonly offersPromptSuggestion?: boolean;
   readonly serverConfig: T3ServerConfig | null;
   readonly queueCount: number;
   readonly activeThreadBusy: boolean;
@@ -454,7 +456,11 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
   const [previewVideo, setPreviewVideo] = useState<VideoPreviewSource | null>(null);
   const composerOwnerKey = scopedThreadKey(props.environmentId, props.selectedThread.id);
   const composerDraftKey = props.draftKey ?? composerOwnerKey;
-  const { text: draftMessage, attachments: draftAttachments } = useComposerDraft(composerDraftKey);
+  const {
+    text: draftMessage,
+    attachments: draftAttachments,
+    freshContext: freshSessionArmed,
+  } = useComposerDraft(composerDraftKey);
   const queuedEdit = props.queuedEdit ?? null;
   const hasContent =
     draftMessage.trim().length > 0 ||
@@ -594,6 +600,33 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
     voiceInput.elapsedSeconds,
   );
   const isVoiceInputPresented = voicePresentation.statusKind === "active";
+  const promptSuggestion = usePromptSuggestion(
+    props.selectedThread,
+    // Older servers decode the missing setting as false, so true also proves the method exists.
+    props.serverConfig?.settings.promptSuggestionsEnabled === true &&
+      props.offersPromptSuggestion === true &&
+      !props.isDraft &&
+      props.canOperateThread,
+  );
+  // After /clear the next message starts a fresh session that cannot see what the suggestion refers to.
+  const offeredPromptSuggestion =
+    !hasContent &&
+    !props.activeThreadBusy &&
+    !showStopAction &&
+    !showResumeAction &&
+    !isSubmissionLocked &&
+    !isVoiceInputPresented &&
+    freshSessionArmed !== true
+      ? promptSuggestion
+      : null;
+  const acceptPromptSuggestion = () => {
+    if (offeredPromptSuggestion === null) return;
+    onChangeDraftMessage(offeredPromptSuggestion);
+    composerMenu.onSelectionChange({
+      start: offeredPromptSuggestion.length,
+      end: offeredPromptSuggestion.length,
+    });
+  };
   const isExpanded = isFocused || settingsSheetPresentation.keepsComposerExpanded;
   const { layout } = useAdaptiveWorkspaceLayout();
   const floatingSidebarComposer = useAndroidFloatingTabs() && layout.usesSplitView;
@@ -1047,7 +1080,7 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
                     }
                     insertPaste();
                   }}
-                  placeholder={props.placeholder}
+                  placeholder={offeredPromptSuggestion ?? props.placeholder}
                   onFocus={handleFocus}
                   onBlur={handleBlur}
                   onSubmit={(alternate) =>
@@ -1124,6 +1157,13 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
                     icon="play"
                     disabled={!props.canOperateThread || resumingQueue}
                     onPress={() => void handleResumeQueue()}
+                  />
+                ) : offeredPromptSuggestion !== null ? (
+                  <ComposerActionButton
+                    size={usesLargeControls ? "large" : "regular"}
+                    accessibilityLabel={`Use suggestion: ${offeredPromptSuggestion}`}
+                    icon="arrow.right.to.line"
+                    onPress={acceptPromptSuggestion}
                   />
                 ) : (
                   <SendActionButton
