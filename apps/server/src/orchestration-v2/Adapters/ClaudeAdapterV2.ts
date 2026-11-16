@@ -5248,6 +5248,14 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         const subagentToolCalls = new Map<string, ActiveClaudeToolCall>();
         const pendingSubagentLaunchesByToolUseId = new Map<string, PendingClaudeSubagentLaunch>();
         const settledTurnByNativeThread = new Map<string, ActiveClaudeTurnContext>();
+        // The CLI predicts a next prompt only after a result where the model ran, and drops that
+        // prediction once its next query starts, so a prompt_suggestion answers the latest such
+        // result to arrive. A wake's result can wait in the wake buffer, so the turn that takes it
+        // is filled in when the result is handled.
+        const latestModelResultByNativeThread = new Map<
+          string,
+          { readonly message: SDKMessage; providerTurnId: OrchestrationV2ProviderTurn["id"] | null }
+        >();
         const subagentStopOutcomes = new Map<
           string,
           Deferred.Deferred<ProviderAdapter.ProviderAdapterV2SubagentOutcome>
@@ -8828,13 +8836,15 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
 
           const message = input.message;
           if (message.type === "prompt_suggestion") {
-            // Arrives after `result`; offer it only while the completed turn is still the latest.
-            // A continuation can settle from buffered frames first, so its suggestion may be a user turn's.
+            // Arrives after `result`; offer it only while the turn it answers is the latest settled
+            // one. That includes wake turns: a wake turn that settled without a model result of its
+            // own, or before handling its buffered one, does not match.
             const settled = settledTurnByNativeThread.get(liveQuery.nativeThreadId);
+            const answered = latestModelResultByNativeThread.get(liveQuery.nativeThreadId);
             const text = message.suggestion.trim();
             if (
               settled !== undefined &&
-              !isClaudeProviderContinuationTurn(settled.input) &&
+              answered?.providerTurnId === settled.providerTurnId &&
               text.length > 0 &&
               (yield* Ref.get(activeTurn)) === null
             ) {
@@ -10036,6 +10046,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             if (!isClaudeProviderContinuationTurn(context.input)) {
               yield* markAbsorbedWake(liveQuery.nativeThreadId);
             }
+            const answered = latestModelResultByNativeThread.get(context.nativeThreadId);
+            if (answered?.message === message) {
+              answered.providerTurnId = context.providerTurnId;
+            }
             const usageLimited =
               context.authenticationFailureMessage === undefined &&
               (context.rejectedRateLimitTypes.size > 0 ||
@@ -11082,6 +11096,12 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                     context.permissionMode = message.permissionMode;
                   }
                   if (message.type === "result") {
+                    if (message.num_turns > 0) {
+                      latestModelResultByNativeThread.set(context.nativeThreadId, {
+                        message,
+                        providerTurnId: null,
+                      });
+                    }
                     const ledger = claudeModelLedger(message.modelUsage);
                     const growth = claudeLedgerDelta(context.modelLedger, ledger);
                     if (growth !== undefined) resultLedgerUsage.set(message, growth);
