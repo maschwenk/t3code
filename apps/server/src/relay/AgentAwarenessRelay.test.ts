@@ -11,6 +11,7 @@ import {
   ProjectId,
   ProviderInstanceId,
   RunId,
+  RuntimeRequestId,
   ThreadId,
   TurnItemId,
 } from "@t3tools/contracts";
@@ -42,6 +43,8 @@ import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
+import * as Apns from "../push/apns.ts";
+import * as DirectPush from "../push/DirectPush.ts";
 import * as AgentAwarenessRelay from "./AgentAwarenessRelay.ts";
 
 const THREAD_ID = ThreadId.make("relay-thread");
@@ -294,8 +297,23 @@ const makeTestRelay = Effect.fnUntraced(function* (
     updatedAt: NOW,
     deletedAt: null,
   };
+  const apnsRequests: Array<Apns.ApnsAlertRequest> = [];
+  const directPush = yield* DirectPush.make.pipe(
+    Effect.provideService(ServerSecretStore.ServerSecretStore, secrets),
+    Effect.provideService(
+      Apns.ApnsSender,
+      Apns.ApnsSender.of({
+        sendAlert: (_credentials, request) =>
+          Effect.sync(() => {
+            apnsRequests.push(request);
+            return { status: 200, reason: null };
+          }),
+      }),
+    ),
+  );
   const relay = yield* AgentAwarenessRelay.make.pipe(
     Effect.provide(EnvironmentKeys.layer),
+    Effect.provideService(DirectPush.DirectPush, directPush),
     Effect.provideService(CompletionNotificationTriage.CompletionNotificationTriage, triage),
     Effect.provideService(ServerSecretStore.ServerSecretStore, secrets),
     Effect.provideService(ThreadManagementService.ThreadManagementService, threads),
@@ -318,7 +336,17 @@ const makeTestRelay = Effect.fnUntraced(function* (
     Effect.provideService(FetchHttpClient.Fetch, fetch),
     Effect.provide(NodeCrypto.layer),
   );
-  return { relay, secrets, secretReads, currentShell, shellReads, publications, catchUp };
+  return {
+    relay,
+    secrets,
+    secretReads,
+    currentShell,
+    shellReads,
+    publications,
+    catchUp,
+    directPush,
+    apnsRequests,
+  };
 });
 
 describe("AgentAwarenessRelay", () => {
@@ -900,6 +928,154 @@ describe("AgentAwarenessRelay", () => {
       Effect.scoped,
       Effect.provide(ProjectionStore.layer.pipe(Layer.provide(SqlitePersistence.layerMemory))),
     ),
+  );
+});
+
+const PHONE = {
+  deviceId: "phone-1",
+  label: "Max's iPhone",
+  platform: "ios",
+  iosMajorVersion: 26,
+  bundleId: "com.example.t3fork",
+  apsEnvironment: "production",
+  pushToken: "apns-token-1",
+  preferences: {
+    liveActivitiesEnabled: false,
+    notificationsEnabled: true,
+    notifyOnApproval: true,
+    notifyOnInput: true,
+    notifyOnCompletion: true,
+    notifyOnFailure: true,
+  },
+} as const;
+
+const storeApnsKey = (secrets: ServerSecretStore.ServerSecretStore["Service"]) =>
+  secrets.set(
+    DirectPush.DIRECT_PUSH_APNS_CREDENTIALS_SECRET,
+    new TextEncoder().encode(
+      DirectPush.encodeStoredApnsCredentials({
+        teamId: "ABCDE12345",
+        keyId: "KEY1234567",
+        privateKey: "unused by the recording sender",
+      }),
+    ),
+  );
+
+const sentAlerts = (requests: ReadonlyArray<Apns.ApnsAlertRequest>) =>
+  requests.map((request) => ({
+    topic: request.topic,
+    token: request.token,
+    environment: request.environment,
+    title: request.alert.title,
+    body: request.alert.body,
+  }));
+
+describe("direct push through the publish pipeline", () => {
+  it.effect(
+    "alerts a registered phone once when a thread needs approval, with T3 Connect unlinked",
+    () =>
+      Effect.gen(function* () {
+        const { relay, currentShell, publications, directPush, secrets, apnsRequests } =
+          yield* makeTestRelay({ linked: false });
+        yield* storeApnsKey(secrets);
+        assert.deepStrictEqual(yield* directPush.registerDevice(PHONE), { apnsConfigured: true });
+
+        yield* relay.publishThread(THREAD_ID);
+        assert.equal(apnsRequests.length, 0);
+
+        const waiting = shell({
+          pendingRuntimeRequest: {
+            id: RuntimeRequestId.make("request-1"),
+            kind: "command",
+            createdAt: DateTime.makeUnsafe(NOW),
+          },
+        });
+        yield* Ref.set(currentShell, waiting);
+        yield* relay.publishThread(THREAD_ID);
+        yield* Ref.set(currentShell, { ...waiting, title: "Renamed while waiting" });
+        yield* relay.publishThread(THREAD_ID);
+
+        assert.deepStrictEqual(sentAlerts(apnsRequests), [
+          {
+            topic: "com.example.t3fork",
+            token: "apns-token-1",
+            environment: "production",
+            title: "Thread",
+            body: "Approval: Project",
+          },
+        ]);
+        assert.equal(publications.length, 0);
+      }),
+  );
+
+  it.effect("alerts a completion only after the continuation hold", () =>
+    Effect.gen(function* () {
+      const { relay, currentShell, directPush, secrets, apnsRequests } = yield* makeTestRelay({
+        linked: false,
+      });
+      yield* storeApnsKey(secrets);
+      yield* directPush.registerDevice(PHONE);
+      yield* relay.publishThread(THREAD_ID);
+      yield* Ref.set(currentShell, shell({ status: "completed" }));
+      yield* relay.publishThread(THREAD_ID);
+      assert.equal(apnsRequests.length, 0);
+
+      yield* TestClock.adjust("5 seconds");
+      yield* relay.drain;
+      assert.deepStrictEqual(
+        sentAlerts(apnsRequests).map((alert) => alert.body),
+        ["Done: Project"],
+      );
+    }),
+  );
+
+  it.effect("stays quiet when triage finds a completion routine", () =>
+    Effect.gen(function* () {
+      const runId = RunId.make("run:routine");
+      const { relay, currentShell, directPush, secrets, apnsRequests } = yield* makeTestRelay({
+        linked: false,
+        triage: () => Effect.sleep("1 second").pipe(Effect.as(false)),
+      });
+      yield* storeApnsKey(secrets);
+      yield* directPush.registerDevice(PHONE);
+      yield* relay.publishThread(THREAD_ID);
+      yield* Ref.set(currentShell, shell({ status: "completed", latestRunId: runId }));
+      yield* relay.publishThread(THREAD_ID);
+      yield* TestClock.adjust("1 second");
+      yield* relay.drain;
+      yield* TestClock.adjust("5 seconds");
+      yield* relay.drain;
+      assert.equal(apnsRequests.length, 0);
+    }),
+  );
+
+  it.effect("sends both to the relay and to direct push devices when linked", () =>
+    Effect.gen(function* () {
+      const { relay, currentShell, publications, directPush, secrets, apnsRequests } =
+        yield* makeTestRelay();
+      yield* storeApnsKey(secrets);
+      yield* directPush.registerDevice(PHONE);
+      yield* relay.publishThread(THREAD_ID);
+      yield* Ref.set(
+        currentShell,
+        shell({
+          pendingRuntimeRequest: {
+            id: RuntimeRequestId.make("request-2"),
+            kind: "user_input",
+            createdAt: DateTime.makeUnsafe(NOW),
+          },
+        }),
+      );
+      yield* relay.publishThread(THREAD_ID);
+      assert.deepStrictEqual(
+        publications.map((publication) => publication.state?.phase),
+        ["running", "waiting_for_input"],
+      );
+      assert.deepStrictEqual(
+        sentAlerts(apnsRequests).map((alert) => alert.body),
+        ["Input: Project"],
+      );
+    }),
   );
 });
 

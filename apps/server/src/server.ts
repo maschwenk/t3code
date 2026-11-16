@@ -47,6 +47,8 @@ import * as SpeechService from "./speech/SpeechService.ts";
 import * as SpeechSynthesis from "./speech/SpeechSynthesis.ts";
 import * as CloudSpeech from "./speech/CloudSpeech.ts";
 import { speechHttpApiLayer } from "./speech/http.ts";
+import * as DirectPush from "./push/DirectPush.ts";
+import { pushHttpApiLayer } from "./push/http.ts";
 import { speechStreamRouteLayer } from "./speech/stream.ts";
 import * as PullRequestProviderRegistry from "./pullRequest/PullRequestProviderRegistry.ts";
 import * as PullRequestService from "./pullRequest/PullRequestService.ts";
@@ -644,7 +646,11 @@ const layerServerRestart = Layer.effect(
 );
 
 const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
-  AgentAwarenessRelay.layer.pipe(Layer.provideMerge(CompletionNotificationTriage.layer)),
+  AgentAwarenessRelay.layer.pipe(
+    Layer.provideMerge(CompletionNotificationTriage.layer),
+    // Merged out so the push routes register devices on the instance the relay publishes through.
+    Layer.provideMerge(DirectPush.layer),
+  ),
   HeldHooksWaker.layer,
   layerThreadSettlementWorker,
   layerIdleCompactionWorker,
@@ -790,6 +796,7 @@ const layerMakeRoutes = Layer.mergeAll(
       Layer.provide(PullRequestHttp.layer),
       Layer.provide(ProjectHttp.layer),
       Layer.provide(speechHttpApiLayer),
+      Layer.provide(pushHttpApiLayer),
       Layer.provide(ServerHttp.layerServerEnvironmentHttpApi),
       Layer.provide(WebhookRoute.layer.pipe(Layer.provide(RelayDeliveryProof.layer))),
       Layer.provide(AuthHttp.layerAuthenticatedAuth),
