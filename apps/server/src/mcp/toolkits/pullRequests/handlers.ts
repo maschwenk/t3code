@@ -290,14 +290,25 @@ const make = Effect.gen(function* () {
         ...(watching ? { link: { url: target.url, source: "agent" as const } } : {}),
       })
       .pipe(Effect.catchCause(dispatchFailure(PullRequestWatchFailedError)));
-    const after = yield* requireThread(PullRequestWatchFailedError, thread.id);
+    const after = watchedLink(yield* requireThread(PullRequestWatchFailedError, thread.id));
+    const snapshot = watching ? after?.snapshot : null;
     return {
       host: target.host,
       repository: target.repository,
       number: target.number,
       url: target.url,
-      watching: watchedLink(after)?.watch !== undefined,
+      watching: after?.watch !== undefined,
       wasWatching: before?.watch !== undefined,
+      ...(snapshot != null && {
+        current: {
+          syncedAt: snapshot.syncedAt,
+          state: snapshot.state,
+          isDraft: snapshot.isDraft,
+          reviewDecision: snapshot.reviewDecision ?? null,
+          checks: snapshot.checksState ?? null,
+          mergeability: snapshot.mergeability ?? null,
+        },
+      }),
     };
   });
 
