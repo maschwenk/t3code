@@ -333,4 +333,15 @@ export function extendReplacementRangeForTrailingSpace(
   return text[rangeEnd] === " " ? rangeEnd + 1 : rangeEnd;
 }
 
+/**
+ * The rest of a predicted prompt once the draft has started it, ignoring case, or null when the
+ * draft is empty, finished, or has gone a different way.
+ */
+export function promptSuggestionRemainder(draft: string, suggestion: string): string | null {
+  if (draft.length === 0 || draft.length >= suggestion.length) return null;
+  return suggestion.slice(0, draft.length).toLowerCase() === draft.toLowerCase()
+    ? suggestion.slice(draft.length)
+    : null;
+}
+
 export { replaceTextRange } from "@t3tools/shared/composerTrigger";
