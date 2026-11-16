@@ -3492,6 +3492,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                         </span>
                       ) : undefined
                     }
+                    // The slash and mention menu owns Tab while it is open.
+                    inlineSuggestion={composerMenuOpen ? null : offeredPromptSuggestion}
                     disabled={
                       projectSelectionRequired ||
                       isChoiceOnlyPendingQuestion ||

@@ -11,7 +11,7 @@ import type { ServerProviderSkill } from "@t3tools/contracts";
 import type { Editor } from "@tiptap/core";
 import { redoDepth, undoDepth } from "@tiptap/pm/history";
 import { NodeSelection } from "@tiptap/pm/state";
-import { createElement, createRef, useEffect, useState } from "react";
+import { createElement, createRef, type RefObject, useEffect, useState } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { userEvent } from "vite-plus/test/browser";
 
@@ -36,16 +36,20 @@ function Composer({
   richTextEnabled,
   skills,
   onChange,
+  inlineSuggestion,
+  editorRef,
 }: {
   value: string;
   richTextEnabled: boolean;
   skills: ReadonlyArray<ServerProviderSkill>;
   onChange?: ComposerPromptEditorProps["onChange"] | undefined;
+  inlineSuggestion?: string | null;
+  editorRef?: RefObject<ComposerPromptEditorHandle | null>;
 }) {
   const [prompt, setPrompt] = useState({ value, cursor: value.length });
   return (
     <ComposerPromptEditor
-      editorRef={createRef<ComposerPromptEditorHandle>()}
+      editorRef={editorRef ?? createRef<ComposerPromptEditorHandle>()}
       value={prompt.value}
       cursor={prompt.cursor}
       richTextEnabled={richTextEnabled}
@@ -53,6 +57,7 @@ function Composer({
       skills={skills}
       disabled={false}
       placeholder=""
+      inlineSuggestion={inlineSuggestion}
       onChange={(...args) => {
         setPrompt({ value: args[0], cursor: args[1] });
         onChange?.(...args);
@@ -789,5 +794,48 @@ describe("an Arabic line", () => {
     expect(editor.view.coordsAtPos(editor.state.selection.head).left).toBeGreaterThan(
       box.left + box.width / 2,
     );
+  });
+});
+
+describe("a predicted next prompt", () => {
+  it("draws the rest after a draft that starts it, and only at the end of the draft", async () => {
+    const editorRef = createRef<ComposerPromptEditorHandle>();
+    const props = { value: "", richTextEnabled: true, skills: [], editorRef };
+    await using screen = await render(<Composer {...props} inlineSuggestion="run the tests" />);
+    const editor = editorIn(screen.container);
+    const ghost = () =>
+      screen.container.querySelector('[data-testid="composer-suggestion-ghost"]')?.textContent ??
+      null;
+    // An empty composer shows the suggestion as its placeholder instead.
+    expect(ghost()).toBeNull();
+
+    {
+      using _timers = fakeTimers();
+      await act(async () => {
+        editor.commands.focus("end");
+      });
+      await vi.waitFor(() => expect(document.activeElement).toBe(editor.view.dom));
+      vi.runOnlyPendingTimers();
+    }
+    await userEvent.keyboard("Run th");
+    await vi.waitFor(() => expect(ghost()).toBe("e tests"));
+    expect(editorRef.current?.readSuggestionGhost()).toBe("e tests");
+    expect(serializeEditorDoc(editor.state.doc).value).toBe("Run th");
+
+    await userEvent.keyboard("{ArrowLeft}");
+    await vi.waitFor(() => expect(ghost()).toBeNull());
+    expect(editorRef.current?.readSuggestionGhost()).toBeNull();
+    await userEvent.keyboard("{ArrowRight}");
+    await vi.waitFor(() => expect(ghost()).toBe("e tests"));
+
+    await userEvent.keyboard("x");
+    await vi.waitFor(() => expect(ghost()).toBeNull());
+    await userEvent.keyboard("{Backspace}");
+    await vi.waitFor(() => expect(ghost()).toBe("e tests"));
+
+    // Escape dismisses through the parent, which stops passing the suggestion.
+    await screen.rerender(<Composer {...props} inlineSuggestion={null} />);
+    expect(ghost()).toBeNull();
+    expect(editorRef.current?.readSuggestionGhost()).toBeNull();
   });
 });

@@ -56,6 +56,7 @@ import {
   collapseExpandedComposerCursor,
   expandCollapsedComposerCursor,
   pastedPathQueryLength,
+  promptSuggestionRemainder,
 } from "~/composer-logic";
 import { useStableCallback } from "~/hooks/useStableCallback";
 import { caretLineDirection, ComposerTextDirectionExtension } from "~/composer-text-direction";
@@ -144,6 +145,8 @@ export interface ComposerPromptEditorHandle {
     contextIds: string[];
   };
   isCaretOnVisualEdge: (edge: "start" | "end") => boolean;
+  /** The rest of the predicted prompt drawn after the caret, or null when none shows. */
+  readSuggestionGhost: () => string | null;
 }
 
 export interface ComposerPromptEditorProps {
@@ -164,6 +167,8 @@ export interface ComposerPromptEditorProps {
   placeholder: string;
   /** Rendered after the placeholder text, such as a key hint. */
   placeholderSuffix?: ReactNode;
+  /** Predicted prompt whose rest is drawn after the caret once the draft starts it. */
+  inlineSuggestion?: string | null | undefined;
   ariaLabel?: string | undefined;
   suggestionListId?: string | undefined;
   activeSuggestionId?: string | undefined;
@@ -685,6 +690,84 @@ function chipSelectionDecorations({ doc, selection }: EditorState): DecorationSe
   return DecorationSet.create(doc, decorations);
 }
 
+const SuggestionGhostPluginKey = new PluginKey<string | null>("composer-suggestion-ghost");
+
+/**
+ * Draws the rest of the predicted prompt after the caret once the draft starts it. The
+ * extension list is shared, so each editor sets its suggestion with a transaction meta.
+ */
+const ComposerSuggestionGhostExtension = Extension.create({
+  name: "composer-suggestion-ghost",
+  addProseMirrorPlugins() {
+    // Decorations at the caret can break an IME composition, so none are drawn during one.
+    let view: EditorView | null = null;
+    return [
+      new Plugin<string | null>({
+        key: SuggestionGhostPluginKey,
+        state: {
+          init: () => null,
+          apply: (tr, suggestion) => {
+            const next: unknown = tr.getMeta(SuggestionGhostPluginKey);
+            return next === undefined ? suggestion : (next as string | null);
+          },
+        },
+        view: (editorView) => {
+          view = editorView;
+          return {
+            destroy: () => {
+              view = null;
+            },
+          };
+        },
+        props: {
+          decorations: (state) => {
+            const ghost = view?.composing ? null : suggestionGhost(state);
+            if (ghost === null) return DecorationSet.empty;
+            return DecorationSet.create(state.doc, [
+              Decoration.widget(
+                ghost.pos,
+                () => {
+                  const span = document.createElement("span");
+                  span.className = "pointer-events-none select-none text-placeholder";
+                  span.dataset.testid = "composer-suggestion-ghost";
+                  span.setAttribute("aria-hidden", "true");
+                  span.textContent = ghost.text;
+                  return span;
+                },
+                { side: 1, ignoreSelection: true, key: `ghost:${ghost.text}` },
+              ),
+            ]);
+          },
+        },
+      }),
+    ];
+  },
+});
+
+/** The suggestion's remainder and where it draws: a single unformatted line with the caret at its end. */
+function suggestionGhost(state: EditorState): { pos: number; text: string } | null {
+  const suggestion = SuggestionGhostPluginKey.getState(state);
+  const { doc, selection } = state;
+  const line = doc.firstChild;
+  if (
+    !suggestion ||
+    !selection.empty ||
+    doc.childCount !== 1 ||
+    line?.type.name !== "paragraph" ||
+    line.childCount === 0
+  ) {
+    return null;
+  }
+  let plain = true;
+  line.forEach((child) => {
+    if (!child.isText || child.marks.length > 0) plain = false;
+  });
+  const end = 1 + line.content.size;
+  if (!plain || selection.head !== end) return null;
+  const text = promptSuggestionRemainder(line.textContent, suggestion);
+  return text === null ? null : { pos: end, text };
+}
+
 type TiptapEditor = NonNullable<ReturnType<typeof useEditor>>;
 
 function replaceSkillChips(
@@ -775,6 +858,7 @@ function createComposerExtensions(richText: boolean) {
     ComposerCitationExtension,
     ComposerContextReferenceExtension,
     ComposerChipSelectionExtension,
+    ComposerSuggestionGhostExtension,
     ...(richText
       ? [
           ComposerMarkdownSourceExtension,
@@ -880,6 +964,7 @@ function ComposerPromptEditorTiptapInner(
     className,
     placeholderClassName,
     placeholderSuffix,
+    inlineSuggestion = null,
     onChange,
     onVisibleSelectionChange,
     onCommandKeyDown,
@@ -1566,6 +1651,16 @@ function ComposerPromptEditorTiptapInner(
     value,
   ]);
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- hands the predicted prompt to the ghost text plugin, whose state lives in the editor
+  useEffect(() => {
+    if (!editor || SuggestionGhostPluginKey.getState(editor.state) === inlineSuggestion) return;
+    editor.view.dispatch(
+      editor.state.tr
+        .setMeta(SuggestionGhostPluginKey, inlineSuggestion)
+        .setMeta("addToHistory", false),
+    );
+  }, [editor, inlineSuggestion]);
+
   // Reconcile loaded or switched provider skills without rebuilding citation node views.
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- replaces skill chip nodes in the Tiptap document when the provider skill list loads or changes
   useEffect(() => {
@@ -1696,6 +1791,10 @@ function ComposerPromptEditorTiptapInner(
         return edge === "start"
           ? caretRect.top - edgeRect.top < threshold
           : edgeRect.bottom - caretRect.bottom < threshold;
+      },
+      readSuggestionGhost: () => {
+        if (!editor || editor.view.composing) return null;
+        return suggestionGhost(editor.state)?.text ?? null;
       },
     }),
     [editor, focusAt, literalText, readSnapshot],

@@ -82,7 +82,10 @@ export function composerCommandKeyHandler(input: {
     dispatchMode: ComposerDispatchMode,
     submissionIntent: ComposerSubmissionIntent,
   ) => void;
-  /** Predicted next prompt that Tab fills into an empty composer; Escape dismisses it. */
+  /**
+   * Predicted next prompt. Tab fills it into an empty composer or finishes a draft that starts it;
+   * Escape dismisses it.
+   */
   readonly promptSuggestion: string | null;
   readonly dismissPromptSuggestion: () => void;
 }) {
@@ -215,9 +218,16 @@ export function composerCommandKeyHandler(input: {
     const { trigger } = resolveActiveComposerTrigger();
     const menuIsActive =
       !isLiteralPendingAnswer && (composerMenuOpenRef.current || trigger !== null);
+    // What Tab would add: the whole suggestion in an empty composer, or the ghost text after a draft that starts it.
+    const readSuggestionToFill = () =>
+      promptSuggestion === null
+        ? null
+        : promptRef.current.length === 0
+          ? promptSuggestion
+          : (composerEditorRef.current?.readSuggestionGhost() ?? null);
     if (key === "Escape") {
       if (event.isComposing || event.keyCode === 229) return false;
-      if (!menuIsActive && promptSuggestion !== null && promptRef.current.length === 0) {
+      if (!menuIsActive && readSuggestionToFill() !== null) {
         dismissPromptSuggestion();
         return true;
       }
@@ -242,10 +252,8 @@ export function composerCommandKeyHandler(input: {
         return true;
       }
     }
-    if (
+    const suggestionToFill =
       key === "Tab" &&
-      promptSuggestion !== null &&
-      promptRef.current.length === 0 &&
       !menuIsActive &&
       !event.shiftKey &&
       !event.altKey &&
@@ -253,9 +261,13 @@ export function composerCommandKeyHandler(input: {
       !event.ctrlKey &&
       !event.isComposing &&
       event.keyCode !== 229
-    ) {
+        ? readSuggestionToFill()
+        : null;
+    if (suggestionToFill !== null) {
       // The typing guard must see this draft, so an approval that lands next is not answered with it.
-      return applyPromptReplacement(0, 0, promptSuggestion);
+      // The ghost only draws with the caret at the end of the draft, so the rest goes there.
+      const end = promptRef.current.length;
+      return applyPromptReplacement(end, end, suggestionToFill);
     }
     if ((key === "ArrowUp" || key === "ArrowDown") && submissionIntent === null) {
       return navigatePromptHistory(key === "ArrowUp" ? "backward" : "forward", event);
