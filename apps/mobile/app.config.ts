@@ -482,6 +482,8 @@ const config: ExpoConfig = {
       process.env.T3CODE_FEATURE_SECRETS?.trim().toLowerCase() ?? "",
     ),
     iosPersonalTeamBuild: isIosPersonalTeamBuild,
+    // T3's relay can't push to another team's bundle, so each computer sends alerts itself.
+    directPush: ownTeamId !== undefined,
     relay: {
       url: repoEnv.T3CODE_RELAY_URL ?? null,
     },

@@ -31,6 +31,10 @@
       "types": "./src/imageAttachmentSize.ts",
       "default": "./src/imageAttachmentSize.ts"
     },
+    "./direct-push": {
+      "types": "./src/directPush.ts",
+      "default": "./src/directPush.ts"
+    },
     "./handoff": {
       "types": "./src/handoff.ts",
       "default": "./src/handoff.ts"

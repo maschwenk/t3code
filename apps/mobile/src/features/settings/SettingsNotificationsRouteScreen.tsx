@@ -48,6 +48,8 @@ import { SettingsRow } from "./components/SettingsRow";
 import { SettingsSection } from "./components/SettingsSection";
 import { SettingsSwitchRow } from "./components/SettingsSwitchRow";
 import { SettingsScreen } from "./components/SettingsScreen";
+import { isDirectPushBuild } from "../agent-awareness/directPushRegistration";
+import { DirectPushNotificationsScreen } from "./DirectPushNotificationsScreen";
 import { resolveAgentAwarenessPlatformPresentation } from "./SettingsRouteScreen.logic";
 
 /**
@@ -109,6 +111,7 @@ function useDeviceRegistered(): boolean {
 }
 
 export function SettingsNotificationsRouteScreen() {
+  if (isDirectPushBuild()) return <DirectPushNotificationsScreen />;
   if (!hasCloudPublicConfig()) {
     return (
       <SettingsScreen title="Notifications">
