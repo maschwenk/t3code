@@ -58,6 +58,7 @@ query PullRequestCore(
   $number: Int!
   $headRef: String!
   $required: Boolean!
+  $mergeQueue: Boolean!
   $requestedReviewers: Int!
 ) {
   repository(owner: $owner, name: $name) {
@@ -159,6 +160,20 @@ query PullRequestCore(
                   endCursor
                 }
               }
+            }
+          }
+        }
+      }
+      # The merge queue's latest removal, so a watch can tell the agent one that did not merge.
+      # Gated like isRequired: an Enterprise server without merge queues would fail the read.
+      timelineItems(last: 1, itemTypes: [REMOVED_FROM_MERGE_QUEUE_EVENT])
+        @include(if: $mergeQueue) {
+        nodes {
+          ... on RemovedFromMergeQueueEvent {
+            createdAt
+            reason
+            actor {
+              login
             }
           }
         }

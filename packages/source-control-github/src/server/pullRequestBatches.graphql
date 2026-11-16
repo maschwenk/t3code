@@ -85,12 +85,22 @@ query PullRequestStackMembership($owner: String!, $name: String!, $number: Int!)
 # edit moves `updatedAt`, so an edit to an old comment on a long pull request is still in the page.
 # Reviews have no such order: an edit to a review older than the last hundred waits for the
 # watch's periodic full read, as do edits to comments inside review threads.
-query PullRequestWatchFingerprint($owner: String!, $name: String!, $number: Int!) {
+# A merge queue can drop a pull request without touching its head, checks or comments, so the
+# count of queue removals is in the fingerprint too (github.com only, like isRequired).
+query PullRequestWatchFingerprint(
+  $owner: String!
+  $name: String!
+  $number: Int!
+  $mergeQueue: Boolean!
+) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
       state
       mergeable
       headRefOid
+      timelineItems(itemTypes: [REMOVED_FROM_MERGE_QUEUE_EVENT]) @include(if: $mergeQueue) {
+        filteredCount
+      }
       comments(first: 100, orderBy: { field: UPDATED_AT, direction: DESC }) {
         totalCount
         nodes {

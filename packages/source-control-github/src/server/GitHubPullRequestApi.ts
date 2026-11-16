@@ -1461,6 +1461,7 @@ export const make = Effect.gen(function* () {
         number: input.number,
         headRef: `refs/pull/${input.number}/head`,
         required: asksRequired(input.host),
+        mergeQueue: asksRequired(input.host),
         requestedReviewers,
       });
     return SourceControlRateLimit.Interactive.pipe(
@@ -1744,7 +1745,8 @@ export const make = Effect.gen(function* () {
     (input) => {
       const lookup = pullRequestLookup(input);
       if (lookup === null) return Effect.succeed(null);
-      return GraphQLResolver.request(lookup, watchFingerprintResolver).pipe(
+      const variables = { ...lookup, mergeQueue: asksRequired(input.host) };
+      return GraphQLResolver.request(variables, watchFingerprintResolver).pipe(
         Effect.map((result) => {
           const pullRequest = result.repository?.pullRequest;
           return pullRequest == null ? null : toPullRequestWatchFingerprint(pullRequest);

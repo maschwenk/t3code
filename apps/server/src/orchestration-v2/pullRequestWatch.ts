@@ -63,7 +63,8 @@ export type PullRequestWatchChange =
   | { readonly kind: "checks-passed"; readonly count: number; readonly required: boolean }
   | { readonly kind: "remarks"; readonly remarks: ReadonlyArray<PullRequestComment> }
   | { readonly kind: "no-checks"; readonly minutes: number }
-  | { readonly kind: "conflicting" };
+  | { readonly kind: "conflicting" }
+  | { readonly kind: "left-merge-queue"; readonly reason: string | null };
 
 export interface PullRequestWatchReport {
   readonly changes: ReadonlyArray<PullRequestWatchChange>;
@@ -79,7 +80,13 @@ export function evaluatePullRequestWatch(
   watch: ThreadPullRequestWatch,
   detail: Pick<
     PullRequestDetail,
-    "capabilities" | "headSha" | "checks" | "mergeability" | "viewer" | "author"
+    | "capabilities"
+    | "headSha"
+    | "checks"
+    | "mergeability"
+    | "viewer"
+    | "author"
+    | "mergeQueueRemoval"
   >,
   remarks: ReadonlyArray<PullRequestComment> | null,
   now: number,
@@ -185,6 +192,16 @@ export function evaluatePullRequestWatch(
   const conflicting =
     detail.mergeability === "unknown" ? toldConflict : detail.mergeability === "conflicting";
 
+  // The queue can take a pull request out and nothing else on it changes, so the removal itself
+  // is the news. One from before the watch, or one the agent made itself, is not.
+  const removal = detail.mergeQueueRemoval ?? null;
+  const removedAfter = Date.parse(watch.mergeQueueRemovedAt ?? watch.startedAt);
+  const newRemoval = removal !== null && Date.parse(removal.at) > removedAfter ? removal : null;
+  if (newRemoval !== null && newRemoval.by?.toLowerCase() !== own) {
+    changes.push({ kind: "left-merge-queue", reason: newRemoval.reason });
+  }
+  const mergeQueueRemovedAt = newRemoval?.at ?? watch.mergeQueueRemovedAt;
+
   const commentsOnly = changes.length > 0 && changes.every((change) => change.kind === "remarks");
   const progress = headMoved || (changes.length > 0 && !commentsOnly);
   const wakes = (progress ? 0 : watch.wakes) + (commentsOnly ? 1 : 0);
@@ -202,6 +219,7 @@ export function evaluatePullRequestWatch(
       conflicting,
       wakes,
       checksAwaitedSince,
+      ...(mergeQueueRemovedAt === undefined ? {} : { mergeQueueRemovedAt }),
     },
     exhausted: commentsOnly && wakes >= PULL_REQUEST_WATCH_WAKE_LIMIT,
   };
@@ -259,6 +277,10 @@ function changeLines(
       ];
     case "conflicting":
       return [`- The branch now conflicts with ${context.baseBranch}.`];
+    case "left-merge-queue":
+      return [
+        `- The merge queue took it out without merging${change.reason === null ? "" : `: ${change.reason.replaceAll("_", " ")}`}.`,
+      ];
   }
 }
 
@@ -268,6 +290,7 @@ const SUMMARY: Record<PullRequestWatchChange["kind"], string> = {
   remarks: "new comments",
   "no-checks": "no checks reported",
   conflicting: "merge conflict",
+  "left-merge-queue": "left the merge queue",
 };
 
 export interface PullRequestStanding extends Pick<
@@ -338,7 +361,10 @@ export function pullRequestWatchMessage(input: {
       : "Look into each item and act on it as your task requires. This PR stays linked and watched, so do not link, watch, or list it again. End your turn when you are done, and T3 Code wakes you on the next change. When you hand the work back to the user, call unwatch_pull_request first so the thread returns to their inbox.",
   ].join("\n");
   const failed = changes.some(
-    (change) => change.kind === "checks-failed" || change.kind === "conflicting",
+    (change) =>
+      change.kind === "checks-failed" ||
+      change.kind === "conflicting" ||
+      change.kind === "left-merge-queue",
   );
   const summary = changes.map((change) => SUMMARY[change.kind]);
   if (exhausted) summary.push("stopped watching");

@@ -595,6 +595,16 @@ export const PullRequestReportStateInput = Schema.Struct({
 });
 export type PullRequestReportStateInput = typeof PullRequestReportStateInput.Type;
 
+/** A merge queue taking a pull request out without merging it. */
+export const PullRequestMergeQueueRemoval = Schema.Struct({
+  at: IsoDateTime,
+  /** The host's reason, such as GitHub's `merge_conflict`; null when it gives none. */
+  reason: Schema.NullOr(TrimmedNonEmptyString),
+  /** Who took it out, usually the queue's own bot; null when the host does not say. */
+  by: Schema.NullOr(TrimmedNonEmptyString),
+});
+export type PullRequestMergeQueueRemoval = typeof PullRequestMergeQueueRemoval.Type;
+
 export const PullRequestDetail = Schema.Struct({
   provider: SourceControlProviderKind,
   capabilities: PullRequestCapabilities,
@@ -637,6 +647,11 @@ export const PullRequestDetail = Schema.Struct({
   autoMergeMethod: Schema.optional(PullRequestMergeMethod),
   workflowApprovalsRequired: Schema.optional(NonNegativeInt),
   maintainerCanModify: Schema.optional(Schema.Boolean),
+  /**
+   * The merge queue's latest removal, when it did not merge the pull request. Null when the last
+   * removal merged it or there was none; absent when the host does not report merge queues.
+   */
+  mergeQueueRemoval: Schema.optional(Schema.NullOr(PullRequestMergeQueueRemoval)),
 });
 export type PullRequestDetail = typeof PullRequestDetail.Type;
 
