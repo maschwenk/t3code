@@ -18,6 +18,7 @@ import type {
   PullRequestLabel,
   PullRequestMergeCapabilities,
   PullRequestMergeMethod,
+  PullRequestMergeQueueRemoval,
   PullRequestOmittedFileStat,
   PullRequestMergeability,
   PullRequestReaction,
@@ -1010,6 +1011,9 @@ export function toPullRequestWatchFingerprint(
       pr.headRefOid,
       stateCounts(contexts?.checkRunCountsByState ?? null),
       stateCounts(contexts?.statusContextCountsByState ?? null),
+      ...(pr.timelineItems === undefined
+        ? []
+        : [`queue-removals:${pr.timelineItems.filteredCount}`]),
     ].join(" "),
     remarks: [
       pr.comments.totalCount,
@@ -1028,6 +1032,8 @@ export interface GitHubPullRequestCore extends GitHubPullRequestDetail {
   readonly viewerAccess: GitHubViewerAccess & GitHubRepositoryAccess;
   readonly comparison: GitHubBaseComparison | null;
   readonly checksTruncated: boolean;
+  /** Absent when the read did not ask, as on Enterprise servers. */
+  readonly mergeQueueRemoval?: PullRequestMergeQueueRemoval | null;
 }
 
 type CoreRequestedReviewer = NonNullable<
@@ -1035,6 +1041,28 @@ type CoreRequestedReviewer = NonNullable<
     NonNullable<NonNullable<PullRequestCore.Result["repository"]>["pullRequest"]>["reviewRequests"]
   >["nodes"]
 >[number];
+
+type CoreTimeline = NonNullable<
+  NonNullable<PullRequestCore.Result["repository"]>["pullRequest"]
+>["timelineItems"];
+
+/** GitHub's queue also logs a removal when it merges; only one that did not merge is news. */
+function toMergeQueueRemoval(
+  timeline: CoreTimeline,
+): Pick<GitHubPullRequestCore, "mergeQueueRemoval"> {
+  if (timeline === undefined) return {};
+  const event = nodesOf(timeline).findLast(
+    (node) => node.__typename === "RemovedFromMergeQueueEvent",
+  );
+  if (event === undefined || event.__typename !== "RemovedFromMergeQueueEvent") {
+    return { mergeQueueRemoval: null };
+  }
+  const reason = trimmed(event.reason);
+  if (reason?.toLowerCase() === "merged") return { mergeQueueRemoval: null };
+  return {
+    mergeQueueRemoval: { at: event.createdAt, reason, by: trimmed(event.actor?.login) },
+  };
+}
 
 export function toPullRequestCore(result: PullRequestCore.Result): GitHubPullRequestCore | null {
   const repository = result.repository;
@@ -1098,6 +1126,7 @@ export function toPullRequestCore(result: PullRequestCore.Result): GitHubPullReq
             viewerCanUpdate: pr.viewerCanUpdateBranch,
           },
     checksTruncated: contexts?.pageInfo.hasNextPage === true,
+    ...toMergeQueueRemoval(pr.timelineItems),
   };
 }
 

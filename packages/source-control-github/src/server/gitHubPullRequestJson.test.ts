@@ -434,6 +434,48 @@ describe("pull request detail decoding", () => {
   ) => expectSuccess(decodePullRequestCoreJson(coreJson(rollup, pullRequest)));
 
   it.each([
+    ["not asked for, as on Enterprise", {}, undefined],
+    ["never removed", { timelineItems: { nodes: [] } }, null],
+    [
+      "removed by the queue",
+      {
+        timelineItems: {
+          nodes: [
+            {
+              __typename: "RemovedFromMergeQueueEvent",
+              createdAt: "2026-07-05T00:00:00Z",
+              reason: "merge_conflict",
+              actor: { __typename: "Bot", login: "github-merge-queue" },
+            },
+          ],
+        },
+      },
+      { at: "2026-07-05T00:00:00Z", reason: "merge_conflict", by: "github-merge-queue" },
+    ],
+    [
+      "merged by the queue",
+      {
+        timelineItems: {
+          nodes: [
+            {
+              __typename: "RemovedFromMergeQueueEvent",
+              createdAt: "2026-07-05T00:00:00Z",
+              reason: "merged",
+              actor: { __typename: "Bot", login: "github-merge-queue" },
+            },
+          ],
+        },
+      },
+      null,
+    ],
+  ])(
+    "reads the merge queue's latest removal that did not merge: %s",
+    (_case, pullRequest, removal) => {
+      expect(detailOf([], pullRequest).mergeQueueRemoval).toEqual(removal);
+    },
+  );
+
+  it.each([
     [{}, true],
     [{ viewerDidAuthor: false }, false],
     [{ isCrossRepository: false }, false],
@@ -1818,5 +1860,24 @@ describe("pull request watch fingerprints", () => {
     expect(summaryEdited.remarks).not.toBe(before.remarks);
     expect(summaryEdited.status).toBe(before.status);
     expect(replied.remarks).not.toBe(before.remarks);
+  });
+
+  it("moves status when the merge queue drops the pull request, and only when asked", () => {
+    const pullRequest = (removals?: number) => ({
+      state: "OPEN",
+      mergeable: "MERGEABLE",
+      headRefOid: "abc123",
+      comments: { totalCount: 0, nodes: [] },
+      reviews: { totalCount: 0, nodes: [] },
+      reviewThreads: { totalCount: 0 },
+      commits: { nodes: [] },
+      ...(removals === undefined ? {} : { timelineItems: { filteredCount: removals } }),
+    });
+    const status = (removals?: number) =>
+      toPullRequestWatchFingerprint(decodeWatched(pullRequest(removals))).status;
+
+    expect(status(1)).not.toBe(status(0));
+    expect(status(0)).not.toBe(status());
+    expect(status()).not.toContain("queue-removals");
   });
 });

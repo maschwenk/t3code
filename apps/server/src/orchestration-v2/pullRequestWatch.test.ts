@@ -518,6 +518,40 @@ describe("evaluatePullRequestWatch", () => {
     );
   });
 
+  it("tells the agent once when the merge queue takes it out, not for older or its own removals", () => {
+    const removed = (at: string, by = "github-merge-queue"): Partial<Detail> => ({
+      mergeQueueRemoval: { at, reason: "merge_conflict", by },
+    });
+    const first = evaluatePullRequestWatch(
+      watch(),
+      detail(removed("2026-10-02T12:05:00Z")),
+      noRemarks,
+    );
+    assert.deepEqual(first.changes, [{ kind: "left-merge-queue", reason: "merge_conflict" }]);
+    const wake = pullRequestWatchMessage({
+      number: 278,
+      url: "https://github.com/o/r/pull/278",
+      headSha: "d2bcd96b8e",
+      report: first,
+      standing: standing(),
+    });
+    assert.include(wake.text, "- The merge queue took it out without merging: merge conflict.");
+    assert.equal(wake.notification.outcome, "failed");
+    assert.equal(wake.notification.summary, "#278: left the merge queue");
+
+    const sameRemoval = detail(removed("2026-10-02T12:05:00Z"));
+    assert.deepEqual(evaluatePullRequestWatch(first.next, sameRemoval, noRemarks).changes, []);
+    const requeuedAndRemoved = detail(removed("2026-10-02T12:30:00Z"));
+    assert.deepEqual(evaluatePullRequestWatch(first.next, requeuedAndRemoved, noRemarks).changes, [
+      { kind: "left-merge-queue", reason: "merge_conflict" },
+    ]);
+
+    const beforeWatch = detail(removed("2026-10-02T11:55:00Z"));
+    assert.deepEqual(evaluatePullRequestWatch(watch(), beforeWatch, noRemarks).changes, []);
+    const byAgent = detail(removed("2026-10-02T12:05:00Z", "Agent-User"));
+    assert.deepEqual(evaluatePullRequestWatch(watch(), byAgent, noRemarks).changes, []);
+  });
+
   it("does not spend the comment wake limit on check results", () => {
     const tired = watch({ headSha: "aaaaaaaaaa", wakes: PULL_REQUEST_WATCH_WAKE_LIMIT - 1 });
     const result = evaluatePullRequestWatch(
