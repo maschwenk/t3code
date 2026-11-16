@@ -176,6 +176,7 @@ export function decideGuestShareCommand(input: {
             settledAt: null,
             settlementSource: null,
             unsettledAt: now,
+            unsettleCause: "guest",
             updatedAt: now,
           })
         : withShare(guestShare);

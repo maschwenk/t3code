@@ -15,6 +15,7 @@ import {
   RunAttemptId,
   RunId,
   RuntimeRequestId,
+  ScheduledTaskId,
   ThreadId,
   TurnItemId,
 } from "@t3tools/contracts";
@@ -1616,6 +1617,113 @@ it.effect("records what settled a thread until it is unsettled", () =>
       settlementSource: "auto_pull_request_closed",
     });
     assert.equal(yield* settlementSource(automatic), "auto_pull_request_closed");
+  }).pipe(Effect.provide(layerTest)),
+);
+
+// The settle audit counts a settle someone undid as wrong, and one a schedule or wake reopened as
+// fine, so each way back records who did it.
+it.effect("records what brought a settled thread back", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const settled = Effect.fn(function* (name: string) {
+      const threadId = ThreadId.make(`thread:unsettle-cause-${name}`);
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make(`create-unsettle-cause-${name}`),
+        threadId,
+        projectId: ProjectId.make("project:unsettle-cause"),
+        title: name,
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdBy: "user",
+        creationSource: "web",
+      });
+      yield* orchestrator.dispatch({
+        type: "thread.auto-settle",
+        commandId: CommandId.make(`settle-unsettle-cause-${name}`),
+        threadId,
+        snapshotAt: (yield* projections.getThread(threadId)).updatedAt,
+        settlementSource: "auto_pull_request_merged",
+      });
+      return threadId;
+    });
+    const cause = Effect.fn(function* (threadId: ThreadId) {
+      return (yield* projections.getThread(threadId)).unsettleCause ?? null;
+    });
+    const message = (
+      name: string,
+      extra: Partial<{
+        createdBy: "user" | "agent";
+        scheduledTaskId: ScheduledTaskId;
+        notification: { source: { kind: "monitor" }; outcome: "completed"; summary: string };
+      }>,
+    ) =>
+      Effect.gen(function* () {
+        const threadId = yield* settled(name);
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make(`message-unsettle-cause-${name}`),
+          threadId,
+          messageId: MessageId.make(`message-unsettle-cause-${name}`),
+          text: "Back again",
+          attachments: [],
+          // Notifications must queue; the rest only need a run to exist.
+          dispatchMode:
+            extra.notification === undefined
+              ? { type: "defer_start" }
+              : { type: "queue_after_active" },
+          createdBy: extra.createdBy ?? "agent",
+          creationSource: extra.createdBy === "user" ? "web" : "server",
+          ...(extra.scheduledTaskId === undefined
+            ? {}
+            : { scheduledTaskId: extra.scheduledTaskId }),
+          ...(extra.notification === undefined ? {} : { notification: extra.notification }),
+        });
+        return yield* cause(threadId);
+      });
+
+    assert.equal(yield* message("user-message", { createdBy: "user" }), "user_message");
+    assert.equal(
+      yield* message("scheduled", { scheduledTaskId: ScheduledTaskId.make("task:check-in") }),
+      "scheduled_task",
+    );
+    assert.equal(
+      yield* message("wake", {
+        notification: { source: { kind: "monitor" }, outcome: "completed", summary: "#7: merged" },
+      }),
+      "notification",
+    );
+    assert.equal(yield* message("agent-message", {}), "agent_message");
+
+    for (const reason of ["user", "agent"] as const) {
+      const threadId = yield* settled(`unsettle-${reason}`);
+      yield* orchestrator.dispatch({
+        type: "thread.unsettle",
+        commandId: CommandId.make(`unsettle-cause-${reason}`),
+        threadId,
+        reason,
+      });
+      assert.equal(yield* cause(threadId), reason);
+    }
+
+    const pinned = yield* settled("pin");
+    yield* orchestrator.dispatch({
+      type: "thread.pin",
+      commandId: CommandId.make("pin-unsettle-cause"),
+      threadId: pinned,
+    });
+    assert.equal(yield* cause(pinned), "pin");
+    // Settling again clears it, as unsettling clears the settlement source.
+    yield* orchestrator.dispatch({
+      type: "thread.settle",
+      commandId: CommandId.make("resettle-unsettle-cause"),
+      threadId: pinned,
+    });
+    assert.isNull(yield* cause(pinned));
   }).pipe(Effect.provide(layerTest)),
 );
 
