@@ -168,10 +168,10 @@ describe("resolvePreviewMiniPlayerFrame with the details card", () => {
         width: null,
         position: null,
         source,
-        container,
+        container: { ...container, height: 900 },
         obstacles: withCard,
       }),
-    ).toEqual({ x: 988 - 320, y: 260 + gap, width: 320, height: 200 });
+    ).toEqual({ x: 988 - 480, y: 260 + gap, width: 480, height: 300 });
   });
 
   it("opens left of the card when it cannot fit beneath it", () => {
@@ -184,7 +184,7 @@ describe("resolvePreviewMiniPlayerFrame with the details card", () => {
         container,
         obstacles: tallCard,
       }),
-    ).toEqual({ x: 680 - gap - 320, y: 700 - 150 - gap - 200, width: 320, height: 200 });
+    ).toEqual({ x: 680 - gap - 480, y: 700 - 150 - gap - 300, width: 480, height: 300 });
   });
 
   it("keeps a stored player's size when the card covers its columns", () => {
