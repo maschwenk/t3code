@@ -12605,6 +12605,77 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     ),
   );
 
+  it.effect("offers the suggestion that follows a wake turn's own result", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarness;
+        const now = yield* DateTime.now;
+
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now,
+            attemptId: RunAttemptId.make("attempt-claude-wake-suggest-1"),
+            text: "Run the build in the background.",
+            attachments: [],
+          }),
+        );
+        yield* Queue.offer(harness.sdkMessages, wakeTaskStarted);
+        yield* Queue.offer(harness.sdkMessages, turnOneResult);
+        yield* harness.awaitTerminal(1);
+
+        yield* harness.offerAndWait(wakeNotification);
+        yield* Queue.offer(harness.sdkMessages, wakeAssistant);
+        yield* harness.awaitContinuation(1);
+        yield* harness.offerAndWait(wakeResult);
+
+        const wakeTurn = makeClaudeTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now,
+          attemptId: RunAttemptId.make("attempt-claude-wake-suggest-2"),
+          text: "Background task completed.",
+          attachments: [],
+          providerTurnOrdinal: 2,
+          messageCreatedBy: "agent",
+          messageCreationSource: "provider",
+        });
+        yield* harness.runtime.startTurn(wakeTurn);
+        yield* harness.awaitTerminal(2);
+        assert.equal(harness.terminalEvents()[1]?.status, "completed");
+
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "prompt_suggestion",
+            suggestion: "rerun the build",
+            uuid: "00000000-0000-4000-8000-000000000695",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* harness.until(() =>
+          harness.events.some((event) => event.type === "prompt_suggestion.updated"),
+        );
+        assert.deepEqual(
+          harness.events.flatMap((event) =>
+            event.type === "prompt_suggestion.updated" ? [[event.runId, event.text]] : [],
+          ),
+          [[wakeTurn.runId, "rerun the build"]],
+        );
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            NodeCrypto.layer,
+          ),
+        ),
+      ),
+    ),
+  );
+
   it.effect("settles a continuation whose wake turn a user turn absorbed", () =>
     Effect.scoped(
       Effect.gen(function* () {
