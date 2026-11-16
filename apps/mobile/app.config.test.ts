@@ -50,6 +50,8 @@ it.each([
     { scheme: "https", host, pathPrefix: "/threads/" },
   ]);
   expect(assetLinks.map((link) => link.target.package_name)).toContain(identifier);
+  // T3's relay pushes to these bundles, so the T3 Connect notification settings stay.
+  expect(config.extra?.directPush).toBe(false);
 });
 
 it("signs a full build for another team only when its team and bundle are both set", async () => {
@@ -62,6 +64,8 @@ it("signs a full build for another team only when its team and bundle are both s
   // It installs beside the store app, so it can't share its name and icon.
   expect(config.name).toBe("T3 Fork");
   expect(config.ios?.icon).toContain("nightly");
+  // T3's relay can't push to another team's bundle, so the computers send alerts themselves.
+  expect(config.extra?.directPush).toBe(true);
 
   vi.stubEnv("T3CODE_IOS_BUNDLE_ID", "");
   await expect(loadConfig("production")).rejects.toThrow("T3CODE_IOS_TEAM_ID");
