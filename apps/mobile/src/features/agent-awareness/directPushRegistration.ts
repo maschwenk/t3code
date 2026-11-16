@@ -8,6 +8,7 @@ import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import { FetchHttpClient, type HttpClient } from "effect/http";
 import { Atom, AtomRegistry } from "effect/reactivity";
+import * as Application from "expo-application";
 import Constants from "expo-constants";
 import * as Notifications from "expo-notifications";
 import { fetch as expoFetch } from "expo/fetch";
@@ -102,11 +103,23 @@ async function readPushToken(): Promise<string | undefined> {
     : undefined;
 }
 
+// A Release build installed straight to a device is development-signed, so its token is a sandbox
+// token even though the variant says production. The embedded profile is the source of truth.
+async function readApsEnvironment(): Promise<"sandbox" | "production"> {
+  const fromProfile = await Application.getIosPushNotificationServiceEnvironmentAsync().catch(
+    () => null,
+  );
+  if (fromProfile === "development") return "sandbox";
+  if (fromProfile === "production") return "production";
+  return resolveApsEnvironment(Constants.expoConfig?.extra?.appVariant);
+}
+
 async function makeRegistration(): Promise<RelayDeviceRegistrationRequest> {
-  const [deviceId, preferences, pushToken] = await Promise.all([
+  const [deviceId, preferences, pushToken, apsEnvironment] = await Promise.all([
     loadOrCreateAgentAwarenessDeviceId(),
     loadPreferences(),
     readPushToken(),
+    readApsEnvironment(),
   ]);
   const bundleId = Constants.expoConfig?.ios?.bundleIdentifier?.trim();
   return makeRelayDeviceRegistrationRequest({
@@ -116,7 +129,7 @@ async function makeRegistration(): Promise<RelayDeviceRegistrationRequest> {
     iosMajorVersion: iosMajorVersion(),
     appVersion: Constants.expoConfig?.version,
     ...(bundleId ? { bundleId } : {}),
-    apsEnvironment: resolveApsEnvironment(Constants.expoConfig?.extra?.appVariant),
+    apsEnvironment,
     ...(pushToken ? { pushToken } : {}),
     notificationsEnabled: pushToken !== undefined,
     preferences,
