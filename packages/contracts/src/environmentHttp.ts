@@ -88,8 +88,10 @@ import {
   RelayEnvironmentHealthResponse,
   RelayEnvironmentLinkProof,
   RelayEnvironmentMintResponse,
+  RelayDeviceRegistrationRequest,
   RelayLinkProofRequest,
 } from "./relay.ts";
+import { DirectPushDeviceUnregisterRequest, DirectPushRegistrationResult } from "./directPush.ts";
 
 const OptionalBearerHeaders = Schema.Struct({
   authorization: Schema.optionalKey(Schema.String),
@@ -990,6 +992,24 @@ class EnvironmentConnectHttpApi extends HttpApiGroup.make("connect")
     }),
   ) {}
 
+class EnvironmentPushHttpApi extends HttpApiGroup.make("push")
+  .add(
+    HttpApiEndpoint.post("registerDevice", "/api/push/devices", {
+      headers: OptionalBearerHeaders,
+      payload: RelayDeviceRegistrationRequest,
+      success: DirectPushRegistrationResult,
+      error: EnvironmentScopedOperationErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("unregisterDevice", "/api/push/devices/unregister", {
+      headers: OptionalBearerHeaders,
+      payload: DirectPushDeviceUnregisterRequest,
+      success: Schema.Void,
+      error: EnvironmentScopedOperationErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  ) {}
+
 // Path tokens and optional body signatures authenticate webhooks; read raw bytes to verify signatures.
 const WebhookParams = Schema.Struct({
   hookId: TrimmedNonEmptyString,
@@ -1019,4 +1039,5 @@ export class EnvironmentHttpApi extends HttpApi.make("environment")
   .add(EnvironmentProjectsHttpApi)
   .add(EnvironmentVoiceHttpApi)
   .add(EnvironmentConnectHttpApi)
+  .add(EnvironmentPushHttpApi)
   .add(EnvironmentWebhooksHttpApi) {}

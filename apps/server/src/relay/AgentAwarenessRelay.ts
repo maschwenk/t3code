@@ -48,6 +48,7 @@ import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as CompletionNotificationTriage from "../orchestration-v2/CompletionNotificationTriage.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
+import * as DirectPush from "../push/DirectPush.ts";
 import { forkParked } from "../serverActivation.ts";
 
 export class AgentAwarenessRelay extends Context.Service<
@@ -365,6 +366,7 @@ export const make = Effect.gen(function* () {
   const threads = yield* ThreadManagement.ThreadManagementService;
   const projects = yield* ProjectService.ProjectService;
   const completionTriage = yield* CompletionNotificationTriage.CompletionNotificationTriage;
+  const directPush = yield* DirectPush.DirectPush;
   const random = yield* SecureRandom.SecureRandom;
   const signingKey = yield* EnvironmentSigningKey;
   const scope = yield* Effect.scope;
@@ -439,30 +441,26 @@ export const make = Effect.gen(function* () {
 
   const publishThreadUnsafe = Effect.fn("publishThreadUnsafe")(function* (threadId: ThreadId) {
     const publishAgentActivity = yield* readPublishAgentActivityEnabled;
-    if (!publishAgentActivity) {
+    const relayConfig = publishAgentActivity ? yield* readRelayConfig : null;
+    // Direct push devices still get alerts while T3 Connect is unlinked or not publishing.
+    if (!relayConfig && !(yield* directPush.hasDevices)) {
       yield* cancelPublishRetries;
       yield* resetPublishedConnection;
-      yield* Effect.logDebug("agent activity publish skipped; publication disabled", {
-        threadId,
-      });
-      return;
-    }
-    const relayConfig = yield* readRelayConfig;
-    if (!relayConfig) {
-      yield* cancelPublishRetries;
-      yield* resetPublishedConnection;
-      yield* Effect.logDebug("agent activity publish skipped; relay link credentials unavailable", {
-        threadId,
-      });
+      yield* Effect.logDebug(
+        publishAgentActivity
+          ? "agent activity publish skipped; relay link credentials unavailable"
+          : "agent activity publish skipped; publication disabled",
+        { threadId },
+      );
       return;
     }
     if (
-      publishedRelayConfig?.url !== relayConfig.url ||
-      publishedRelayConfig.issuer !== relayConfig.issuer ||
-      publishedRelayConfig.environmentCredential !== relayConfig.environmentCredential
+      publishedRelayConfig?.url !== relayConfig?.url ||
+      publishedRelayConfig?.issuer !== relayConfig?.issuer ||
+      publishedRelayConfig?.environmentCredential !== relayConfig?.environmentCredential
     ) {
       yield* resetPublishedConnection;
-      publishedRelayConfig = relayConfig;
+      publishedRelayConfig = relayConfig ?? undefined;
     }
     const environmentId = yield* serverEnvironment.getEnvironmentId;
 
@@ -471,6 +469,9 @@ export const make = Effect.gen(function* () {
       readonly state: RelayAgentActivityState | null;
       readonly reason: string;
     }) {
+      // Repeats of a published state are not transitions, so relay retries cannot double-alert here.
+      yield* directPush.publish({ threadId, state: input.state });
+      if (relayConfig === null) return;
       if (cachedRelayClient === undefined) {
         cachedRelayClient = yield* makeRelayClient(relayConfig);
       }
