@@ -333,10 +333,17 @@ Then iterate in linked worktrees, whose dev servers keep their own `.t3`, and re
 
 Quitting the app ends every agent turn and terminal inside it, so when the app is running the
 install step moves to a detached process and the command returns. That process waits until no
-agent turn is working, then quits, replaces, and relaunches the app; turns waiting on an answer or
-approval don't hold it up. Its log is `release/fork/install.log`. `--now` skips the wait, and a
-later run replaces an install still waiting. `--build-only` followed by `--skip-build` splits
-building from installing. T3 Connect's
+agent turn is working, or 15 minutes at most, then quits, replaces, and relaunches the app; turns
+waiting on an answer or approval don't hold it up. `--grace` sets that limit (`--grace 45`,
+`--grace 90s`, `--grace forever`), and `--now` skips the wait. Turns the quit cuts short are
+continued by the app after it relaunches, as with any restart when **Continue threads after
+restarts** is on (the default). The installer records them in
+`release/fork/restart-<time>.json` before quitting, then checks that each was continued and shows
+a notification with the result. A turn the app did not continue (the thread is snoozed, settled
+or archived, or its project turned continuing off) is listed with a `t3 thread send` command to
+continue it by hand. Its log is `release/fork/install.log`, and a later run replaces an install
+still waiting. `--build-only` followed by `--skip-build` splits building from installing. T3
+Connect's
 public identifiers are compiled in, from `.env.example` when the shell and `.env` don't set them;
 the install refuses a bundle without them unless `--allow-no-connect` is passed, and after
 relaunching it waits for Connect to report reachable. Ad-hoc signed builds re-prompt for Keychain
