@@ -1,8 +1,8 @@
 // @effect-diagnostics nodeBuiltinImport:off globalDate:off globalConsole:off - Dependency-free host-side installer with no Effect runtime, like setup-worktree.ts.
 /** Build this checkout as "T3 Code (Fork)" (`-fork.<date>.<sha>`: own bundle id, no update feed)
  * and install it into /Applications. macOS only; see "Running your own fork" in development.md.
- *   node scripts/install-fork-desktop.ts [--no-launch] [--skip-build | --build-only] [--now]
- *     [--identity <codesign name>|none] [--allow-no-connect] */
+ *   node scripts/install-fork-desktop.ts [--no-launch] [--skip-build | --build-only]
+ *     [--grace <minutes|90s|1h|forever> | --now] [--identity <codesign name>|none] [--allow-no-connect] */
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
@@ -10,15 +10,29 @@ import * as NodePath from "node:path";
 import * as NodeSqlite from "node:sqlite";
 import * as NodeUtil from "node:util";
 
+import {
+  describeOutcome,
+  formatGrace,
+  parseGrace,
+  readRestartThreads,
+  readResumeOutcome,
+  readResumeSettings,
+  type RestartThread,
+  type ResumeOutcome,
+  summarizeOutcomes,
+  WORKING_RUN_STATUSES,
+} from "./lib/fork-install-restarts.ts";
 import { loadRepoEnv } from "./lib/public-config.ts";
 
 const PRODUCT_NAME = "T3 Code (Fork)";
 const BUNDLE_ID = "com.t3tools.t3code.fork";
 const APPLICATIONS_DIR = "/Applications";
 const INSTALLED_APP = NodePath.join(APPLICATIONS_DIR, `${PRODUCT_NAME}.app`);
-const STATE_DB = NodePath.join(NodeOS.homedir(), ".t3", "userdata", "statev2.sqlite");
-// A run waiting on an approval or answer keeps its question across a restart; one doing work loses it.
-const WORKING_RUN_STATUSES = ["preparing", "queued", "starting", "running"];
+const USERDATA_DIR = NodePath.join(NodeOS.homedir(), ".t3", "userdata");
+const STATE_DB = NodePath.join(USERDATA_DIR, "statev2.sqlite");
+const SETTINGS_FILE = NodePath.join(USERDATA_DIR, "settings.json");
+// How long after the relaunch to wait for the server to continue the turns the quit cut short.
+const RESUME_CHECK_MS = 180_000;
 const BACKGROUND_INSTALL_FLAG = "--background-install";
 const CONNECT_ENV_KEYS = [
   "T3CODE_CLERK_PUBLISHABLE_KEY",
@@ -34,6 +48,13 @@ const skipBuild = args.includes("--skip-build");
 const buildOnly = args.includes("--build-only");
 const allowNoConnect = args.includes("--allow-no-connect");
 const installNow = args.includes("--now");
+const graceIndex = args.indexOf("--grace");
+if (graceIndex !== -1 && !args[graceIndex + 1]) {
+  throw new Error("--grace needs minutes, a duration like 90s or 1h, or `forever`.");
+}
+// Working turns get this long to finish before the install quits the app anyway; the server
+// continues the ones it cuts short after the relaunch.
+const graceMs = installNow ? 0 : parseGrace(graceIndex === -1 ? undefined : args[graceIndex + 1]);
 const backgroundInstall = args.includes(BACKGROUND_INSTALL_FLAG);
 if (skipBuild && buildOnly) {
   throw new Error("--skip-build and --build-only together would do nothing.");
@@ -292,13 +313,22 @@ function workingAgentTurns(): ReadonlyArray<string> {
   }
 }
 
-// Two quiet checks in a row, because a finished turn can hand straight to a queued one.
-function waitUntilNoAgentIsWorking() {
+// Two quiet checks in a row, because a finished turn can hand straight to a queued one. After
+// `limitMs` the install goes ahead anyway; null waits for as long as it takes.
+function waitUntilNoAgentIsWorking(limitMs: number | null) {
+  const deadline = limitMs === null ? Number.POSITIVE_INFINITY : Date.now() + limitMs;
   let quietChecks = 0;
   let reported = "";
   while (quietChecks < 2 && appIsRunning()) {
     const working = workingAgentTurns();
     quietChecks = working.length === 0 ? quietChecks + 1 : 0;
+    if (working.length > 0 && Date.now() >= deadline) {
+      console.log(
+        `[fork-install] ${formatGrace(limitMs)} grace is up with ${working.length} working agent turn(s); ` +
+          "installing anyway. The app continues them after it relaunches.",
+      );
+      return;
+    }
     const summary = working.join(", ");
     if (working.length > 0 && summary !== reported) {
       console.log(`[fork-install] Waiting on ${working.length} working agent turn(s): ${summary}`);
@@ -307,6 +337,122 @@ function waitUntilNoAgentIsWorking() {
     if (quietChecks < 2) NodeChildProcess.spawnSync("sleep", ["5"]);
   }
   console.log("[fork-install] No agent turn is working");
+}
+
+interface RestartRecord {
+  readonly path: string;
+  readonly quitAt: string;
+  readonly threads: ReadonlyArray<RestartThread>;
+}
+
+function readSettingsFile(): unknown {
+  try {
+    return JSON.parse(NodeFS.readFileSync(SETTINGS_FILE, "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+function threadLabel(thread: RestartThread) {
+  return `"${thread.title}"${thread.projectTitle ? ` (${thread.projectTitle})` : ""}`;
+}
+
+/**
+ * Writes the threads the quit is about to interrupt next to install.log, so a cut turn can be
+ * found and checked afterwards. Reading never blocks the install.
+ */
+function recordRestart(): RestartRecord | null {
+  let threads: ReadonlyArray<RestartThread>;
+  try {
+    const db = new NodeSqlite.DatabaseSync(STATE_DB, { readOnly: true });
+    try {
+      threads = readRestartThreads(db, readResumeSettings(readSettingsFile()), Date.now());
+    } finally {
+      db.close();
+    }
+  } catch (error) {
+    console.log(`[fork-install] Could not record working threads: ${String(error)}`);
+    return null;
+  }
+  const quitAt = new Date().toISOString();
+  const path = NodePath.join(outputDir, `restart-${quitAt.replace(/[:.]/g, "-")}.json`);
+  if (threads.length === 0) return { path, quitAt, threads };
+  NodeFS.writeFileSync(path, `${JSON.stringify({ quitAt, threads }, null, 2)}\n`);
+  for (const thread of threads) {
+    const state = thread.waitingOnUser
+      ? "waiting on you, keeps its question"
+      : thread.expectedResume === "yes"
+        ? "cut short, will be continued"
+        : `cut short, will not be continued (${thread.expectedResume})`;
+    console.log(`[fork-install] ${threadLabel(thread)}: ${state}`);
+  }
+  console.log(`[fork-install] Recorded in ${path}`);
+  return { path, quitAt, threads };
+}
+
+function readOutcomes(threads: ReadonlyArray<RestartThread>): ReadonlyArray<ResumeOutcome> | null {
+  try {
+    const db = new NodeSqlite.DatabaseSync(STATE_DB, { readOnly: true });
+    try {
+      return threads.map((thread) => readResumeOutcome(db, thread));
+    } finally {
+      db.close();
+    }
+  } catch {
+    // The relaunched server may hold the database while it migrates; try again.
+    return null;
+  }
+}
+
+/** After the relaunch, waits for the server to continue each cut turn and reports what it did. */
+function reportResumes(record: RestartRecord) {
+  const cut = record.threads.filter((thread) => !thread.waitingOnUser);
+  if (cut.length === 0) return;
+  console.log(`[fork-install] Checking that the app continues ${cut.length} cut turn(s)`);
+  const deadline = Date.now() + RESUME_CHECK_MS;
+  let outcomes: ReadonlyArray<ResumeOutcome> | null = null;
+  while (Date.now() < deadline) {
+    NodeChildProcess.spawnSync("sleep", ["5"]);
+    outcomes = readOutcomes(cut) ?? outcomes;
+    if (outcomes && outcomes.every((outcome) => outcome.kind !== "pending")) break;
+  }
+  if (!outcomes) {
+    console.log(`[fork-install] Could not read the database to check the cut turns.`);
+    return;
+  }
+  const checked = cut.map((thread, index) => ({ ...thread, outcome: outcomes[index]! }));
+  NodeFS.writeFileSync(
+    record.path,
+    `${JSON.stringify({ quitAt: record.quitAt, threads: record.threads, checked }, null, 2)}\n`,
+  );
+  for (const thread of checked) {
+    console.log(`[fork-install] ${threadLabel(thread)}: ${describeOutcome(thread.outcome)}`);
+    if (thread.outcome.kind === "not resumed" || thread.outcome.kind === "failed") {
+      console.log(
+        `[fork-install]   continue it yourself: t3 thread send ${thread.threadId} "Continue where you left off."`,
+      );
+    }
+  }
+  const summary = summarizeOutcomes(checked.map((thread) => thread.outcome));
+  console.log(`[fork-install] Cut turns: ${summary}`);
+  notify(`${PRODUCT_NAME} updated`, `Cut turns: ${summary}. Details: ${record.path}`);
+}
+
+function notify(title: string, message: string) {
+  NodeChildProcess.spawn(
+    "osascript",
+    [
+      "-e",
+      "on run argv",
+      "-e",
+      "display notification (item 2 of argv) with title (item 1 of argv)",
+      "-e",
+      "end run",
+      title,
+      message,
+    ],
+    { detached: true, stdio: "ignore" },
+  ).unref();
 }
 
 /** A newer run replaces an installer still waiting from an earlier one. */
@@ -342,10 +488,12 @@ function installInBackground() {
   child.unref();
   NodeFS.writeFileSync(installerPidFile, String(child.pid));
   console.log(
-    installNow
+    graceMs === 0
       ? `[fork-install] Installing from a background process (pid ${child.pid}).`
       : `[fork-install] ${PRODUCT_NAME} is running, so a background process (pid ${child.pid}) ` +
-          "installs it once no agent turn is working. Turns waiting on your answer do not hold it up.",
+          "installs it once no agent turn is working" +
+          (graceMs === null ? "" : `, or after ${formatGrace(graceMs)} at most`) +
+          ". Turns waiting on your answer do not hold it up, and the app continues any it cuts short.",
   );
   console.log(`[fork-install] Log: ${installLog}. Cancel: kill ${child.pid}.`);
 }
@@ -359,7 +507,9 @@ function installBuiltApp(builtApp: string) {
     console.log("[fork-install] No signing identity; keeping the ad-hoc signature.");
   }
 
+  let restart: RestartRecord | null = null;
   if (NodeFS.existsSync(INSTALLED_APP)) {
+    if (appIsRunning()) restart = recordRestart();
     console.log(`[fork-install] Quitting the running ${PRODUCT_NAME}`);
     run("osascript", [
       "-e",
@@ -379,11 +529,14 @@ function installBuiltApp(builtApp: string) {
 
   if (launch) {
     run("open", ["-a", INSTALLED_APP], { env });
+    if (restart) reportResumes(restart);
     if (!allowNoConnect) assertConnectReachable(INSTALLED_APP);
+  } else if (restart?.threads.some((thread) => !thread.waitingOnUser)) {
+    console.log("[fork-install] The app continues the cut turns when it next launches.");
   }
 }
 
-if (backgroundInstall && !installNow) waitUntilNoAgentIsWorking();
+if (backgroundInstall && graceMs !== 0) waitUntilNoAgentIsWorking(graceMs);
 
 const extractDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3code-fork-install-"));
 try {
