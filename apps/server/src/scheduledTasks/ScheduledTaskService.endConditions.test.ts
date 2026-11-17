@@ -31,6 +31,7 @@ const layerRecordingSends = (sends: Ref.Ref<ReadonlyArray<string>>, projectId: s
       // Saving a bound task checks that its thread is live and in the task's project.
       getThreadShell: () =>
         Effect.succeed({ projectId, archivedAt: null, deletedAt: null } as never),
+      getThreadRecords: () => Effect.succeed({ runs: [] } as never),
       sendToThread: (input) =>
         Ref.update(sends, (all) => [...all, `${input.threadId}:${input.text}`]).pipe(
           Effect.andThen(Effect.die(new Error("send recorded"))),

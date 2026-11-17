@@ -358,6 +358,8 @@ export const make = Effect.fn("desktop.telemetryPublisher.make")(function* () {
         return Queue.offer(updateCancellationQueue, message).pipe(Effect.asVoid);
       case "showComputerCursor":
         return Queue.offer(computerCursorQueue, message).pipe(Effect.asVoid);
+      case "serverReady":
+        return Effect.void;
     }
   };
   const removeControlSource: DesktopTelemetryPublisher["Service"]["removeControlSource"] = (

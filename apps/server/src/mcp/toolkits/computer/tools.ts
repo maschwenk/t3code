@@ -1,6 +1,6 @@
 import { OrchestratorMcpFailure } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
-import { Tool, Toolkit } from "effect/ai";
+import { McpSchema, Tool, Toolkit } from "effect/ai";
 import * as ComputerUse from "../../../computerUse/ComputerUse.ts";
 import { ComputerStep, ComputerUseError } from "../../../computerUse/protocol.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
@@ -25,6 +25,7 @@ const Status = Tool.make("computer_status", {
   dependencies,
 })
   .annotate(Tool.Title, "Check computer access")
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients)
   .annotate(Tool.Readonly, true)
   .annotate(Tool.Destructive, false);
 
@@ -53,6 +54,7 @@ export const ComputerSnapshotTool = Tool.make("computer_snapshot", {
   dependencies,
 })
   .annotate(Tool.Title, "Inspect computer app")
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients)
   .annotate(Tool.Readonly, true)
   .annotate(Tool.Destructive, false)
   .annotate(Tool.OpenWorld, true);
@@ -82,6 +84,7 @@ export const ComputerActionTool = Tool.make("computer_action", {
   dependencies,
 })
   .annotate(Tool.Title, "Control computer app")
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients)
   .annotate(Tool.Readonly, false)
   .annotate(Tool.Destructive, true)
   .annotate(Tool.OpenWorld, true);
@@ -95,6 +98,7 @@ export const ComputerOpenTool = Tool.make("computer_open", {
   dependencies,
 })
   .annotate(Tool.Title, "Open computer app")
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients)
   .annotate(Tool.Readonly, false)
   .annotate(Tool.Destructive, false)
   .annotate(Tool.OpenWorld, true);

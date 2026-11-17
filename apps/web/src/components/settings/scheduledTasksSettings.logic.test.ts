@@ -23,6 +23,7 @@ import {
   matchesScheduledTaskScope,
   scheduleFromDraft,
   endFromDraft,
+  scheduledTaskLine,
   taskToDraft,
   unbindDraftFromThread,
 } from "./scheduledTasksSettings.logic";
@@ -170,6 +171,26 @@ describe("editing scheduled task branch settings", () => {
     const draft = taskToDraft(legacyTask);
     expect(draft.baseRef).toBe("release");
     expect(draft.startFromOrigin).toBe(false);
+  });
+});
+
+describe("fixed-time scheduled tasks", () => {
+  it("pads a stored single-digit hour so the time input shows it", () => {
+    const draft = taskToDraft({
+      ...legacyTask,
+      schedule: { type: "fixed_time", timeOfDay: "9:05" },
+    });
+    expect(draft.timeOfDay).toBe("09:05");
+  });
+
+  it("keeps a fixed run time and rejects a cleared one", () => {
+    const draft = taskToDraft({
+      ...legacyTask,
+      schedule: { type: "fixed_time", timeOfDay: "14:30" },
+    });
+    expect(scheduleFromDraft(draft)).toEqual({ type: "fixed_time", timeOfDay: "14:30" });
+    // A native time input reports "" when it is cleared or only partly filled.
+    expect(scheduleFromDraft({ ...draft, timeOfDay: "" })).toBeNull();
   });
 });
 
@@ -433,4 +454,25 @@ describe("scheduled task end conditions", () => {
       error: "Enter a whole number of runs, or leave it blank.",
     });
   });
+});
+
+it("appends the server zone only to fixed-time schedule labels", () => {
+  const now = Date.parse("2026-10-06T12:00:00.000Z");
+  const line = (task: Partial<ScheduledTask>, timeZone?: string) =>
+    scheduledTaskLine({ ...legacyTask, ...task }, timeZone, (iso) => iso, now);
+  const daily = { type: "fixed_time", timeOfDay: "16:31" } as const;
+  expect(line({ schedule: daily }, "Etc/UTC")).toBe("Daily at 16:31 UTC");
+  expect(line({ schedule: daily })).toBe("Daily at 16:31");
+  // The zone follows the time, ahead of the end conditions and a policy block.
+  const nextRunAt = "2026-10-06T16:31:00.000Z";
+  expect(line({ schedule: daily, nextRunAt, maxRuns: 3, runCount: 1 }, "Etc/UTC")).toBe(
+    "Daily at 16:31 UTC · 2 runs left",
+  );
+  expect(line({ schedule: daily, blockedByPolicy: "Blocked by policy" }, "Etc/UTC")).toBe(
+    "Daily at 16:31 UTC · Blocked by policy",
+  );
+  expect(line({ schedule: { type: "interval", everyMs: 60_000 } }, "Etc/UTC")).toBe("Every minute");
+  expect(line({ schedule: { type: "webhook", signature: null } }, "Etc/UTC")).toBe(
+    "On webhook · Listening",
+  );
 });

@@ -5,12 +5,12 @@ import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { migrationManifest, runMigrations } from "./Migrations.ts";
-import ScheduledTaskEndConditions from "./Migrations/081_ScheduledTaskEndConditions.ts";
+import ScheduledTaskEndConditions from "./Migrations/099_ScheduledTaskEndConditions.ts";
 
 const latestMigrationId = Math.max(...migrationManifest.map(([id]) => id));
 
 describe("fork migration upgrade", () => {
-  it.effect.each([59, 68])(
+  it.effect.each([59, 68, 81])(
     "runs upstream's %s and later on a database that took that id for end conditions",
     (forkId) =>
       Effect.gen(function* () {
@@ -34,6 +34,12 @@ describe("fork migration upgrade", () => {
             '2026-11-02T00:00:00.000Z', 5
           )
         `;
+
+        // A database that recorded the fork at 81 already ran upstream's 80, which moved its
+        // thread-bound tasks to the `continue` mode; a row inserted afterwards gets the default.
+        if (forkId > 80) {
+          yield* sql`UPDATE scheduled_tasks SET thread_mode = 'continue' WHERE task_id = 'task-1'`;
+        }
 
         const executed = yield* runMigrations();
         assert.deepStrictEqual(

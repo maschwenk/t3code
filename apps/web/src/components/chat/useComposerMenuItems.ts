@@ -1,4 +1,8 @@
 import {
+  legacyThreadPullRequestKey,
+  threadPullRequestKeyOf,
+} from "@t3tools/client-runtime/thread-pull-requests";
+import {
   matchComposerEnvironmentItems,
   matchComposerThreadItems,
 } from "@t3tools/client-runtime/composerThreadItems";
@@ -8,6 +12,7 @@ import type {
   EnvironmentId,
   ProjectId,
   ProviderDriverKind,
+  ProviderInstanceId,
   PullRequestListInput,
   ServerProvider,
   ThreadId,
@@ -43,6 +48,9 @@ import {
   rankPullRequestMatches,
 } from "../pullRequest/pullRequestList.logic";
 import type { ComposerCommandItem } from "./ComposerCommandMenu";
+import { matchComposerModelItems } from "./composerModelMentions";
+import type { ModelEsque } from "./providerIconUtils";
+import type { ProviderInstanceEntry } from "../../providerInstances";
 import {
   searchSlashCommandItems,
   slashCommandItemsForPromptPosition,
@@ -73,6 +81,7 @@ export function useComposerMenuItems({
   showSkillsInSlashMenu,
   workspaceSkillsScanning,
   questionAttachmentTarget,
+  modelMentions,
 }: {
   readonly composerTrigger: ComposerTrigger | null;
   readonly environmentId: EnvironmentId;
@@ -92,6 +101,10 @@ export function useComposerMenuItems({
   readonly showSkillsInSlashMenu: boolean;
   readonly workspaceSkillsScanning: boolean;
   readonly questionAttachmentTarget: DraftId | null;
+  readonly modelMentions: {
+    readonly instanceEntries: ReadonlyArray<ProviderInstanceEntry>;
+    readonly modelOptionsByInstance: ReadonlyMap<ProviderInstanceId, ReadonlyArray<ModelEsque>>;
+  };
 }) {
   // Thread mentions rank by recency as of when the composer mounted.
   const [now] = useState(() => Date.now());
@@ -110,8 +123,13 @@ export function useComposerMenuItems({
     pullRequestTextQuery === debouncedPullRequestTextQuery ? pullRequestTextQuery : null;
   const isPathTrigger = composerTriggerKind === "path";
   const environmentThreadShells = useVisibleThreadShells(isPathTrigger);
-  // Mounts older settled threads matching the mention, which shells may leave out.
-  useThreadSearch(isPathTrigger ? [environmentId] : [], pathTriggerQuery, { titlesOnly: true });
+  // Mounts older settled threads matching the mention, here and on linked machines, which shells
+  // may leave out.
+  useThreadSearch(
+    isPathTrigger ? [environmentId, ...linkedEnvironments.keys()] : [],
+    pathTriggerQuery,
+    { titlesOnly: true },
+  );
   // The user's machines feed `@` machine matches; the catalog summary is cheap and stable.
   const environmentIdentities = useEnvironmentIdentities();
   const environmentMachines = useEnvironmentMachines();
@@ -204,6 +222,11 @@ export function useComposerMenuItems({
               query: composerTrigger.query,
             })
           : []),
+        ...matchComposerModelItems({
+          instanceEntries: modelMentions.instanceEntries,
+          modelOptionsByInstance: modelMentions.modelOptionsByInstance,
+          query: composerTrigger.query,
+        }),
         ...workspaceEntries.entries.map((entry) => ({
           id: `path:${entry.kind}:${entry.path}`,
           type: "path" as const,
@@ -313,10 +336,17 @@ export function useComposerMenuItems({
     ) {
       const exactPullRequest =
         exactPullRequestLookup.data?.number === pullRequestTriggerNumber
-          ? [exactPullRequestLookup.data]
+          ? [
+              {
+                ...exactPullRequestLookup.data,
+                // Only the host: the URL's full repository path would not match the project's selector.
+                host: legacyThreadPullRequestKey(exactPullRequestLookup.data).host,
+              },
+            ]
           : [];
       const matches = /^\d*$/u.test(composerTrigger.query)
         ? filterComposerPullRequestMatches({
+            keyOf: threadPullRequestKeyOf,
             entries: [...exactPullRequest, ...(pullRequestLookup.data?.entries ?? [])],
             linked: linkedPullRequests,
             projectId: pullRequestProjectId,
@@ -325,6 +355,7 @@ export function useComposerMenuItems({
             limit: COMPOSER_PULL_REQUEST_RESULT_LIMIT,
           })
         : withLinkedComposerPullRequestsFirst({
+            keyOf: threadPullRequestKeyOf,
             matches: rankPullRequestMatches(
               (pullRequestLookup.data?.entries ?? []).filter((entry) => {
                 if (
@@ -349,7 +380,7 @@ export function useComposerMenuItems({
             limit: COMPOSER_PULL_REQUEST_RESULT_LIMIT,
           });
       return matches.map((pullRequest) => ({
-        id: `pull-request:${pullRequest.projectId}:${pullRequest.repository}:${pullRequest.number}`,
+        id: `pull-request:${pullRequest.projectId}:${threadPullRequestKeyOf(pullRequest)}`,
         type: "pull-request",
         pullRequest: {
           number: pullRequest.number,
@@ -370,7 +401,7 @@ export function useComposerMenuItems({
     return [];
   })();
   const isLoading =
-    (composerTriggerKind === "path" && pathTriggerQuery.length > 0 && workspaceEntries.isPending) ||
+    (composerTriggerKind === "path" && workspaceEntries.isPending) ||
     ((composerTriggerKind === "skill" || composerTriggerKind === "slash-command") &&
       workspaceSkillsScanning) ||
     (composerTriggerKind === "pull-request" &&

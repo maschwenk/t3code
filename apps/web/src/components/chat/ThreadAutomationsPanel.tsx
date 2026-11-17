@@ -6,7 +6,6 @@ import { useState } from "react";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
   AuthOrchestrationOperateScope,
-  scheduledTaskCadenceLabel,
   scheduledTaskLifecycle,
   type EnvironmentId,
   type ScheduledTask,
@@ -20,7 +19,7 @@ import {
 import { ThreadDetailsSection } from "./ThreadDetailsSection";
 import { cn } from "../../lib/utils";
 import { ScheduledRelativeLabel } from "../settings/ScheduledTasksSettings";
-import { scheduledTaskStatusText } from "@t3tools/client-runtime/scheduled-tasks";
+import { scheduledTaskLine } from "../settings/scheduledTasksSettings.logic";
 import { openScheduledTaskEditor, useScheduleInThread } from "./ScheduledTaskCards";
 import { useNowMinute } from "../../hooks/useNowMinute";
 import { useEnvironmentQuery } from "../../state/query";
@@ -43,16 +42,13 @@ const STATUS_DOT_CLASS: Record<ScheduledTask["lastRunStatus"], string> = {
   failed: "bg-destructive",
 };
 
-function taskScheduleLine(task: ScheduledTask, nowMs: number) {
+const formatClockTime = (iso: string) =>
+  new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+
+function taskScheduleLine(task: ScheduledTask, timeZone: string | undefined, nowMs: number) {
   return (
     <>
-      {task.blockedByPolicy !== undefined
-        ? `${scheduledTaskCadenceLabel(task.schedule)} · ${task.blockedByPolicy}`
-        : scheduledTaskStatusText(
-            task,
-            (iso) => new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
-            nowMs,
-          )}
+      {scheduledTaskLine(task, timeZone, formatClockTime, nowMs)}
       {task.blockedByPolicy === undefined && task.enabled && task.nextRunAt !== null ? (
         <>
           {" · next "}
@@ -205,12 +201,14 @@ export function ThreadAutomationsPanel(props: {
                   {task.title}
                 </span>
                 <p className="truncate text-2xs text-muted-foreground">
-                  {taskScheduleLine(task, nowMs)}
+                  {taskScheduleLine(task, tasksQuery.data?.timeZone, nowMs)}
                 </p>
               </TooltipTrigger>
               <TooltipPopup side="left">
                 <p className="font-medium">{task.title}</p>
-                <p className="text-muted-foreground">{taskScheduleLine(task, nowMs)}</p>
+                <p className="text-muted-foreground">
+                  {taskScheduleLine(task, tasksQuery.data?.timeZone, nowMs)}
+                </p>
               </TooltipPopup>
             </Tooltip>
             <Tooltip>

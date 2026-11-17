@@ -165,6 +165,7 @@ it.effect(
     return Effect.gen(function* () {
       const server = yield* McpServer.McpServer;
       const settings = yield* ServerSettings.ServerSettingsService;
+      // Computer tools act as their calling thread, so outside clients are not offered them at all.
       const external = yield* server
         .callTool({ name: "computer_snapshot", arguments: { app: "Calculator" } })
         .pipe(
@@ -172,8 +173,9 @@ it.effect(
             ...invocation,
             thread: undefined,
           }),
+          Effect.flip,
         );
-      expect(external.isError).toBe(true);
+      expect(external.message).toContain("Tool 'computer_snapshot' not found");
       const invalid = yield* server.callTool({ name: "computer_snapshot", arguments: { app: 42 } });
       expect(invalid.isError).toBe(true);
       yield* settings.updateSettings({ enableComputerScreenCapture: false });
