@@ -105,6 +105,22 @@ export interface SettlementReplyCheckResult {
   needsUser: boolean;
 }
 
+export interface PromptSuggestionInput {
+  cwd: string;
+  /** The message that started the run. */
+  request: string;
+  /** The agent's last reply in the run. */
+  reply: string;
+  /** Messages the user typed before `request`, newest first, so the guess matches their style. */
+  earlierRequests?: ReadonlyArray<string>;
+  modelSelection: ModelSelection;
+}
+
+export interface PromptSuggestionResult {
+  /** The predicted next message, or empty when the next step is not obvious. */
+  suggestion: string;
+}
+
 export interface ReviewGuideStackLayer {
   readonly number: number;
   readonly title: string | null;
@@ -173,4 +189,9 @@ export interface ProviderTextGeneration {
   readonly checkSettlementReply: (
     input: SettlementReplyCheckInput,
   ) => Effect.Effect<SettlementReplyCheckResult, TextGenerationError>;
+
+  /** The user's likely next message after a run, for when the provider offered none of its own. */
+  readonly suggestNextPrompt: (
+    input: PromptSuggestionInput,
+  ) => Effect.Effect<PromptSuggestionResult, TextGenerationError>;
 }

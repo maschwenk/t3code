@@ -11,6 +11,7 @@ import {
   buildCommitMessagePrompt,
   buildCompletionTriagePrompt,
   buildPrContentPrompt,
+  buildPromptSuggestionPrompt,
   buildReviewGuidePrompt,
   buildSettlementReplyPrompt,
   buildThreadTitlePrompt,
@@ -204,6 +205,17 @@ export function fromRunner(name: string, run: Runner): ProviderTextGeneration {
     });
   });
 
+  const suggestNextPrompt: ProviderTextGeneration["suggestNextPrompt"] = Effect.fn(
+    `${name}.suggestNextPrompt`,
+  )(function* (input) {
+    return yield* run({
+      operation: "suggestNextPrompt",
+      cwd: input.cwd,
+      modelSelection: input.modelSelection,
+      ...buildPromptSuggestionPrompt(input),
+    });
+  });
+
   return {
     generateCommitMessage,
     generatePrContent,
@@ -212,6 +224,7 @@ export function fromRunner(name: string, run: Runner): ProviderTextGeneration {
     generateReviewGuide,
     triageCompletion,
     checkSettlementReply,
+    suggestNextPrompt,
     generateTranscriptionPostProcessing,
   } satisfies ProviderTextGeneration;
 }

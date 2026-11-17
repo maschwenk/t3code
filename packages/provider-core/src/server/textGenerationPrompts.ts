@@ -4,7 +4,11 @@ import { limitTitleMessage } from "./threadTitleContext.ts";
 import type { BranchNamingOptions, ChatAttachment } from "@t3tools/contracts";
 
 import { limitSection } from "./textGenerationUtils.ts";
-import type { ReviewGuideStackLayer, SettlementReplyCheckInput } from "./textGeneration.ts";
+import type {
+  PromptSuggestionInput,
+  ReviewGuideStackLayer,
+  SettlementReplyCheckInput,
+} from "./textGeneration.ts";
 import type { TextGenerationPolicy } from "@t3tools/provider-core/server/textGenerationPolicy";
 
 const EARLIER_CONTENT_TRUNCATION_MARKER = "[Earlier content truncated]\n\n";
@@ -582,4 +586,46 @@ export function buildSettlementReplyPrompt(input: SettlementReplyPromptInput) {
   ].join("\n");
 
   return { prompt, outputSchema: Schema.Struct({ needsUser: Schema.Boolean }) };
+}
+
+export type PromptSuggestionPromptInput = Omit<PromptSuggestionInput, "cwd" | "modelSelection">;
+
+/** Predicts the user's next message after a run, for the composer to offer as ghost text. */
+export function buildPromptSuggestionPrompt(input: PromptSuggestionPromptInput) {
+  // What the user answers usually sits at the end of the reply, so a long reply keeps its end.
+  const reply =
+    input.reply.length <= 12_000
+      ? input.reply
+      : `${EARLIER_CONTENT_TRUNCATION_MARKER}${input.reply.slice(-12_000)}`;
+  const earlierRequests = input.earlierRequests ?? [];
+  const prompt = [
+    "A coding agent just finished a turn. Predict the next message the user will type into the chat, so the app can offer it for them to send with one key.",
+    "Return a JSON object with key: suggestion (string).",
+    'Predict what the user would type, not what you think they should do. The test: would they think "I was just about to type that"?',
+    '- When the reply tells the user to say a word or phrase to go ahead (Say "send", Reply "submit"), suggest exactly that word or phrase.',
+    '- When the reply asks whether to continue or asks a yes-or-no question, suggest the short answer the user would most likely give ("yes", "go ahead").',
+    "- When the reply offers options, suggest the one the user would most likely pick, based on the conversation.",
+    '- When the work is done and the next step is obvious from what the user asked for, suggest it ("run the tests", "push it").',
+    "- Match the user's style from their messages: length, casing, and punctuation.",
+    'Never suggest thanks or praise, a question, the agent\'s own voice ("Let me...", "I\'ll..."), new ideas the user did not ask about, or more than one sentence.',
+    "Use at most 12 words. Return an empty suggestion when the next step is not obvious from what the user said, after an error or misunderstanding, or when a suggestion could be unsafe or touch a sensitive topic.",
+    "",
+    ...(earlierRequests.length === 0
+      ? []
+      : [
+          "Earlier messages from the user, newest first:",
+          ...earlierRequests.flatMap((text, index) => [
+            `[${index + 1}]`,
+            limitSection(text, 1_000),
+          ]),
+          "",
+        ]),
+    "Message that started the turn:",
+    limitSection(input.request, 4_000),
+    "",
+    "Agent's final reply:",
+    reply,
+  ].join("\n");
+
+  return { prompt, outputSchema: Schema.Struct({ suggestion: Schema.String }) };
 }

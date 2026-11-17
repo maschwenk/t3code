@@ -288,6 +288,8 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
       protect("triageCompletion", nativeGeneration.triageCompletion(value)),
     checkSettlementReply: (value) =>
       protect("checkSettlementReply", nativeGeneration.checkSettlementReply(value)),
+    suggestNextPrompt: (value) =>
+      protect("suggestNextPrompt", nativeGeneration.suggestNextPrompt(value)),
     generateTranscriptionPostProcessing: (value) =>
       protect(
         "generateTranscriptionPostProcessing",

@@ -67,6 +67,7 @@ const dependencies = Layer.mergeAll(
       generateTranscriptionPostProcessing: () => Effect.die("not used"),
       triageCompletion: () => Effect.die("not used"),
       checkSettlementReply: () => Effect.die("not used"),
+      suggestNextPrompt: () => Effect.die("not used"),
     }),
   ),
 );
