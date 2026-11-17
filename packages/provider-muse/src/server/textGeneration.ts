@@ -32,6 +32,7 @@ import {
   buildCompletionTriagePrompt,
   buildPrContentPrompt,
   buildSettlementReplyPrompt,
+  buildPromptSuggestionPrompt,
   buildThreadTitlePrompt,
 } from "@t3tools/provider-core/server/textGenerationPrompts";
 import {
@@ -381,6 +382,15 @@ export const makeMuseTextGeneration = Effect.fn("makeMuseTextGeneration")(functi
       modelSelection: input.modelSelection,
     });
   });
+  const suggestNextPrompt: ProviderTextGeneration["suggestNextPrompt"] = Effect.fn(
+    "MuseTextGeneration.suggestNextPrompt",
+  )(function* (input) {
+    return yield* runMuseJson({
+      operation: "suggestNextPrompt",
+      ...buildPromptSuggestionPrompt(input),
+      modelSelection: input.modelSelection,
+    });
+  });
   return {
     generateCommitMessage,
     generatePrContent,
@@ -389,6 +399,7 @@ export const makeMuseTextGeneration = Effect.fn("makeMuseTextGeneration")(functi
     generateReviewGuide,
     triageCompletion,
     checkSettlementReply,
+    suggestNextPrompt,
     generateTranscriptionPostProcessing,
   } satisfies ProviderTextGeneration;
 });

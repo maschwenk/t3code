@@ -55,6 +55,7 @@ const unsupportedTextGeneration: ProviderTextGeneration = (() => {
     generateReviewGuide: () => unsupported("generateReviewGuide"),
     triageCompletion: () => unsupported("triageCompletion"),
     checkSettlementReply: () => unsupported("checkSettlementReply"),
+    suggestNextPrompt: () => unsupported("suggestNextPrompt"),
     generateTranscriptionPostProcessing: () => unsupported("generateTranscriptionPostProcessing"),
   };
 })();

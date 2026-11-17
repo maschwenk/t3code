@@ -606,6 +606,7 @@ it.effect.each(PREFLIGHT_PRIMARY_STATES)("text generation preflight: %s", (prima
           generateTranscriptionPostProcessing: () => Effect.die("unused"),
           triageCompletion: () => Effect.die("unused"),
           checkSettlementReply: () => Effect.die("unused"),
+          suggestNextPrompt: () => Effect.die("unused"),
           generateThreadTitle: (input) =>
             Effect.sync(() => {
               calls.push(input.modelSelection);

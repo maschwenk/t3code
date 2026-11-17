@@ -292,6 +292,7 @@ function createTextGeneration(
     generateReviewGuide: () => Effect.succeed({ stops: [] }),
     triageCompletion: () => Effect.succeed({ notify: true }),
     checkSettlementReply: () => Effect.succeed({ needsUser: false }),
+    suggestNextPrompt: () => Effect.succeed({ suggestion: "" }),
     generateTranscriptionPostProcessing: () =>
       Effect.succeed({ transcription: "processed transcript" }),
     ...overrides,
@@ -345,6 +346,7 @@ function createTextGeneration(
     generateReviewGuide: (input) => implementation.generateReviewGuide(input),
     triageCompletion: (input) => implementation.triageCompletion(input),
     checkSettlementReply: (input) => implementation.checkSettlementReply(input),
+    suggestNextPrompt: (input) => implementation.suggestNextPrompt(input),
     generateTranscriptionPostProcessing: (input) =>
       implementation.generateTranscriptionPostProcessing(input),
   };
