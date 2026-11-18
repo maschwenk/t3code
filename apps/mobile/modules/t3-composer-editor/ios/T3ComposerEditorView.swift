@@ -471,6 +471,7 @@ public final class T3ComposerEditorView: ExpoView, UITextViewDelegate, UITextDro
   private let textView = ComposerTextView(usingTextLayoutManager: false)
   private let placeholderLabel = UILabel()
   private var placeholder = ""
+  private var growsWithPlaceholder = false
   private var value = ""
   private var tokensJson = "[]"
   private var tokens: [ComposerTokenPayload] = []
@@ -572,7 +573,6 @@ public final class T3ComposerEditorView: ExpoView, UITextViewDelegate, UITextDro
     textView.addGestureRecognizer(contextTap)
     addSubview(textView)
 
-    placeholderLabel.numberOfLines = 0
     placeholderLabel.adjustsFontForContentSizeCategory = true
     addSubview(placeholderLabel)
     applyTypography()
@@ -676,8 +676,8 @@ public final class T3ComposerEditorView: ExpoView, UITextViewDelegate, UITextDro
         }
       }
     }
-    // A long placeholder wraps over the whole lines the editor has room for and truncates
-    // the last one. Its lines use the draft's line height, so filling it in doesn't move it.
+    // Fills the lines the editor has room for and truncates the last; the draft's line height
+    // keeps the text still when it's filled in.
     let placeholderY = textView.textContainerInset.top
     let width = placeholderWidth()
     let room = bounds.height - placeholderY - textView.textContainerInset.bottom
@@ -796,6 +796,11 @@ public final class T3ComposerEditorView: ExpoView, UITextViewDelegate, UITextDro
     self.placeholder = placeholder
     textView.accessibilityLabel = placeholder
     applyPlaceholder()
+  }
+
+  func setGrowsWithPlaceholder(_ growsWithPlaceholder: Bool) {
+    self.growsWithPlaceholder = growsWithPlaceholder
+    setNeedsLayout()
   }
 
   func setFontFamily(_ fontFamily: String) {
@@ -1349,8 +1354,8 @@ public final class T3ComposerEditorView: ExpoView, UITextViewDelegate, UITextDro
 
   private func emitContentSizeIfNeeded() {
     guard bounds.width > 0 else { return }
-    // An empty editor reports its placeholder, so JS can make room for a long prompt suggestion.
-    if value.isEmpty, !placeholder.isEmpty {
+    // An empty editor that grows with its placeholder reports the placeholder's size instead.
+    if growsWithPlaceholder, value.isEmpty, !placeholder.isEmpty {
       let wrapped = placeholderSize(width: placeholderWidth())
       let natural = placeholderSize(width: .greatestFiniteMagnitude)
       let oneLine = wrapped.height <= lineHeight + 0.5

@@ -44,18 +44,14 @@ const EXPANDED_EDITOR_INSET = 14;
 // Room under the expanded editor for the toolbar row.
 const EXPANDED_EDITOR_BOTTOM = 52;
 
-const NO_CONTENT = { width: 0, height: 0 };
-
-/** `growsWithPlaceholder` lets an empty editor grow to fit its placeholder, such as a prompt suggestion. */
 export function useCompactComposerEditor(
   text: ScaledTextRole,
   value: string,
   animate: boolean,
+  // Lets the empty editor grow to show all of its placeholder, such as a prompt suggestion.
   growsWithPlaceholder = false,
 ) {
-  const [reportedSize, setContentSize] = useState(NO_CONTENT);
-  // An empty iOS editor reports its placeholder's size; other placeholders stay one truncated line.
-  const contentSize = value.length > 0 || growsWithPlaceholder ? reportedSize : NO_CONTENT;
+  const [contentSize, setContentSize] = useState({ width: 0, height: 0 });
   const [compactWidth, setCompactWidth] = useState(0);
   const contentHeight = contentSize.height;
   const rowWidth = useSharedValue(0);
@@ -71,7 +67,9 @@ export function useCompactComposerEditor(
   // A line that fits the expanded editor may still overflow its compact slot.
   // Compare its measured width too so widening cannot trigger a collapse loop.
   const isExpanded =
-    contentHeight > text.lineHeight * 1.5 || (compactWidth > 0 && contentSize.width > compactWidth);
+    (value.length > 0 || growsWithPlaceholder) &&
+    (contentHeight > text.lineHeight * 1.5 ||
+      (compactWidth > 0 && contentSize.width > compactWidth));
   const compactRowHeight = Math.max(44, minimum);
   const compactBottom = (compactRowHeight - minimum) / 2;
   const isRTL = I18nManager.isRTL;
@@ -137,6 +135,7 @@ export function useCompactComposerEditor(
     },
     editorProps: {
       singleLineCentered: !isExpanded,
+      growsWithPlaceholder,
       scrollEnabled: Platform.OS === "android" || contentHeight >= text.lineHeight * 4,
       contentInsetVertical: inset,
       onContentSizeChange: (size: { width: number; height: number }) => {
