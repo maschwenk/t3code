@@ -161,18 +161,18 @@ into a normal draft.
 ## Suggested next prompt
 
 Turn on **Suggest next prompt** in Settings > Labs. After a Claude or Codex turn completes, the
-empty composer shows a predicted next message. Press `Tab` to fill it in, then edit or send it, or
-press `Escape` to dismiss it. If you start typing the suggestion yourself, the rest of it stays after
-your cursor, and `Tab` finishes it. Each suggestion is one extra request that reuses the turn's prompt
+empty composer shows a predicted next message. Fill it in, then edit or send it: on web and
+desktop press `Tab` (or `Escape` to dismiss it), and on mobile tap the button that replaces send.
+On web and desktop, if you start typing the suggestion yourself, the rest of it stays after your
+cursor, and `Tab` finishes it. Each suggestion is one extra request that reuses the turn's prompt
 cache, so it uses a little of your plan's usage. Claude skips suggestions on the first turn of a
 thread and near usage limits, and drops some it writes, such as a one-word reply like "send". When
 a Claude turn has no suggestion 10 seconds after it ends, your text generation model reads the
 turn and writes one, unless the next step isn't clear. Claude's own suggestion replaces it if it
-arrives later. Codex needs version 0.165 or later; if T3 Code manages
-Codex, update it in Settings > Providers. Codex follows a change to the setting at once; open Claude
-threads follow it after they restart. On mobile, the suggestion shows in the empty composer and the
-send button becomes a sparkles button; tap it to fill the suggestion in, then edit or send it. You
-can also turn the setting on for each machine in the mobile app's Settings > Labs.
+arrives later. Codex needs version 0.165 or later; if T3 Code manages Codex, update it in
+Settings > Providers. Codex follows a change to the setting at once; open Claude threads follow it
+after they restart. The mobile app's Settings > Labs has the same switch for each connected
+machine; update T3 Code on a machine that isn't listed.
 
 ## Edit an earlier prompt
 

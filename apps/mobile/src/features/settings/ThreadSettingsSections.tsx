@@ -60,7 +60,7 @@ export function SettingsLabsRouteScreen() {
         <MachineBetaSection
           title="Suggest next prompt"
           icon="square.and.pencil"
-          capability={null}
+          capability="promptSuggestions"
           setting="promptSuggestionsEnabled"
           description="After a Claude or Codex turn, show a predicted next message in the empty composer. Tap the insert button in the composer to fill it in. Each is an extra cached request on your plan. Needs Codex 0.165+. Claude threads update on restart."
         />
@@ -271,8 +271,7 @@ function MachineBetaSection({
 }: {
   readonly title: string;
   readonly icon: ComponentProps<typeof SettingsSwitchRow>["icon"];
-  /** Null for a setting with no capability flag; older servers ignore the unknown setting. */
-  readonly capability: "peerLinks" | "fastWorktreeCheckout" | null;
+  readonly capability: "peerLinks" | "fastWorktreeCheckout" | "promptSuggestions";
   readonly setting: MachineBetaSetting;
   readonly description: string;
 }) {
@@ -280,9 +279,7 @@ function MachineBetaSection({
   const supported = environments.filter(
     (environment) =>
       environment.connection.phase === "connected" &&
-      (capability === null
-        ? environment.serverConfig != null
-        : environment.serverConfig?.environment.capabilities[capability] === true),
+      environment.serverConfig?.environment.capabilities[capability] === true,
   );
   const writable = useEnvironmentsWithScope(supported, AuthSettingsWriteScope);
   const updateSettings = useAtomCommand(serverEnvironment.updateSettings, {
