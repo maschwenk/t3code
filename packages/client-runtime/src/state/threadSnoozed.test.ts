@@ -11,7 +11,9 @@ import {
   effectiveSnoozed,
   hasQueuedTurnStart,
   pickSnoozePreset,
+  resolveRepeatSnooze,
   resolveSnoozePresets,
+  snoozeLengthSetting,
   threadRaisedHandWhileSnoozed,
   threadWokeAt,
   isThreadWokeUnseen,
@@ -488,6 +490,37 @@ describe("pickSnoozePreset", () => {
       now: localDate(2026, 8, 31, 0, 1),
     });
     expect(picked?.snoozedUntil).toBe(localDate(2026, 8, 31, 9).toISOString());
+  });
+});
+
+describe("resolveRepeatSnooze", () => {
+  const wake = (last: SnoozePresetSetting | null, now: Date) =>
+    resolveRepeatSnooze(last, now)?.snoozedUntil;
+
+  it("repeats a duration from now and a set time at its next occurrence", () => {
+    const now = localDate(2026, 4, 8, 15);
+    expect(wake({ kind: "after", minutes: 45 }, now)).toBe(
+      localDate(2026, 4, 8, 15, 45).toISOString(),
+    );
+    expect(wake({ kind: "at", day: "tomorrow", time: "09:00" }, now)).toBe(
+      localDate(2026, 4, 9, 9).toISOString(),
+    );
+  });
+
+  it("falls back to the soonest preset before any choice or once today's time has passed", () => {
+    const evening = localDate(2026, 4, 8, 19);
+    const soonest = localDate(2026, 4, 8, 20).toISOString();
+    expect(wake(null, evening)).toBe(soonest);
+    expect(wake({ kind: "at", day: "today", time: "18:00" }, evening)).toBe(soonest);
+  });
+
+  it("repeats a custom date as its length", () => {
+    const now = localDate(2026, 4, 8, 15);
+    expect(snoozeLengthSetting(localDate(2026, 4, 8, 17, 30).toISOString(), now)).toEqual({
+      kind: "after",
+      minutes: 150,
+    });
+    expect(snoozeLengthSetting(localDate(2026, 6, 8, 15).toISOString(), now)).toBeNull();
   });
 });
 
