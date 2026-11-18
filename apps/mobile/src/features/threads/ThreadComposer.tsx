@@ -452,6 +452,7 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
     props.offersPromptSuggestion === true &&
       !props.isDraft &&
       props.canOperateThread &&
+      // Older servers decode the missing setting as false, so true also proves the method exists.
       props.serverConfig?.settings.promptSuggestionsEnabled === true,
   );
   // Shown as the empty composer's placeholder, and accepted from the idle send slot.
