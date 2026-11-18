@@ -174,8 +174,9 @@ process.on("message", async (message) => {
       await begin(message, false);
       await feed(message.pcm, true);
       const text = texts.join(" ").trim();
+      const audioStats = audio.stats();
       audio = undefined;
-      process.send({ type: "t3-speech-reply", ok: true, text });
+      process.send({ type: "t3-speech-reply", ok: true, text, audioStats });
     }
   } catch (error) {
     process.send({ type: "t3-speech-reply", ok: false,
@@ -199,6 +200,7 @@ type Reply = {
   readonly languages?: unknown;
   readonly revision?: number;
   readonly preview?: SpeechStreamText | null;
+  readonly audioStats?: ReturnType<ReturnType<typeof createSpeechAudio>["stats"]>;
 };
 
 // transcribe-cpp has an import-only export. Load its disk entry with require so
@@ -443,7 +445,10 @@ async function loadNativeSpeechModelOnce(
     ) => {
       const result = await send({ kind: "transcribe", pcm, options, filterSilence, vadPath });
       if (typeof result.text !== "string") throw new Error("Invalid speech process response.");
-      return { text: result.text };
+      return {
+        text: result.text,
+        ...(result.audioStats ? { audioStats: result.audioStats } : {}),
+      };
     },
     dispose,
   };

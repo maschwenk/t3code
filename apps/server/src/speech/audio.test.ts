@@ -27,9 +27,13 @@ it("retains pre-roll, onset and offline/streaming tails without duplicating edge
     }
     chunks.push(...audio.take(true));
     const retained = chunks.flatMap((chunk) => [...chunk]);
-    expect(retained).toEqual([
-      ...pcm.subarray(6 * frame, (24 + (nativeStreaming ? 52 : 15)) * frame),
-    ]);
+    const lastKept = 24 + (nativeStreaming ? 52 : 15);
+    expect(retained).toEqual([...pcm.subarray(6 * frame, lastKept * frame)]);
+    expect(audio.stats()).toEqual({
+      samples: pcm.length,
+      keptSamples: retained.length,
+      trailingDroppedSamples: (100 - lastKept) * frame,
+    });
   }
 });
 
@@ -38,6 +42,11 @@ it("handles silence, short speech, a partial last frame and disabled filtering",
   silence.append(new Float32Array(frame * 4 + 7));
   silence.score(0, [0, 0, 0, 0, 0]);
   expect(silence.take(true)).toEqual([]);
+  expect(silence.stats()).toEqual({
+    samples: frame * 4 + 7,
+    keptSamples: 0,
+    trailingDroppedSamples: frame * 4 + 7,
+  });
   const short = make();
   short.append(new Float32Array([0.2, 0.1]));
   short.score(0, [0.8]);
@@ -47,6 +56,11 @@ it("handles silence, short speech, a partial last frame and disabled filtering",
   raw.append(pcm);
   raw.score(0, new Array(50).fill(0));
   expect(raw.take(true)[0]).toEqual(pcm);
+  expect(raw.stats()).toEqual({
+    samples: pcm.length,
+    keptSamples: pcm.length,
+    trailingDroppedSamples: 0,
+  });
 });
 
 it("plans at pauses while recording and preserves ordered audio and final tails", () => {
