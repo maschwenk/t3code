@@ -466,13 +466,14 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
     freshSessionArmed !== true
       ? promptSuggestion
       : null;
-  const acceptPromptSuggestion = () => {
-    if (offeredPromptSuggestion === null) return;
-    onChangeDraftMessage(offeredPromptSuggestion);
-    composerMenu.onSelectionChange({
-      start: offeredPromptSuggestion.length,
-      end: offeredPromptSuggestion.length,
-    });
+  const acceptPromptSuggestion = async () => {
+    const suggestion = offeredPromptSuggestion;
+    if (suggestion === null) return;
+    // The tap can commit a pending autocorrection; text it leaves in the draft wins.
+    await inputRef.current?.flushPendingInput();
+    if (getComposerDraftSnapshot(composerDraftKey).text !== "") return;
+    onChangeDraftMessage(suggestion);
+    composerMenu.onSelectionChange({ start: suggestion.length, end: suggestion.length });
   };
   const isExpanded = isFocused || settingsSheetPresentation.keepsComposerExpanded;
   const { usesLargeControls, paddingVertical: surfacePaddingVertical } = useComposerChrome();
@@ -1044,7 +1045,7 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
                     size={usesLargeControls ? "large" : "regular"}
                     accessibilityLabel={`Use suggestion: ${offeredPromptSuggestion}`}
                     icon={{ ios: "text.insert", android: "edit" }}
-                    onPress={acceptPromptSuggestion}
+                    onPress={() => void acceptPromptSuggestion()}
                   />
                 ) : (
                   <SendActionButton
