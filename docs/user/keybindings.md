@@ -131,7 +131,8 @@ desktop app. Unknown keys evaluate to `false`.
 model picker is open. The thread jumps do not run while the model picker is open.
 Those defaults use `isDesktop` so they do not steal the
 browser's tab-switch shortcuts. Remove that condition in Settings if you want
-the same jumps in a browser.
+the same jumps in a browser. `mod+alt+up` opens the first thread in the active list,
+below any pinned threads, so you can work down it with `mod+shift+]`.
 
 Combine keys with `!` for not, `&&` for and, `||` for or, and parentheses:
 
