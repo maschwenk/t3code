@@ -1,10 +1,10 @@
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
-// Fork builds recorded ScheduledTaskEndConditions as 59, then 68, ids upstream later took.
-// The migrator skips every id up to the highest recorded, so drop that record while it is
-// the latest; upstream's migrations from there run, and 81 adds the columns if missing.
-const FORK_RECORDED_IDS = [59, 68] as const;
+// Fork builds recorded ScheduledTaskEndConditions as 59, then 68, then 81, ids upstream later
+// took. The migrator skips every id up to the highest recorded, so drop that record while it is
+// the latest; upstream's migrations from there run, and 99 adds the columns if missing.
+const FORK_RECORDED_IDS = [59, 68, 81] as const;
 
 export const reconcileForkMigration = Effect.fn("reconcileForkMigration")(function* () {
   const sql = yield* SqlClient.SqlClient;

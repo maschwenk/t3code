@@ -7,6 +7,7 @@ import {
   type ScheduledTask,
   type ScheduledTaskThreadMode,
   type ScheduledTaskUpsertSchedule,
+  scheduledTaskCadenceLabel,
   scheduledTaskThreadMode,
   type ModelSelection,
   type RuntimeMode,
@@ -22,7 +23,12 @@ import {
   webhookFilterDraftsChanged,
   type WebhookFilterDraft,
 } from "@t3tools/client-runtime/scheduled-task-webhook";
-import { resolveScheduleEnd, type ScheduleEndMode } from "@t3tools/client-runtime/scheduled-tasks";
+import {
+  resolveScheduleEnd,
+  type ScheduleEndMode,
+  scheduledTaskStatusText,
+} from "@t3tools/client-runtime/scheduled-tasks";
+import { scheduleTimeZoneLabel } from "@t3tools/client-runtime/scheduled-task-time-zone";
 
 import {
   resolveProjectSettings,
@@ -31,6 +37,30 @@ import {
 import type { ProviderInstanceEntry } from "../../providerInstances";
 
 import type { ResolvedSettingsScope } from "./settingsScope";
+
+export const WEEKDAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
+
+/**
+ * A task's status line, such as "Weekdays at 09:00 PT · 3 runs left". A fixed time of day names
+ * the server's zone, since the task runs on the server's clock.
+ */
+export function scheduledTaskLine(
+  task: ScheduledTask,
+  timeZone: string | undefined,
+  formatTime: (iso: string) => string,
+  nowMs: number,
+): string {
+  const cadence = scheduledTaskCadenceLabel(task.schedule);
+  const zone =
+    task.schedule.type === "fixed_time"
+      ? scheduleTimeZoneLabel(timeZone, task.nextRunAt)
+      : undefined;
+  const zoned = zone === undefined ? cadence : `${cadence} ${zone}`;
+  if (task.blockedByPolicy !== undefined) return `${zoned} · ${task.blockedByPolicy}`;
+  // The shared status text opens with the cadence for every schedule except a one-time one.
+  const status = scheduledTaskStatusText(task, formatTime, nowMs);
+  return zone === undefined ? status : `${zoned}${status.slice(cadence.length)}`;
+}
 
 export function matchesScheduledTaskScope(
   scope: ResolvedSettingsScope,
@@ -181,6 +211,8 @@ export function scheduleDraftErrors(draft: DraftState) {
       ];
     return [];
   }
+  if (draft.scheduleMode === "fixed" && !draft.timeOfDay)
+    return [{ title: "Invalid run time", description: "Pick a time." }];
   if (draft.scheduleMode !== "webhook") return [];
   if (parseMaxDeliveryAge(draft.maxDeliveryAgeMinutes) === undefined)
     return [
@@ -291,7 +323,7 @@ export function scheduleFromDraft(draft: DraftState): ScheduledTaskUpsertSchedul
   const selectedEveryDay = draft.weekdays.size === 0 || draft.weekdays.size === 7;
   return {
     type: "fixed_time",
-    timeOfDay: draft.timeOfDay || "09:00",
+    timeOfDay: draft.timeOfDay,
     ...(selectedEveryDay ? {} : { weekdays: [...draft.weekdays].toSorted() }),
   };
 }
@@ -311,7 +343,8 @@ export function taskToDraft(task: ScheduledTask): DraftState {
     scheduleMode: schedule.type === "fixed_time" ? "fixed" : schedule.type,
     intervalMinutes:
       schedule.type === "interval" ? String(Math.max(1, schedule.everyMs / 60_000)) : "15",
-    timeOfDay: schedule.type === "fixed_time" ? schedule.timeOfDay : "09:00",
+    // A time input shows nothing for an unpadded hour such as 9:05, which agents may save.
+    timeOfDay: schedule.type === "fixed_time" ? schedule.timeOfDay.padStart(5, "0") : "09:00",
     runAt: schedule.type === "once" ? toDateTimeLocalValue(new Date(schedule.runAt)) : "",
     savedRunAt: schedule.type === "once" ? schedule.runAt : "",
     weekdays,

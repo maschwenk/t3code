@@ -9,6 +9,11 @@ import {
   type RecordingKeyPress,
 } from "./RecordingInput.ts";
 
+// Modal dialogs, popovers and fullscreen elements paint above any z-index, so the cursors live in
+// the top layer as manual popovers and move back to its front whenever the page adds to it.
+const POPOVER_RESET =
+  "all:initial;margin:0;padding:0;border:0;background:transparent;overflow:visible;inset:auto;animation:none;transition:none;";
+
 /** Draw in guest coordinates; Chromium's native cursor ignores webview CSS placement/scale. Hide it to avoid duplicates. */
 export function installRecordingCursor(
   document: Document,
@@ -18,21 +23,42 @@ export function installRecordingCursor(
 ) {
   const style = document.createElement("style");
   style.textContent =
-    "html, html * { cursor: none !important; } @media (prefers-reduced-motion: reduce) { [data-t3code-recording-agent-cursor] { transition: none !important; } }";
+    "html, html * { cursor: none !important; } [data-t3code-recording-cursor]::backdrop, [data-t3code-recording-agent-cursor]::backdrop { display: none !important; } @media (prefers-reduced-motion: reduce) { [data-t3code-recording-agent-cursor] { transition: none !important; } }";
   const cursor = document.createElement("div");
   cursor.setAttribute("aria-hidden", "true");
   cursor.setAttribute("data-t3code-recording-cursor", "");
+  cursor.popover = "manual";
   cursor.style.cssText =
+    POPOVER_RESET +
     "position:fixed;left:0;top:0;width:16px;height:24px;pointer-events:none;z-index:2147483647;display:none;";
   cursor.innerHTML =
     '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="24" viewBox="0 0 16 24"><path d="M1 1v18l4-4 4 8 3-1.5-4-8H15Z" fill="black" stroke="white" stroke-width="1.5" stroke-linejoin="round"/></svg>';
   const agentCursor = document.createElement("div");
   agentCursor.setAttribute("aria-hidden", "true");
   agentCursor.setAttribute("data-t3code-recording-agent-cursor", "");
+  agentCursor.popover = "manual";
   agentCursor.style.cssText =
+    POPOVER_RESET +
     "position:fixed;left:0;top:0;pointer-events:none;z-index:2147483647;display:none;transition:transform 150ms ease-out,opacity 150ms ease-out;";
   agentCursor.innerHTML = agentCursorMarkup("t3code-recording-agent-cursor");
   document.documentElement.append(style, cursor, agentCursor);
+  const cursors = [cursor, agentCursor];
+  const raise = () => {
+    for (const element of cursors) {
+      if (!element.isConnected || typeof element.showPopover !== "function") continue;
+      if (element.matches(":popover-open")) element.hidePopover();
+      element.showPopover();
+    }
+  };
+  raise();
+  const dialogObserver = new MutationObserver(raise);
+  dialogObserver.observe(document, { subtree: true, attributes: true, attributeFilter: ["open"] });
+  const toggle = (event: Event) => {
+    if (cursors.some((element) => element === event.target)) return;
+    if ("newState" in event && event.newState === "open") raise();
+  };
+  document.addEventListener("toggle", toggle, true);
+  document.addEventListener("fullscreenchange", raise);
   let controller: "human" | "agent" | "none" = "none";
   let humanPoint: { readonly x: number; readonly y: number } | null = null;
   const drawHuman = () => {
@@ -122,13 +148,15 @@ export function installRecordingCursor(
     moveHuman(point);
     pointer(point, "move");
   };
+  const press = (point: { readonly x: number; readonly y: number }, phase: "down" | "up") => {
+    if (phase === "down") moveHuman(point);
+    pointer(point, phase);
+  };
   const pointerDown = (event: PointerEvent) => {
-    if (event.pointerType === "touch") return;
-    moveHuman({ x: event.clientX, y: event.clientY });
-    pointer({ x: event.clientX, y: event.clientY }, "down");
+    if (event.pointerType !== "touch") press({ x: event.clientX, y: event.clientY }, "down");
   };
   const pointerUp = (event: PointerEvent) => {
-    if (event.pointerType !== "touch") pointer({ x: event.clientX, y: event.clientY }, "up");
+    if (event.pointerType !== "touch") press({ x: event.clientX, y: event.clientY }, "up");
   };
   const keyDown = (event: KeyboardEvent) => {
     if (event.isComposing || event.repeat) return;
@@ -162,6 +190,7 @@ export function installRecordingCursor(
   window.addEventListener("blur", hide);
   return {
     move,
+    press,
     keyPress,
     setController,
     dispose: () => {
@@ -173,6 +202,9 @@ export function installRecordingCursor(
       window.removeEventListener("keyup", keyUp, true);
       window.removeEventListener("pointerout", leave, true);
       window.removeEventListener("blur", hide);
+      dialogObserver.disconnect();
+      document.removeEventListener("toggle", toggle, true);
+      document.removeEventListener("fullscreenchange", raise);
       cancelPendingPointer();
       window.clearTimeout(agentTimer);
       cursor.remove();

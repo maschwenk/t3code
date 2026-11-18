@@ -59,10 +59,10 @@ export function SettingsLabsRouteScreen() {
         />
         <MachineBetaSection
           title="Suggest next prompt"
-          icon="sparkles"
+          icon="square.and.pencil"
           capability={null}
           setting="promptSuggestionsEnabled"
-          description="After a Claude or Codex turn, show a predicted next message in the empty composer. Tap the sparkles button to fill it in. Each is an extra cached request on your plan. Needs Codex 0.165+. Claude threads update on restart."
+          description="After a Claude or Codex turn, show a predicted next message in the empty composer. Tap the insert button in the composer to fill it in. Each is an extra cached request on your plan. Needs Codex 0.165+. Claude threads update on restart."
         />
       </ScrollView>
     </SettingsScreen>

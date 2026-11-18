@@ -58,8 +58,8 @@ query PullRequestCore(
   $number: Int!
   $headRef: String!
   $required: Boolean!
-  $mergeQueue: Boolean!
   $requestedReviewers: Int!
+  $mergeQueue: Boolean!
 ) {
   repository(owner: $owner, name: $name) {
     mergeCommitAllowed
@@ -112,6 +112,18 @@ query PullRequestCore(
       autoMergeRequest {
         mergeMethod
       }
+      # Merge queue checks run on a commit of the queue's own, so a pull request the queue drops
+      # can keep a green head. Only this event says it left without merging.
+      mergeQueueRemovals: timelineItems(last: 1, itemTypes: [REMOVED_FROM_MERGE_QUEUE_EVENT])
+        @include(if: $mergeQueue) {
+        nodes {
+          ... on RemovedFromMergeQueueEvent {
+            id
+            createdAt
+            reason
+          }
+        }
+      }
       viewerCanUpdate
       viewerDidAuthor
       viewerCanUpdateBranch
@@ -145,6 +157,7 @@ query PullRequestCore(
         nodes {
           name
           color
+          description
         }
       }
       commits(last: 1) {
@@ -160,20 +173,6 @@ query PullRequestCore(
                   endCursor
                 }
               }
-            }
-          }
-        }
-      }
-      # The merge queue's latest removal, so a watch can tell the agent one that did not merge.
-      # Gated like isRequired: an Enterprise server without merge queues would fail the read.
-      timelineItems(last: 1, itemTypes: [REMOVED_FROM_MERGE_QUEUE_EVENT])
-        @include(if: $mergeQueue) {
-        nodes {
-          ... on RemovedFromMergeQueueEvent {
-            createdAt
-            reason
-            actor {
-              login
             }
           }
         }
