@@ -7,6 +7,7 @@ import {
   resolveCustomSnooze,
   type CustomSnoozeInput,
 } from "@t3tools/client-runtime/state/thread-settled";
+import { rememberCustomSnooze } from "./Sidebar.snooze";
 import { Button } from "./ui/button";
 import { CalendarIcon, Settings2Icon } from "lucide-react";
 import { Calendar } from "./ui/calendar";
@@ -46,6 +47,7 @@ export function requestCustomSnooze(): Promise<SnoozeChoice | null> {
 function finish(choice: SnoozeChoice | null) {
   const request = useRequest.getState().request;
   useRequest.setState({ request: null });
+  if (choice) rememberCustomSnooze(choice.snoozedUntil, new Date());
   request?.resolve(choice);
 }
 

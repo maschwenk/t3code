@@ -236,6 +236,11 @@ function selectOpenCodeRuntimeTextGeneration(
         v1: v1.checkSettlementReply(input),
         v2: v2.checkSettlementReply(input),
       }),
+    suggestNextPrompt: (input) =>
+      byOpenCodeRuntime(resolve, {
+        v1: v1.suggestNextPrompt(input),
+        v2: v2.suggestNextPrompt(input),
+      }),
     generateTranscriptionPostProcessing: (input) =>
       byOpenCodeRuntime(resolve, {
         v1: v1.generateTranscriptionPostProcessing(input),

@@ -3288,6 +3288,59 @@ it.effect(
     }),
 );
 
+it.effect(
+  "ProviderSessionManagerV2 keeps a server-offered prompt suggestion only until the provider sends one",
+  () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const effect = Effect.gen(function* () {
+        const eventSink = yield* EventSink.EventSinkV2;
+        const idAllocator = yield* IdAllocator.IdAllocatorV2;
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make("thread-provider-session-manager-offered-suggestion");
+        const providerSessionId = yield* idAllocator.allocate.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+          threadId,
+        });
+        yield* eventSink.write({
+          events: [yield* makeThreadCreatedEvent({ idAllocator, threadId, now })],
+        });
+        yield* manager.open({ threadId, providerSessionId, modelSelection, runtimePolicy });
+        const queue = (yield* Ref.get(state)).eventQueues.get(String(providerSessionId));
+        const runId = idAllocator.derive.run({ threadId, ordinal: 1 });
+        const received = yield* Queue.unbounded<OrchestrationV2PromptSuggestion>();
+        yield* manager.subscribePromptSuggestion(threadId).pipe(
+          Stream.runForEach((suggestion) => Queue.offer(received, suggestion)),
+          Effect.forkScoped,
+        );
+        assert.isNull(yield* Queue.take(received));
+
+        assert.isTrue(yield* manager.offerPromptSuggestion(threadId, { runId, text: "send" }));
+        assert.deepEqual(yield* Queue.take(received), { runId, text: "send" });
+
+        // The provider's own suggestion for the run, arriving late, replaces the offered one.
+        yield* Queue.offer(queue!, {
+          type: "prompt_suggestion.updated",
+          driver: CODEX_DRIVER,
+          threadId,
+          runId,
+          text: "send it",
+        });
+        assert.deepEqual(yield* Queue.take(received), { runId, text: "send it" });
+
+        // A second offer for the same run never overwrites what the run already has.
+        assert.isFalse(yield* manager.offerPromptSuggestion(threadId, { runId, text: "send" }));
+        assert.deepEqual(
+          Option.getOrNull(yield* Stream.runHead(manager.subscribePromptSuggestion(threadId))),
+          { runId, text: "send it" },
+        );
+      });
+
+      yield* effect.pipe(Effect.scoped, Effect.provide(layerTest({ state, idleTimeoutMs: 1_000 })));
+    }),
+);
+
 const openSessionWithBackgroundCommand = (fixtureName: string) =>
   Effect.gen(function* () {
     const eventSink = yield* EventSink.EventSinkV2;

@@ -304,6 +304,7 @@ it.effect(
           otherWorkingThreads: () => Effect.succeed([]),
           releaseUnlessBusy: () => Effect.succeed(true),
           subscribePromptSuggestion: () => Stream.empty,
+          offerPromptSuggestion: () => Effect.succeed(false),
         }),
       );
       const layerControl = ProviderTurnControlService.layer.pipe(

@@ -97,6 +97,22 @@ type ProviderRetryItem = ProviderErrorItem & {
 };
 /** Suggestions outlive their sessions, so keep only the most recently updated threads. */
 const MAX_PROMPT_SUGGESTIONS = 256;
+
+/** The store with `suggestion` as the thread's latest, evicting the least recently updated threads. */
+const withPromptSuggestion = (
+  current: ReadonlyMap<ThreadId, NonNullable<OrchestrationV2PromptSuggestion>>,
+  threadId: ThreadId,
+  suggestion: NonNullable<OrchestrationV2PromptSuggestion>,
+): ReadonlyMap<ThreadId, NonNullable<OrchestrationV2PromptSuggestion>> => {
+  const next = new Map(current);
+  next.delete(threadId);
+  next.set(threadId, suggestion);
+  for (const evicted of next.keys()) {
+    if (next.size <= MAX_PROMPT_SUGGESTIONS) break;
+    next.delete(evicted);
+  }
+  return next;
+};
 const WORKING_RUN_STATUSES: ReadonlySet<string> = new Set([
   "preparing",
   "starting",
@@ -283,6 +299,15 @@ export interface ProviderSessionManagerV2Shape {
   readonly subscribePromptSuggestion: (
     threadId: ThreadId,
   ) => Stream.Stream<OrchestrationV2PromptSuggestion>;
+  /**
+   * Stores a predicted next prompt the server wrote for a run, unless that run already has one.
+   * The provider's own suggestion for the run still replaces it when it arrives later.
+   * True when it was stored.
+   */
+  readonly offerPromptSuggestion: (
+    threadId: ThreadId,
+    suggestion: NonNullable<OrchestrationV2PromptSuggestion>,
+  ) => Effect.Effect<boolean>;
 }
 
 export class ProviderSessionManagerV2 extends Context.Service<
@@ -2786,19 +2811,12 @@ export const layerWithOptions = (
               return commandOutput.append(nativeEvent);
             }
             if (nativeEvent.type === "prompt_suggestion.updated") {
-              return SubscriptionRef.update(promptSuggestionStore, (current) => {
-                const next = new Map(current);
-                next.delete(nativeEvent.threadId);
-                next.set(nativeEvent.threadId, {
+              return SubscriptionRef.update(promptSuggestionStore, (current) =>
+                withPromptSuggestion(current, nativeEvent.threadId, {
                   runId: nativeEvent.runId,
                   text: nativeEvent.text,
-                });
-                for (const threadId of next.keys()) {
-                  if (next.size <= MAX_PROMPT_SUGGESTIONS) break;
-                  next.delete(threadId);
-                }
-                return next;
-              });
+                }),
+              );
             }
             const tracked = retryStalls.track(nativeEvent);
             const event = tracked.event;
@@ -3454,6 +3472,12 @@ export const layerWithOptions = (
                   ),
             ),
             Stream.changes,
+          ),
+        offerPromptSuggestion: (threadId, suggestion) =>
+          SubscriptionRef.modify(promptSuggestionStore, (current) =>
+            current.get(threadId)?.runId === suggestion.runId
+              ? [false, current]
+              : [true, withPromptSuggestion(current, threadId, suggestion)],
           ),
       } satisfies ProviderSessionManagerV2Shape);
     }),

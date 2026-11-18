@@ -42,9 +42,11 @@ const THREAD_KEYBINDING_COMMANDS = [
   "thread.next",
   "thread.copyReference",
   "thread.settle",
+  "thread.snooze",
   "thread.pin",
   "thread.regenerateTitle",
   "thread.undo",
+  "thread.firstActive",
   ...THREAD_JUMP_KEYBINDING_COMMANDS,
 ] as const;
 

@@ -131,7 +131,7 @@ import { useOrderWhileOpen } from "../hooks/useOrderWhileOpen";
 import { useProjectPin } from "../hooks/useProjectGroupUpdate";
 import { useSidebarProjectGroups } from "../hooks/useSidebarProjectGroups";
 import { isCommandPaletteOpen, openCommandPalette } from "../commandPaletteBus";
-import { registerSettleAndAdvance } from "../settleAndAdvance";
+import { registerSettleAndAdvance, registerSnoozeAndAdvance } from "../settleAndAdvance";
 import { startNewThreadFromContext } from "../lib/chatThreadActions";
 import { useClientSettings } from "../hooks/useSettings";
 import { useCopyToClipboard } from "../hooks/useCopyToClipboard";
@@ -554,10 +554,11 @@ function useSidebarThreads(input: {
               : EMPTY_THREADS,
           };
         });
+  const visibleActiveThreads =
+    projectFolders === null ? activeThreads : projectFolders.flatMap((folder) => folder.threads);
   const orderedThreads = flattenSidebarSections(sectionOrder, {
     pinned: pinnedThreads,
-    active:
-      projectFolders === null ? activeThreads : projectFolders.flatMap((folder) => folder.threads),
+    active: visibleActiveThreads,
     working: visibleWorkingThreads,
     snoozed: visibleSnoozedThreads,
     settled: renderedSettledThreads,
@@ -608,6 +609,7 @@ function useSidebarThreads(input: {
     visibleSnoozedThreads,
     visibleWorkingThreads,
     orderedThreadKeys: orderedThreads.map(threadShellKey),
+    firstActiveThreadKey: visibleActiveThreads[0] ? threadShellKey(visibleActiveThreads[0]) : null,
     threadByKey: new Map(orderedThreads.map((thread) => [threadShellKey(thread), thread] as const)),
     settledThreadKeys: new Set(settledThreads.map(threadShellKey)),
     snoozedThreadKeys: new Set(snoozedThreads.map(threadShellKey)),
@@ -1333,6 +1335,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     visibleSnoozedThreads,
     visibleWorkingThreads,
     orderedThreadKeys,
+    firstActiveThreadKey,
     threadByKey,
     settledThreadKeys,
     snoozedThreadKeys,
@@ -2281,6 +2284,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       })();
     },
   );
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- registers this sidebar's snooze handler in the module-level snoozeAndAdvance registry
+  useEffect(() => registerSnoozeAndAdvance(attemptSnooze), [attemptSnooze]);
 
   const handleMultiSelectContextMenu = useStableCallback(
     async (position: { x: number; y: number }, source: ContextMenuSource) => {
@@ -2908,6 +2913,10 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
         );
         return;
       }
+      if (command === "thread.firstActive") {
+        navigateToThreadKey(firstActiveThreadKey);
+        return;
+      }
       const jumpIndex = threadJumpIndexFromCommand(command ?? "");
       if (jumpIndex === null) return;
       navigateToThreadKey(orderedThreadKeys[jumpIndex] ?? null);
@@ -2915,6 +2924,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     window.addEventListener("keydown", onWindowKeyDown);
     return () => window.removeEventListener("keydown", onWindowKeyDown);
   }, [
+    firstActiveThreadKey,
     keybindings,
     navigateToThread,
     orderedThreadKeys,

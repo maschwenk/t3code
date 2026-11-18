@@ -49,7 +49,8 @@ type TextGenerationOp =
   | "generateReviewGuide"
   | "generateTranscriptionPostProcessing"
   | "triageCompletion"
-  | "checkSettlementReply";
+  | "checkSettlementReply"
+  | "suggestNextPrompt";
 
 const resolveInstance = (
   registry: ProviderInstanceRegistry.ProviderInstanceRegistry["Service"],
@@ -218,6 +219,12 @@ export const make = Effect.gen(function* () {
         input.modelSelection,
         null,
         (service, modelSelection) => service.checkSettlementReply({ ...input, modelSelection }),
+      );
+    }),
+    suggestNextPrompt: Effect.fn("TextGeneration.suggestNextPrompt")(function (input) {
+      // Model selection is already resolved for the thread's project by the caller.
+      return generate("suggestNextPrompt", input.modelSelection, null, (service, modelSelection) =>
+        service.suggestNextPrompt({ ...input, modelSelection }),
       );
     }),
     generateThreadTitle: Effect.fn("TextGeneration.generateThreadTitle")(function (input) {

@@ -34,7 +34,8 @@ import {
   isBackgroundWorkStopPending,
 } from "@t3tools/client-runtime/state/thread-execution";
 import { useAcknowledgeThreadWoke, useThreadActions } from "../../hooks/useThreadActions";
-import { settleAndAdvance } from "../../settleAndAdvance";
+import { settleAndAdvance, snoozeAndAdvance } from "../../settleAndAdvance";
+import { resolveShortcutSnooze } from "../Sidebar.snooze";
 import type { ChatShortcutCommands } from "./useChatShortcuts";
 import { resolveThreadLastVisitedAt } from "../Sidebar.logic";
 import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
@@ -181,7 +182,7 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
   } = input;
   const navigate = useNavigate();
   const router = useRouter();
-  const { settleThread, pinThread, confirmAndUnpinThread } = useThreadActions();
+  const { settleThread, snoozeThread, pinThread, confirmAndUnpinThread } = useThreadActions();
   const canWriteSourceControl = useEnvironmentScope(environmentId, AuthSourceControlWriteScope);
   const switchGitRef = useAtomCommand(vcsEnvironment.switchRef, { reportFailure: false });
   const updateThreadMetadata = useOrchestrationCommand(threadEnvironment.updateMetadata, {
@@ -670,6 +671,20 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
       }
       if (settleAndAdvance(activeThreadRef)) return;
       void settleThread(activeThreadRef).then(toastThreadActionFailure("Failed to settle thread"));
+    },
+    "thread.snooze": () => {
+      if (!readEnvironmentScope(environmentId, AuthOrchestrationOperateScope)) return false;
+      if (!activeThreadShell || !activeThreadRef || !serverConfigLoaded) return;
+      if (activeThreadSnoozed) {
+        void handleUnsnoozeActiveThread();
+        return;
+      }
+      const preset = resolveShortcutSnooze(activeThreadRef.environmentId);
+      if (!preset) return;
+      if (snoozeAndAdvance(activeThreadRef, preset)) return;
+      void snoozeThread(activeThreadRef, preset.snoozedUntil).then(
+        toastThreadActionFailure("Failed to snooze thread"),
+      );
     },
     "thread.pin": ({ event }) => {
       // An open project list pins its highlighted project with this key instead.

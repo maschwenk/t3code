@@ -1035,6 +1035,7 @@ describe("providerMaintenanceRunner", () => {
           generateReviewGuide: () => Effect.die("unused"),
           triageCompletion: () => Effect.die("unused"),
           checkSettlementReply: () => Effect.die("unused"),
+          suggestNextPrompt: () => Effect.die("unused"),
           generateTranscriptionPostProcessing: () => Effect.die("unused"),
           generateThreadTitle: () =>
             Effect.sync(() => {

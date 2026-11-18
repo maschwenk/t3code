@@ -343,6 +343,11 @@ local time zone, or a duration in minutes, hours, or days. Durations start when
 you confirm; one day means 24 hours. On web and desktop, you can also snooze
 several selected threads together. Choose **Wake thread** to bring a thread back early.
 
+On web and desktop, `mod+alt+s` snoozes the open thread with the last option you chose
+from a snooze menu on that device, then opens the next thread. A custom date repeats as its
+length. Before your first choice, or after a remembered today option's time passes, it uses
+the soonest option. On a snoozed thread, the same shortcut wakes it.
+
 A snoozed thread keeps working and stays hidden until its wake time, even while
 its agent wakes itself for background work. It comes back early for an approval,
 a new question, a failed run, or a message or answer you send. You can snooze an existing

@@ -20,6 +20,7 @@ const OpenCodeTextGenerationOperation = Schema.Literals([
   "generateReviewGuide",
   "triageCompletion",
   "checkSettlementReply",
+  "suggestNextPrompt",
   "generateTranscriptionPostProcessing",
 ]);
 

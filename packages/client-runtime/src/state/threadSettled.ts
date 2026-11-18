@@ -1,6 +1,10 @@
 // @effect-diagnostics globalDate:off -- UI snooze presets use local calendar boundaries and Intl labels.
 import * as DateTime from "effect/DateTime";
-import { DEFAULT_SNOOZE_PRESETS, type SnoozePresetSetting } from "@t3tools/contracts/settings";
+import {
+  DEFAULT_SNOOZE_PRESETS,
+  MAX_SNOOZE_PRESET_MINUTES,
+  type SnoozePresetSetting,
+} from "@t3tools/contracts/settings";
 
 import type { EnvironmentThreadShell, PendingSubagentRequest } from "./models.ts";
 
@@ -345,6 +349,31 @@ export function pickSnoozePreset(input: {
     (candidate) => candidate.kind === "after" && snoozePresetId(candidate) === input.id,
   );
   return (setting && resolveSnoozePreset(setting, input.now, input.formatTime)) ?? ahead;
+}
+
+/** A custom snooze as a repeatable choice: its length, even when it was picked as a date. */
+export function snoozeLengthSetting(
+  snoozedUntil: string,
+  now: Date,
+): Extract<SnoozePresetSetting, { kind: "after" }> | null {
+  const minutes = Math.round((Date.parse(snoozedUntil) - now.getTime()) / 60_000);
+  return minutes >= 1 && minutes <= MAX_SNOOZE_PRESET_MINUTES ? { kind: "after", minutes } : null;
+}
+
+/**
+ * The snooze to repeat without a menu: the last choice, or the soonest menu row before there
+ * is one or once a remembered set time has passed for today.
+ */
+export function resolveRepeatSnooze(
+  last: SnoozePresetSetting | null,
+  now: Date,
+  options: SnoozePresetOptions = {},
+): SnoozePreset | null {
+  return (
+    (last && resolveSnoozePreset(last, now, options.formatTime)) ??
+    resolveSnoozePresets(now, options)[0] ??
+    null
+  );
 }
 
 export function snoozeWakeLabel(snoozedUntil: string, options: { readonly now: string }): string {
