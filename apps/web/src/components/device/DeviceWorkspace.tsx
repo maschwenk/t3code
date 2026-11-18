@@ -1,5 +1,10 @@
 import * as Schema from "effect/Schema";
-import type { DeviceHostSummary, DeviceSummary, EnvironmentId } from "@t3tools/contracts";
+import type {
+  DeviceHostSummary,
+  DeviceSummary,
+  EnvironmentId,
+  ScopedThreadRef,
+} from "@t3tools/contracts";
 import { useRef, useState } from "react";
 import {
   captureDeviceScreenshot,
@@ -10,6 +15,7 @@ import { DeviceControlsRail } from "./DeviceControlsRail";
 import { DeviceStreamView } from "./DeviceStreamView";
 import { DeviceToolsPanel } from "./DeviceToolsPanel";
 import { useDeviceControls } from "./useDeviceControls";
+import { useDeviceRecording } from "./useDeviceRecording";
 
 const isDeviceScreenshotError = Schema.is(DeviceScreenshotError);
 
@@ -17,6 +23,8 @@ const DOWNLOAD_URL_LIFETIME_MS = 60_000;
 
 export function DeviceWorkspace(props: {
   environmentId: EnvironmentId;
+  /** The thread whose composer receives recordings. */
+  threadRef: ScopedThreadRef;
   device: DeviceSummary;
   hostLabel: string;
   hostKind: DeviceHostSummary["kind"] | undefined;
@@ -35,11 +43,27 @@ export function DeviceWorkspace(props: {
   const access = useDeviceHubAccess(props.environmentId, props.device.hostId);
   // Settings and tools run commands on the device's own machine, which Expo and Simlock do not expose.
   const runsHostCommands = props.hostKind === "local" || props.hostKind === "ssh";
-  const controls = useDeviceControls({
+  const hostControls = useDeviceControls({
     ...props,
     access,
     visible: props.visible && runsHostCommands,
   });
+  const recording = useDeviceRecording({
+    environmentId: props.environmentId,
+    threadRef: props.threadRef,
+    device: props.device,
+    access,
+    visible: props.visible,
+    appId: hostControls.foregroundApp?.id ?? null,
+  });
+  const controls = {
+    ...hostControls,
+    act: (body: Parameters<typeof hostControls.act>[0]) =>
+      hostControls.act(body).then((succeeded) => {
+        if (succeeded) recording.noteAction(body);
+        return succeeded;
+      }),
+  };
   const saveScreenshot = () => {
     if (!access || capturing.current || !props.visible) return;
     capturing.current = true;
@@ -102,6 +126,8 @@ export function DeviceWorkspace(props: {
                 controls={controls}
                 screenshotPending={screenshotPending}
                 onScreenshot={() => void saveScreenshot()}
+                recording={recording.state}
+                onRecord={() => recording.toggle(view.handle?.videoSource ?? null)}
                 toolsOpen={toolsOpen}
                 onTools={() => setToolsOpen(!toolsOpen)}
                 onFloat={props.onFloat}

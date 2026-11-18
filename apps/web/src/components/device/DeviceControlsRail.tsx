@@ -2,6 +2,7 @@ import type { DeviceHostSummary, DevicePlatform } from "@t3tools/contracts";
 import {
   Camera,
   ChevronLeft,
+  CircleDot,
   Home,
   Keyboard,
   Box,
@@ -18,7 +19,7 @@ import {
   MoonIcon,
   SunIcon,
 } from "lucide-react";
-import type { ReactNode } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import { Button } from "~/components/ui/button";
 import {
   Menu,
@@ -33,6 +34,8 @@ import {
 import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 import type { DeviceStreamHandle, DeviceViewControls } from "./DeviceStreamView";
 import type { DeviceControls } from "./useDeviceControls";
+import { formatRecordingDuration } from "./deviceRecording.logic";
+import type { DeviceRecordingState } from "./useDeviceRecording";
 
 export function DeviceControlsRail(props: {
   platform: DevicePlatform;
@@ -42,6 +45,8 @@ export function DeviceControlsRail(props: {
   controls: DeviceControls;
   screenshotPending: boolean;
   onScreenshot: () => void;
+  recording: DeviceRecordingState;
+  onRecord: () => void;
   toolsOpen: boolean;
   onTools: () => void;
   onFloat: () => void;
@@ -204,6 +209,14 @@ export function DeviceControlsRail(props: {
             <Camera />
           </RailButton>
         )}
+        {props.hostKind === "simlock" ? null : (
+          <RecordButton
+            tooltipSide={popupSide}
+            state={props.recording}
+            disabled={props.recording.status === "idle" && (!view.streaming || inputDisabled)}
+            onClick={props.onRecord}
+          />
+        )}
         <Menu>
           <MenuTrigger
             render={
@@ -271,6 +284,53 @@ export function DeviceControlsRail(props: {
       </div>
       {view.foldingControls}
     </aside>
+  );
+}
+
+function RecordButton(props: {
+  tooltipSide: "left" | "bottom";
+  state: DeviceRecordingState;
+  disabled: boolean;
+  onClick: () => void;
+}) {
+  const { state } = props;
+  return (
+    <div className="flex shrink-0 flex-col items-center">
+      <RailButton
+        tooltipSide={props.tooltipSide}
+        label={
+          state.status === "recording"
+            ? "Stop recording and add it to the composer"
+            : state.status === "saving"
+              ? "Adding the recording to the composer"
+              : "Record for agent"
+        }
+        pressed={state.status !== "idle"}
+        disabled={props.disabled || state.status === "saving"}
+        onClick={props.onClick}
+      >
+        {state.status === "idle" ? (
+          <CircleDot />
+        ) : (
+          <Square className="fill-current text-destructive" />
+        )}
+      </RailButton>
+      {state.status === "recording" ? <RecordingElapsed startedAt={state.startedAt} /> : null}
+    </div>
+  );
+}
+
+function RecordingElapsed(props: { startedAt: number }) {
+  const [now, setNow] = useState(() => Date.now());
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- ticks the elapsed recording time once a second
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, []);
+  return (
+    <span className="text-3xs leading-3 tabular-nums text-destructive" aria-live="off">
+      {formatRecordingDuration(now - props.startedAt)}
+    </span>
   );
 }
 
