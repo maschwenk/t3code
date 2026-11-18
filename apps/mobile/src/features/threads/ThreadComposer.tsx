@@ -483,6 +483,7 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
     bodyText,
     draftMessage,
     Platform.OS === "ios" && isFocused,
+    offeredPromptSuggestion !== null,
   );
   const showsCompactDictation = isVoiceInputPresented;
   const isToolbarVisible = isVoiceInputPresented;
