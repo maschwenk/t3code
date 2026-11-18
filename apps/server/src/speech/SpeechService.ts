@@ -677,11 +677,27 @@ const make = Effect.gen(function* () {
               vocabularyFor(inference).length > 0 ? [] : customWords,
               dictionary,
             );
-            return finalizeTranscript(
+            const transcript = finalizeTranscript(
               correct(result.text),
               options,
               translateToEnglish ? "en" : language === "auto" ? undefined : language,
             );
+            // Tells a recording that ended early apart from trailing speech the silence filter dropped.
+            const seconds = (samples: number) => Math.round(samples / 160) / 100;
+            yield* Effect.annotateCurrentSpan({
+              "speech.audio_seconds": seconds(pcm.length),
+              "speech.silence_filtering": options.speechSilenceFiltering,
+              "speech.transcript_chars": transcript.length,
+              ...(result.audioStats
+                ? {
+                    "speech.kept_seconds": seconds(result.audioStats.keptSamples),
+                    "speech.trailing_dropped_seconds": seconds(
+                      result.audioStats.trailingDroppedSamples,
+                    ),
+                  }
+                : {}),
+            });
+            return transcript;
           }).pipe(
             Effect.ensuring(
               Effect.sync(() => {

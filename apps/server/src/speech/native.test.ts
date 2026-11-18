@@ -7,6 +7,12 @@ import { expect, it } from "vite-plus/test";
 
 import { loadNativeSpeechModel } from "./native.ts";
 
+const unfiltered = (samples: number) => ({
+  samples,
+  keptSamples: samples,
+  trailingDroppedSamples: 0,
+});
+
 const fixture = (transcribe: string, maxAudioMs = 0, supportsVocabulary = false) =>
   `data:text/javascript,${encodeURIComponent(`export const TranscribeModel = { load: async () => ({ capabilities: { supportsStreaming: false, maxAudioMs: ${maxAudioMs}, languages: ["en-US", "de-DE"] }, supports: (feature) => feature === "vocabulary" && ${supportsVocabulary}, transcribe: ${transcribe} }) };`)}`;
 
@@ -49,7 +55,7 @@ it("returns transcription from an isolated process and disposes it", async () =>
         { timestamps: "none", language: "en" },
         false,
       ),
-    ).toEqual({ text: "0.25" });
+    ).toEqual({ text: "0.25", audioStats: unfiltered(1) });
   } finally {
     await model.dispose();
   }
@@ -86,7 +92,7 @@ it("ignores IPC messages that do not belong to the speech protocol", async () =>
   try {
     await expect(
       model.transcribe(new Float32Array([0.25]), { timestamps: "none", language: "en" }, false),
-    ).resolves.toEqual({ text: "hello" });
+    ).resolves.toEqual({ text: "hello", audioStats: unfiltered(1) });
   } finally {
     await model.dispose();
   }
@@ -252,7 +258,10 @@ it("filters silence and preserves partial speech through the production worker a
     try {
       expect(
         await model.transcribe(new Float32Array(2000), { timestamps: "none" }, true, "vad.gguf"),
-      ).toEqual({ text: "" });
+      ).toEqual({
+        text: "",
+        audioStats: { samples: 2000, keptSamples: 0, trailingDroppedSamples: 2000 },
+      });
       expect(
         await model.transcribe(
           new Float32Array([0.8, 0.6]),
@@ -260,10 +269,10 @@ it("filters silence and preserves partial speech through the production worker a
           true,
           "vad.gguf",
         ),
-      ).toEqual({ text: "2:0.80:0.60" });
+      ).toEqual({ text: "2:0.80:0.60", audioStats: unfiltered(2) });
       expect(
         await model.transcribe(new Float32Array(2000), { timestamps: "none" }, false, "vad.gguf"),
-      ).toEqual({ text: "2000:0.00:0.00" });
+      ).toEqual({ text: "2000:0.00:0.00", audioStats: unfiltered(2000) });
       for (const cancel of [true, false]) {
         await model.begin({ timestamps: "none" }, true, "vad.gguf");
         await model.feed(new Float32Array(600));
@@ -315,7 +324,7 @@ it("uses bounded offline chunks for a native streaming model without opening a s
   try {
     expect(
       await model.transcribe(new Float32Array(48002).fill(0.8), { timestamps: "none" }, false),
-    ).toEqual({ text: "32000 16002" });
+    ).toEqual({ text: "32000 16002", audioStats: unfiltered(48002) });
   } finally {
     await model.dispose();
   }
@@ -355,7 +364,7 @@ it("preserves withheld audio on VAD failure while keeping ASR failures distinct"
         true,
         "vad.gguf",
       ),
-    ).toEqual({ text: "2000:0.10:0.10" });
+    ).toEqual({ text: "2000:0.10:0.10", audioStats: unfiltered(2000) });
   } finally {
     await unavailable.dispose();
   }

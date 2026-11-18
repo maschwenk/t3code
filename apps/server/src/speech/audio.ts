@@ -124,6 +124,18 @@ export function createSpeechAudio(config: {
     },
     audio: () => raw(0, length),
     samples: () => length,
+    stats() {
+      if (!config.filterSilence)
+        return { samples: length, keptSamples: length, trailingDroppedSamples: 0 };
+      let keptSamples = 0;
+      let lastKeptEnd = 0;
+      for (let i = 0; i < keep.length; i++) {
+        if (!keep[i]) continue;
+        lastKeptEnd = Math.min(length, (i + 1) * frame);
+        keptSamples += lastKeptEnd - i * frame;
+      }
+      return { samples: length, keptSamples, trailingDroppedSamples: length - lastKeptEnd };
+    },
     take(final = false): Float32Array[] {
       const samples = Math.min(length, probs.length * frame);
       // Preserve a very short utterance or syllable stopped before onset confirms.
