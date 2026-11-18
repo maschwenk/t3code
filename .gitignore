@@ -51,3 +51,10 @@ node_modules/
 .pnpm-store/
 
 /packages/ssh/.ssh-launcher-test-*/
+
+# Xcode DerivedData wherever -derivedDataPath points inside the repo (e.g. apps/mobile/.dd-sim),
+# matched by its layout rather than its folder name. Tailwind scans every file that isn't ignored.
+*.noindex/
+**/Build/Products/
+**/SourcePackages/
+**/SDKExplicitPrecompiledModules/

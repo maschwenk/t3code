@@ -29,6 +29,9 @@ config.resolver = {
         ? [config.resolver.blockList]
         : []),
     new RegExp(`${escapedWorkspaceRoot}[/\\\\]\\.t3[/\\\\].*`),
+    // Xcode DerivedData anywhere in the repo (-derivedDataPath apps/mobile/.dd-sim,
+    // .showcase/ios-derived-data, ...). Same layout patterns as .gitignore, which Metro doesn't read.
+    /[/\\](?:[^/\\]+\.noindex|Build[/\\]Products|SourcePackages|SDKExplicitPrecompiledModules)(?:[/\\]|$)/,
   ],
   extraNodeModules: {
     ...config.resolver?.extraNodeModules,
