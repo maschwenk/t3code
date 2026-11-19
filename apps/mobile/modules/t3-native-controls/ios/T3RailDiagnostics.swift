@@ -183,24 +183,63 @@ public final class T3RailDiagnostics: NSObject {
       lines.append(
         "window \(NSStringFromClass(type(of: window))) \(Self.rect(bounds)) level=\(Int(window.windowLevel.rawValue)) key=\(window.isKeyWindow ? 1 : 0) style=\(traits.userInterfaceStyle.rawValue) scale=\(traits.displayScale)"
       )
-      visit(window, window: window, rail: rail, depth: 0, lines: &lines, suspect: &suspect)
+      visit(window, window: window, rail: rail, path: [], lines: &lines, suspect: &suspect)
     }
     return Snapshot(signature: lines.joined(separator: "\n"), lines: lines, suspect: suspect)
   }
 
+  private static let reactNoise = ["RCT", "MenuView", "FabricMenu", "ExpoSymbols"]
+  private static let structural = ["Pocket", "Capture", "Portal", "Backdrop", "Bar", "Glass", "Lens"]
+
   private func visit(
-    _ view: UIView, window: UIWindow, rail: CGRect, depth: Int, lines: inout [String],
+    _ view: UIView, window: UIWindow, rail: CGRect, path: [Int], lines: inout [String],
     suspect: inout Bool
   ) {
-    // The navigation bar that draws the rail lives inside React's root view, so walk everything.
+    // The navigation bar that draws the rail lives inside React's root view, so walk everything,
+    // but leave React's own rows out of the log: they scroll under the rail and are never blurred.
     let className = NSStringFromClass(type(of: view))
     let frame = view.convert(view.bounds, to: window)
-    if frame.intersects(rail), frame.width <= 160 {
-      lines.append(
-        describe(view, className: className, frame: frame, depth: depth, suspect: &suspect))
+    let isReact = Self.reactNoise.contains { className.hasPrefix($0) || className.contains($0) }
+    if frame.intersects(rail), !isReact, frame.width <= 160 || Self.isInteresting(view) {
+      var line = describe(view, className: className, frame: frame, depth: path.count, suspect: &suspect)
+      // The index path from the window gives the z-order: a later sibling draws above.
+      if Self.structural.contains(where: { className.contains($0) }) {
+        line += " path=\(path.map(String.init).joined(separator: "."))"
+      }
+      lines.append(line)
+      lines.append(contentsOf: describeSublayers(of: view, window: window, depth: path.count, suspect: &suspect))
     }
-    for subview in view.subviews {
-      visit(subview, window: window, rail: rail, depth: depth + 1, lines: &lines, suspect: &suspect)
+    for (index, subview) in view.subviews.enumerated() {
+      visit(
+        subview, window: window, rail: rail, path: path + [index], lines: &lines, suspect: &suspect)
+    }
+  }
+
+  private static func isInteresting(_ view: UIView) -> Bool {
+    let layer = view.layer
+    return view.alpha < 0.999 || !(layer.filters ?? []).isEmpty || layer.compositingFilter != nil
+      || !(layer.animationKeys() ?? []).isEmpty || layer.speed != 1
+  }
+
+  // Layers that no view owns (backdrops, portals, captured content) can draw over the buttons.
+  private func describeSublayers(of view: UIView, window: UIWindow, depth: Int, suspect: inout Bool)
+    -> [String]
+  {
+    let className = NSStringFromClass(type(of: view))
+    return (view.layer.sublayers ?? []).compactMap { sublayer -> String? in
+      if sublayer.delegate is UIView { return nil }
+      let frame = view.layer.convert(sublayer.frame, to: window.layer)
+      var parts = ["\(depth)   L \(NSStringFromClass(type(of: sublayer))) \(Self.rect(frame))"]
+      if sublayer.isHidden { parts.append("hidden") }
+      if sublayer.opacity < 0.999 { parts.append("opacity=\(Self.round(sublayer.opacity))") }
+      let filters = Self.filters(sublayer.filters, className: className, suspect: &suspect)
+      if !filters.isEmpty { parts.append("filters=[\(filters)]") }
+      if let compositing = sublayer.compositingFilter { parts.append("compositing=\(compositing)") }
+      if let keys = sublayer.animationKeys(), !keys.isEmpty {
+        parts.append("anims=[\(keys.joined(separator: ","))]")
+      }
+      if let count = sublayer.sublayers?.count, count > 0 { parts.append("sublayers=\(count)") }
+      return parts.joined(separator: " ")
     }
   }
 
