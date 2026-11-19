@@ -6,7 +6,7 @@ import { Platform, View } from "react-native";
 import { AppText as Text } from "./ui/AppText";
 import { T3Wordmark } from "./T3Wordmark";
 import { IPAD_HOME_TITLE_OFFSET } from "../lib/layoutMetrics";
-import { resolveMobileStageLabel } from "../lib/mobileBranding";
+import { formatMobileStageBadge, resolveMobileStageLabel } from "../lib/mobileBranding";
 import { useAndroidControlSizing } from "./ui/useAndroidControlSizing";
 
 const BRAND_MAX_FONT_SCALE = 1.4;
@@ -24,7 +24,10 @@ export function CompactBrandTitle(
     readonly fit?: boolean;
   } = {},
 ) {
-  const stageLabel = resolveMobileStageLabel(Constants.expoConfig?.extra?.appVariant);
+  const stageLabel = formatMobileStageBadge(
+    resolveMobileStageLabel(Constants.expoConfig?.extra?.appVariant),
+    process.env.EXPO_PUBLIC_T3CODE_COMMIT_SHA,
+  );
   const titleOffset = brandTitleOffset();
   const { scale } = useAndroidControlSizing();
   const [availableWidth, setAvailableWidth] = useState<number | null>(null);
@@ -71,7 +74,7 @@ export function CompactBrandTitle(
           <Text
             allowFontScaling={props.allowFontScaling}
             maxFontSizeMultiplier={BRAND_MAX_FONT_SCALE}
-            className="font-t3-bold text-foreground-muted uppercase"
+            className="font-t3-bold text-foreground-muted"
             style={{ fontSize: 9 * scale, letterSpacing: 0.9 * scale }}
           >
             {stageLabel}

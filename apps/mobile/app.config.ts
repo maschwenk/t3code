@@ -1,3 +1,6 @@
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Expo evaluates this config synchronously, before any Effect runtime.
+import * as NodeChildProcess from "node:child_process";
+
 import type { ExpoConfig } from "expo/config";
 
 import { BRAND_ASSET_PATHS } from "../../scripts/lib/brand-assets.ts";
@@ -9,6 +12,12 @@ const repoEnv = loadRepoEnv();
 Object.assign(process.env, repoEnv);
 // Expo's TypeScript setup otherwise installs `typescript` on every start; we typecheck with tsrs.
 process.env.EXPO_NO_TYPESCRIPT_SETUP = "1";
+
+// The home header shows the commit a build came from. It's inlined into the JS bundle rather than
+// put in `extra`, which the fingerprint runtime version hashes: a value that changes every commit
+// there would give each commit its own runtime and stop OTAs reaching installed builds.
+const commitSha = resolveCommitSha();
+if (commitSha) process.env.EXPO_PUBLIC_T3CODE_COMMIT_SHA = commitSha;
 
 const APP_VARIANT = resolveAppVariant(repoEnv.APP_VARIANT);
 const isIosPersonalTeamBuild = repoEnv.T3CODE_IOS_PERSONAL_TEAM === "1";
@@ -131,6 +140,22 @@ function resolveAppVariant(value: string | undefined): AppVariant {
     default:
       throw new Error("APP_VARIANT must be development, preview, or production.");
   }
+}
+
+// EAS builds get the commit in the environment; local prebuilds and Xcode archives read git.
+function resolveCommitSha(): string | undefined {
+  let sha = process.env.EAS_BUILD_GIT_COMMIT_HASH?.trim();
+  if (!sha) {
+    try {
+      sha = NodeChildProcess.execFileSync("git", ["rev-parse", "HEAD"], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim();
+    } catch {
+      return undefined;
+    }
+  }
+  return /^[0-9a-f]{7,40}$/i.test(sha) ? sha.slice(0, 7).toLowerCase() : undefined;
 }
 
 const variant = VARIANT_CONFIG[APP_VARIANT];
