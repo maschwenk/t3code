@@ -5,7 +5,7 @@ import UIKit
 
 // Diagnostics for the iPhone Duo vertical-bar blur, on the diag/duo-rail-blur branch only.
 // Appends app lifecycle events, every header button set, and the state of each view in the
-// right-hand 100pt of the window to Application Support/T3RailDiag.log (and os_log). A rail
+// right-hand 88pt of the window to Application Support/T3RailDiag.log (and os_log). A rail
 // snapshot is written only when it differs from the previous one, so the log shows the moment
 // the buttons change. From lldb: expr -l objc -O -- [T3RailDiagnostics dumpNow]
 public final class T3RailDiagnosticsSubscriber: ExpoAppDelegateSubscriber {
@@ -85,6 +85,7 @@ public final class T3RailDiagnostics: NSObject {
       (UIApplication.protectedDataWillBecomeUnavailableNotification, "deviceLocking"),
       (UIApplication.protectedDataDidBecomeAvailableNotification, "deviceUnlocked"),
       (UIApplication.significantTimeChangeNotification, "significantTimeChange"),
+      (UIApplication.willTerminateNotification, "willTerminate"),
       (UIScene.willConnectNotification, "sceneWillConnect"),
       (UIScene.didDisconnectNotification, "sceneDidDisconnect"),
       (UIScene.didActivateNotification, "sceneDidActivate"),
@@ -176,7 +177,8 @@ public final class T3RailDiagnostics: NSObject {
     var suspect = false
     for window in windows {
       let bounds = window.bounds
-      let rail = CGRect(x: bounds.maxX - 100, y: bounds.minY, width: 100, height: bounds.height)
+      // The folded Duo's rail is the right-hand ~80pt; list content ends just left of it.
+      let rail = CGRect(x: bounds.maxX - 88, y: bounds.minY, width: 88, height: bounds.height)
       let traits = window.traitCollection
       lines.append(
         "window \(NSStringFromClass(type(of: window))) \(Self.rect(bounds)) level=\(Int(window.windowLevel.rawValue)) key=\(window.isKeyWindow ? 1 : 0) style=\(traits.userInterfaceStyle.rawValue) scale=\(traits.displayScale)"
@@ -190,9 +192,8 @@ public final class T3RailDiagnostics: NSObject {
     _ view: UIView, window: UIWindow, rail: CGRect, depth: Int, lines: inout [String],
     suspect: inout Bool
   ) {
+    // The navigation bar that draws the rail lives inside React's root view, so walk everything.
     let className = NSStringFromClass(type(of: view))
-    // React content never draws the rail; skipping it keeps each walk small.
-    if className.hasPrefix("RCT") { return }
     let frame = view.convert(view.bounds, to: window)
     if frame.intersects(rail), frame.width <= 160 {
       lines.append(
