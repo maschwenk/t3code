@@ -145,75 +145,7 @@ public final class T3RailDiagnostics: NSObject {
     let suspect: Bool
   }
 
-  // Experiment: after a trip to the background, UIKit adds the tab bar's vertical-bar pocket above
-  // the screen's own pocket. When two pockets overlap, hide the upper one's frosted layers so the
-  // buttons in the lower pocket show through. If they turn sharp, that layer is what blurs them.
-  private func hideStackedPocketBackdrop() {
-    guard
-      let window = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene })
-        .flatMap(\.windows).first(where: \.isKeyWindow)
-    else { return }
-    var pockets: [(path: [Int], view: UIView)] = []
-    collectPockets(window, window: window, path: [], into: &pockets)
-    guard pockets.count >= 2,
-      let upper = pockets.max(by: { Self.precedes($0.path, $1.path) })
-    else { return }
-    for pocket in pockets {
-      let role = pocket.view === upper.view ? "upper" : "lower"
-      for sublayer in pocket.view.layer.sublayers ?? [] where !(sublayer.delegate is UIView) {
-        if role == "upper", !sublayer.isHidden {
-          write(
-            "experiment hiding \(role) pocket layer path=\(pocket.path.map(String.init).joined(separator: "."))",
-            flushNow: false)
-          for line in describeLayerTree(sublayer, depth: 0) { write("    \(line)", flushNow: false) }
-          sublayer.isHidden = true
-          flush()
-        }
-      }
-    }
-  }
-
-  private func collectPockets(
-    _ view: UIView, window: UIWindow, path: [Int], into pockets: inout [(path: [Int], view: UIView)]
-  ) {
-    if NSStringFromClass(type(of: view)).contains("VerticalBarPocketView"), !view.isHidden,
-      view.window != nil
-    {
-      pockets.append((path, view))
-    }
-    for (index, subview) in view.subviews.enumerated() {
-      collectPockets(subview, window: window, path: path + [index], into: &pockets)
-    }
-  }
-
-  // Index paths in drawing order: a later sibling, or a descendant, draws above.
-  private static func precedes(_ a: [Int], _ b: [Int]) -> Bool {
-    for (x, y) in zip(a, b) where x != y { return x < y }
-    return a.count < b.count
-  }
-
-  private func describeLayerTree(_ layer: CALayer, depth: Int) -> [String] {
-    var suspect = false
-    let indent = String(repeating: "  ", count: depth)
-    var parts = ["\(indent)\(NSStringFromClass(type(of: layer))) \(Self.rect(layer.frame))"]
-    if layer.isHidden { parts.append("hidden") }
-    if layer.opacity < 0.999 { parts.append("opacity=\(Self.round(layer.opacity))") }
-    let filters = Self.filters(layer.filters, className: "", suspect: &suspect)
-    if !filters.isEmpty { parts.append("filters=[\(filters)]") }
-    if let compositing = layer.compositingFilter { parts.append("compositing=\(compositing)") }
-    if layer.mask != nil { parts.append("masked") }
-    if let owner = layer.delegate as? UIView { parts.append("view=\(NSStringFromClass(type(of: owner)))") }
-    var lines = [parts.joined(separator: " ")]
-    if depth < 4 {
-      for sublayer in layer.sublayers ?? [] {
-        lines.append(contentsOf: describeLayerTree(sublayer, depth: depth + 1))
-      }
-    }
-    return lines
-  }
-
   private func sample(_ tag: String, force: Bool) {
-    hideStackedPocketBackdrop()
     let snapshot = railSnapshot()
     let changed = snapshot.signature != lastSignature
     guard force || changed else {
