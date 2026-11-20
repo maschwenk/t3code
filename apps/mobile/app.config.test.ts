@@ -9,9 +9,14 @@ vi.mock("../../scripts/lib/public-config.ts", () => ({
   // app.config.ts copies these into process.env, which would turn an unset key into "undefined".
   loadRepoEnv: () =>
     Object.fromEntries(
-      ["APP_VARIANT", "T3CODE_IOS_TEAM_ID", "T3CODE_IOS_BUNDLE_ID"].flatMap((key) =>
-        process.env[key] === undefined ? [] : [[key, process.env[key]]],
-      ),
+      [
+        "APP_VARIANT",
+        "T3CODE_IOS_TEAM_ID",
+        "T3CODE_IOS_BUNDLE_ID",
+        "T3CODE_EAS_PROJECT_ID",
+        "T3CODE_EAS_OWNER",
+        "T3CODE_MOBILE_UPDATE_CHANNEL",
+      ].flatMap((key) => (process.env[key] === undefined ? [] : [[key, process.env[key]]])),
     ),
 }));
 
@@ -69,4 +74,24 @@ it("signs a full build for another team only when its team and bundle are both s
 
   vi.stubEnv("T3CODE_IOS_BUNDLE_ID", "");
   await expect(loadConfig("production")).rejects.toThrow("T3CODE_IOS_TEAM_ID");
+});
+
+it("takes over-the-air updates from a fork's own EAS project and channel", async () => {
+  const t3 = await loadConfig("production");
+  expect(t3.owner).toBe("pingdotgg");
+  expect(t3.updates?.url).toBe(`https://u.expo.dev/${t3.extra?.eas?.projectId}`);
+  expect(t3.updates?.requestHeaders).toBeUndefined();
+
+  vi.stubEnv("T3CODE_EAS_PROJECT_ID", "00000000-0000-4000-8000-000000000000");
+  vi.stubEnv("T3CODE_EAS_OWNER", "fork-owner");
+  vi.stubEnv("T3CODE_MOBILE_UPDATE_CHANNEL", "production");
+  const fork = await loadConfig("production");
+  // eas update publishes to the project the owner, project ID and update URL all name.
+  expect(fork.owner).toBe("fork-owner");
+  expect(fork.extra?.eas?.projectId).toBe("00000000-0000-4000-8000-000000000000");
+  expect(fork.updates?.url).toBe("https://u.expo.dev/00000000-0000-4000-8000-000000000000");
+  expect(fork.updates?.requestHeaders).toEqual({ "expo-channel-name": "production" });
+
+  vi.stubEnv("T3CODE_EAS_OWNER", "");
+  await expect(loadConfig("production")).rejects.toThrow("T3CODE_EAS_OWNER");
 });

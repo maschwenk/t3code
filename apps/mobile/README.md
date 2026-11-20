@@ -114,8 +114,8 @@ bundle, so pair such a build by QR code or link. T3's relay can't push to it eit
 sends its agent alerts directly: create an APNs key under Certificates, Identifiers & Profiles > Keys,
 then run `t3 push key --team-id <team> --key-id <key> --key-file AuthKey_<key>.p8` on each computer
 the phone pairs with. The app's Notifications settings show which computers send alerts, and
-`t3 push test` sends one. Set `T3CODE_MOBILE_UPDATES_ENABLED=0` so T3's over-the-air updates never
-replace its JavaScript.
+`t3 push test` sends one. Set `T3CODE_MOBILE_UPDATES_ENABLED=0` unless the build takes updates from
+your own EAS project (below).
 
 ```bash
 T3CODE_IOS_TEAM_ID=ABCDE12345 \
@@ -123,6 +123,20 @@ T3CODE_IOS_BUNDLE_ID=com.example.t3code \
 T3CODE_MOBILE_UPDATES_ENABLED=0 \
 vp run ios:release
 ```
+
+T3 Fork, this repository's own-team build, takes over-the-air updates from its own EAS project.
+`apps/mobile/fork-release.env` names the team, bundle, EAS project and channel. Ship a TestFlight
+build from a clean `main` checkout on a Mac with the Apple account signed in to Xcode:
+
+```bash
+node scripts/mobile-fork-release.ts testflight
+```
+
+It refuses to upload a build whose native fingerprint differs from the one updates would target,
+then tags the fingerprint (`fork-ios-testflight/<fingerprint>/<build>`). After that, the Mobile Fork
+Update workflow publishes an update for each mobile change on `main`, with the `T3_FORK_EXPO_TOKEN`
+secret. JavaScript-only changes reach the phone on its next two launches. When a change touches
+native code, the workflow summary says no TestFlight build has its fingerprint; ship a new build.
 
 Build and run the local iOS preview app:
 

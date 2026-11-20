@@ -63,6 +63,18 @@ if (
   );
 }
 
+// T3's EAS project serves its builds' over-the-air updates. A fork that publishes its own names
+// its project and owner; an own-team build's fingerprint never matches an update published for T3.
+const T3_EAS_PROJECT_ID = "d763fcb8-d37c-41ea-a773-b54a0ab4a454";
+const forkEasProjectId = repoEnv.T3CODE_EAS_PROJECT_ID?.trim() || undefined;
+const forkEasOwner = repoEnv.T3CODE_EAS_OWNER?.trim() || undefined;
+if ((forkEasProjectId === undefined) !== (forkEasOwner === undefined)) {
+  throw new Error("Set T3CODE_EAS_PROJECT_ID and T3CODE_EAS_OWNER together.");
+}
+const easProjectId = forkEasProjectId ?? T3_EAS_PROJECT_ID;
+// EAS builds name their channel; a build archived in Xcode sends it with each update request.
+const updateChannel = repoEnv.T3CODE_MOBILE_UPDATE_CHANNEL?.trim() || undefined;
+
 const DEVELOPMENT_ASSETS = {
   appIcon: fromRepoRoot(BRAND_ASSET_PATHS.developmentIosIconPng),
   iosIcon: fromRepoRoot(BRAND_ASSET_PATHS.developmentIconComposerProject),
@@ -291,9 +303,10 @@ const config: ExpoConfig = {
   userInterfaceStyle: "automatic",
   updates: {
     enabled: repoEnv.T3CODE_MOBILE_UPDATES_ENABLED !== "0",
-    url: "https://u.expo.dev/d763fcb8-d37c-41ea-a773-b54a0ab4a454",
+    url: `https://u.expo.dev/${easProjectId}`,
     checkAutomatically: "ON_LOAD",
     fallbackToCacheTimeout: 0,
+    ...(updateChannel ? { requestHeaders: { "expo-channel-name": updateChannel } } : {}),
   },
   ios: {
     icon: assets.iosIcon,
@@ -533,11 +546,11 @@ const config: ExpoConfig = {
       tracesToken: repoEnv.EXPO_PUBLIC_OTLP_TRACES_TOKEN ?? null,
     },
     eas: {
-      projectId: "d763fcb8-d37c-41ea-a773-b54a0ab4a454",
+      projectId: easProjectId,
       observe: { endpointUrl: observeEndpointUrl },
     },
   },
-  owner: "pingdotgg",
+  owner: forkEasOwner ?? "pingdotgg",
   experiments: {
     // Metro only runs babel-plugin-react-compiler when this is set; see src/reactCompilerCoverage.test.ts.
     reactCompiler: true,
