@@ -24,6 +24,7 @@ import type { SettlementReplyCheckInput } from "@t3tools/provider-core/server/te
 
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
+import * as CompletionNotificationTriage from "./CompletionNotificationTriage.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as SettlementReplyGate from "./SettlementReplyGate.ts";
 import {
@@ -609,13 +610,16 @@ it.effect("sql: the reply check reads only the latest run's request, reply, and 
     const asked: Array<SettlementReplyCheckInput> = [];
     const gate = yield* SettlementReplyGate.make.pipe(
       Effect.provide(
-        Layer.mock(TextGeneration.TextGeneration)({
-          checkSettlementReply: (input) =>
-            Effect.sync(() => {
-              asked.push(input);
-              return { needsUser: true };
-            }),
-        }),
+        Layer.merge(
+          Layer.mock(TextGeneration.TextGeneration)({
+            checkSettlementReply: (input) =>
+              Effect.sync(() => {
+                asked.push(input);
+                return { needsUser: true };
+              }),
+          }),
+          Layer.mock(CompletionNotificationTriage.CompletionNotificationTriage)({}),
+        ),
       ),
     );
     const threadId = yield* createThread("reply-check");
@@ -657,6 +661,7 @@ it.effect("sql: the reply check reads only the latest run's request, reply, and 
         cwd: "/workspace/project",
         modelSelection,
         checkReply: true,
+        notificationTriage: false,
       });
 
     const earlier = yield* createRun(threadId, "completed", 1);

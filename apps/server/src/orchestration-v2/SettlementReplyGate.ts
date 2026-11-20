@@ -12,14 +12,19 @@ import * as Effect from "effect/Effect";
 import * as Semaphore from "effect/Semaphore";
 
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
-import { lastFinishedReply } from "./CompletionNotificationTriage.ts";
+import { CompletionNotificationTriage, lastFinishedReply } from "./CompletionNotificationTriage.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 
-/** Why a merged or closed pull request may not settle the thread after its latest run. */
+/**
+ * Why a merged or closed pull request may not settle the thread after its latest run.
+ * `scheduled_news`: a scheduled run reopened the thread after the pull request had already
+ * finished, and notification triage called its reply news.
+ */
 export type SettlementHoldReason =
   | "run_failed"
   | "run_interrupted"
   | "stop_requested"
+  | "scheduled_news"
   | "needs_user"
   | "no_verdict";
 
@@ -97,17 +102,19 @@ export interface SettlementReplyGateInput {
   readonly modelSelection: ModelSelection;
   /** Off, only a failed, interrupted, or stopped run holds; the model is not asked. */
   readonly checkReply: boolean;
+  /** The `notificationTriage` setting. Off, a scheduled run's news does not hold the thread. */
+  readonly notificationTriage: boolean;
 }
 
 /**
- * Decides once per run whether a merged or closed pull request may settle the thread: never after
- * a run that failed, was interrupted, or was stopped, and, while `checkReply` is on, not while the
- * text generation model reads the run's last reply as needing the user. Model errors, timeouts,
- * and missing verdicts hold the thread, with a bounded number of retries per run.
+ * Decides once per run whether a merged or closed pull request may settle the thread. Holds after a
+ * failed, interrupted, or stopped run, a `scheduled_news` run, and (with `checkReply`) a reply the
+ * model reads as needing the user. Model errors and timeouts hold, with bounded retries per run.
  */
 export const make = Effect.gen(function* () {
   const projections = yield* ProjectionStore.ProjectionStoreV2;
   const textGeneration = yield* TextGeneration.TextGeneration;
+  const triage = yield* CompletionNotificationTriage;
   const scope = yield* Effect.scope;
   const checks = yield* Semaphore.make(CONCURRENT_CHECKS);
   const decisions = new Map<RunId, Decision>();
@@ -164,8 +171,20 @@ export const make = Effect.gen(function* () {
     if (run?.status === "failed") return yield* logHold("run_failed");
     if (run?.status === "interrupted") return yield* logHold("run_interrupted");
     if (turnItems.length > 0) return yield* logHold("stop_requested");
-    if (!input.checkReply) return null;
     const subject = run === undefined ? null : settlementReplySubject(run, messages);
+    // Every run of a schedule bound to a thread with a long-merged pull request would otherwise
+    // settle the thread seconds after reopening it, hiding each report. Triage decides each run
+    // once and shares the verdict with the completion alert, so this asks no extra model call.
+    if (
+      input.notificationTriage &&
+      run !== undefined &&
+      subject?.requestOrigin === "scheduled" &&
+      input.pullRequest.finishedAtMs < DateTime.toEpochMillis(run.requestedAt) &&
+      (yield* triage.shouldNotify({ threadId: input.thread.id, runId }))
+    ) {
+      return yield* logHold("scheduled_news");
+    }
+    if (!input.checkReply) return null;
     if (subject === null) return { kind: "settles" } as const;
     if (input.cwd === null) return yield* Effect.die(new Error("thread project not found"));
     const completedAtMs =
