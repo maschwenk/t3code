@@ -145,9 +145,11 @@ there. A thread returns to the top of the active list when it finishes, fails, o
 answer. The Working section lists the thread you last sent work to first. Pinned threads stay in
 the pinned section.
 
-On web and desktop the Working section sits above the pinned and active lists. Change the order
-of the sections in **Settings → General → Sidebar section order**. On iOS and Android it sits below
-the active list.
+On web and desktop the Working section sits above the pinned and active lists; on iOS and Android
+it sits below the active list. Change the order of the sections in **Settings → General → Sidebar
+section order** on web and desktop, or **Settings → General → Section order** on iOS and Android.
+Each device keeps its own order. When a section sits above the pinned and active threads, an
+**Active** label marks where they start.
 
 This is on by default. Turn it off with **Settings → General → Working section** on web and desktop,
 or **Settings → General → Working section** on iOS and Android. Each device keeps its own

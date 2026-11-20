@@ -1851,6 +1851,95 @@ describe("Working section beta", () => {
       "settled",
     ]);
   });
+
+  it("lists sections in the chosen order, labels the active rows, and keeps Show more with Settled", () => {
+    const layout = buildThreadListV2Items({
+      threads: [
+        makeThread({ id: ThreadId.make("active"), title: "active" }),
+        makeThread({
+          id: ThreadId.make("pinned"),
+          title: "pinned",
+          pinnedAt: "2026-06-01T00:00:00.000Z",
+        }),
+        makeThread({ id: ThreadId.make("working"), title: "working", runtime: running }),
+        makeThread({
+          id: ThreadId.make("snoozed"),
+          title: "snoozed",
+          snoozedUntil: "2026-06-03T09:00:00.000Z",
+          snoozedAt: "2026-06-01T12:00:00.000Z",
+        }),
+        makeThread({
+          id: ThreadId.make("settled-new"),
+          title: "settled-new",
+          settledOverride: "settled",
+          settledAt: NOW,
+        }),
+        makeThread({
+          id: ThreadId.make("settled-old"),
+          title: "settled-old",
+          settledOverride: "settled",
+          settledAt: "2026-06-01T00:00:00.000Z",
+        }),
+      ],
+      environmentId: null,
+      searchQuery: "",
+      now: NOW,
+      settledLimit: 1,
+      workingShelfEnabled: true,
+      workingShelfExpanded: true,
+      snoozedShelfExpanded: true,
+    });
+    const listed = (
+      sectionOrder: Parameters<typeof buildThreadListV2ListItems>[0]["sectionOrder"],
+    ) =>
+      buildThreadListV2ListItems({
+        items: layout.items,
+        pendingTasks: [makePendingTask("queued")],
+        workingCount: layout.workingCount,
+        workingShelfExpanded: true,
+        workingShelfHeaderIndex: layout.workingShelfHeaderIndex,
+        snoozedCount: layout.snoozedCount,
+        snoozedShelfExpanded: true,
+        snoozedShelfHeaderIndex: layout.snoozedShelfHeaderIndex,
+        settledCount: layout.settledCount,
+        settledShelfHeaderIndex: layout.settledShelfHeaderIndex,
+        hiddenSettledCount: layout.hiddenSettledCount,
+        sectionOrder,
+      }).map((item) =>
+        item.type === "v2-thread"
+          ? item.item.thread.id
+          : item.type === "v2-pending"
+            ? item.pendingTask.title
+            : item.type,
+      );
+
+    expect(listed(["working", "settled", "active", "snoozed"])).toEqual([
+      "queued",
+      "v2-working-shelf",
+      "working",
+      "v2-settled-shelf",
+      "settled-new",
+      "v2-show-more",
+      "v2-active-section",
+      "pinned",
+      "active",
+      "v2-snoozed-shelf",
+      "snoozed",
+    ]);
+    // Unsent tasks lead every order; with nothing above them the active rows need no label.
+    expect(listed(undefined)).toEqual([
+      "queued",
+      "pinned",
+      "active",
+      "v2-working-shelf",
+      "working",
+      "v2-snoozed-shelf",
+      "snoozed",
+      "v2-settled-shelf",
+      "settled-new",
+      "v2-show-more",
+    ]);
+  });
 });
 
 describe("queued messages keep a settled thread active", () => {

@@ -1,4 +1,6 @@
 import { Button } from "../../components/ui/Button";
+import { IconButton } from "../../components/ui/IconButton";
+import { ListRowLayout } from "../../components/ui/ListRowLayout";
 import {
   AuthSettingsWriteScope,
   isManagedSettingPath,
@@ -20,6 +22,12 @@ import { useEnvironments } from "../../state/environments";
 import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../state/preferences";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
+import {
+  isDefaultThreadListSectionOrder,
+  moveThreadListSection,
+  resolveThreadListSectionOrder,
+  THREAD_LIST_SECTION_LABELS,
+} from "../threads/threadListSectionOrder";
 import { SettingsSection } from "./components/SettingsSection";
 import { SettingsSwitchRow } from "./components/SettingsSwitchRow";
 import { SettingsScreen } from "./components/SettingsScreen";
@@ -222,6 +230,76 @@ export function WorkingSectionSettings() {
         list when they need you. While this is on, active threads are ordered by time and cannot be
         moved.
       </Text>
+    </View>
+  );
+}
+
+export function ThreadListSectionOrderSettings() {
+  const savePreferences = useAtomSet(updateMobilePreferencesAtom);
+  const preferences = useAtomValue(mobilePreferencesAtom);
+  const ready = AsyncResult.isSuccess(preferences) && !preferences.waiting;
+  const stored = AsyncResult.isSuccess(preferences)
+    ? preferences.value.threadListSectionOrder
+    : undefined;
+  const order = resolveThreadListSectionOrder(stored);
+
+  return (
+    <View className="gap-3">
+      <SettingsSection
+        title="Section order"
+        footer="Top-to-bottom order of the thread list sections. Saved on this device."
+      >
+        {order.map((section, index) => (
+          <ListRowLayout
+            key={section}
+            label={THREAD_LIST_SECTION_LABELS[section]}
+            accessory={
+              <View className="flex-row items-center gap-1">
+                <IconButton
+                  icon="arrow.up"
+                  accessibilityLabel={`Move ${THREAD_LIST_SECTION_LABELS[section]} up`}
+                  disabled={!ready || index === 0}
+                  onPress={() =>
+                    savePreferences({
+                      transform: (current) => ({
+                        threadListSectionOrder: moveThreadListSection(
+                          current.threadListSectionOrder,
+                          section,
+                          -1,
+                        ),
+                      }),
+                    })
+                  }
+                />
+                <IconButton
+                  icon="arrow.down"
+                  accessibilityLabel={`Move ${THREAD_LIST_SECTION_LABELS[section]} down`}
+                  disabled={!ready || index === order.length - 1}
+                  onPress={() =>
+                    savePreferences({
+                      transform: (current) => ({
+                        threadListSectionOrder: moveThreadListSection(
+                          current.threadListSectionOrder,
+                          section,
+                          1,
+                        ),
+                      }),
+                    })
+                  }
+                />
+              </View>
+            }
+          />
+        ))}
+      </SettingsSection>
+      {isDefaultThreadListSectionOrder(stored) ? null : (
+        <Button
+          label="Reset section order"
+          tone="text"
+          disabled={!ready}
+          onPress={() => savePreferences({ threadListSectionOrder: [] })}
+        />
+      )}
     </View>
   );
 }
