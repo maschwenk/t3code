@@ -22,25 +22,23 @@ const EAS_CLI = "eas-cli@27.10.0";
 
 // Inherited variables that feed app.config.ts, fingerprint.config.js or the commit stamp.
 const APP_CONFIG_VARIABLE =
-  /^(T3CODE_|EXPO_PUBLIC_|VITE_|EAS_BUILD_|APP_VARIANT$|MOBILE_VERSION_POLICY$)/;
+  /^(T3_|T3CODE_|EXPO_PUBLIC_|VITE_|EAS_BUILD_|APP_VARIANT$|MOBILE_VERSION_POLICY$)/;
 
 export function releaseEnvironment(
   inherited: NodeJS.ProcessEnv,
   releaseFile: string,
 ): NodeJS.ProcessEnv {
   const kept = Object.entries(inherited).filter(([name]) => !APP_CONFIG_VARIABLE.test(name));
-  return { ...Object.fromEntries(kept), ...NodeUtil.parseEnv(releaseFile) };
+  return {
+    ...Object.fromEntries(kept),
+    // Neither the repo-root env files nor Expo's apps/mobile ones may reach the config.
+    T3CODE_IGNORE_ENV_FILES: "1",
+    EXPO_NO_DOTENV: "1",
+    ...NodeUtil.parseEnv(releaseFile),
+  };
 }
 
 function loadReleaseEnvironment(): NodeJS.ProcessEnv {
-  // app.config.ts also reads these files, below the environment; their other keys would leak in.
-  for (const name of [".env", ".env.local"]) {
-    if (NodeFS.existsSync(NodePath.join(REPO_ROOT, name))) {
-      throw new Error(
-        `Move ${name} out of the repo root: the app config reads it, so this release's fingerprint would differ from CI's.`,
-      );
-    }
-  }
   return releaseEnvironment(NodeProcess.env, NodeFS.readFileSync(RELEASE_ENV_FILE, "utf8"));
 }
 
@@ -77,22 +75,19 @@ function fingerprint(env: NodeJS.ProcessEnv): string {
   return hash;
 }
 
-function buildTags(hash: string): string[] {
-  run("git", [
-    "fetch",
-    "--quiet",
-    "origin",
-    `refs/tags/${BUILD_TAG_PREFIX}/*:refs/tags/${BUILD_TAG_PREFIX}/*`,
-  ]);
-  return run("git", ["tag", "--list", `${BUILD_TAG_PREFIX}/${hash}/*`], { capture: true })
+/** Build numbers of the TestFlight builds with this fingerprint, from the tags on origin. */
+function buildsWithFingerprint(hash: string): string[] {
+  return run("git", ["ls-remote", "--tags", "origin", `refs/tags/${BUILD_TAG_PREFIX}/${hash}/*`], {
+    capture: true,
+  })
     .split("\n")
-    .filter(Boolean);
+    .flatMap((line) => line.match(/\/([0-9]+)$/)?.[1] ?? []);
 }
 
 function update(env: NodeJS.ProcessEnv): void {
   if (!NodeProcess.env.EXPO_TOKEN) throw new Error("EXPO_TOKEN is not set.");
   const hash = fingerprint(env);
-  const builds = buildTags(hash).map((tag) => tag.split("/").pop());
+  const builds = buildsWithFingerprint(hash);
   const message = `${run("git", ["log", "-1", "--pretty=%s"], { capture: true }).trim().slice(0, 120)} (${run("git", ["rev-parse", "--short=9", "HEAD"], { capture: true }).trim()})`;
   run(
     "npx",
@@ -123,17 +118,29 @@ function update(env: NodeJS.ProcessEnv): void {
   }
 }
 
+/** UTC minutes, so numbers keep rising across DST and stay above the earlier local-time ones. */
 function buildNumber(now: Date): string {
-  const pad = (value: number) => String(value).padStart(2, "0");
-  return `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}${pad(now.getHours())}${pad(now.getMinutes())}`;
+  return now.toISOString().slice(0, 16).replace(/[-T:]/g, "");
 }
 
 function testflight(env: NodeJS.ProcessEnv): void {
-  if (run("git", ["status", "--porcelain", "--untracked-files=no"], { capture: true }).trim()) {
+  // Untracked files such as a new module or patch would change this build's fingerprint but not CI's.
+  if (run("git", ["status", "--porcelain"], { capture: true }).trim()) {
     throw new Error(
-      "Commit or stash tracked changes first: the build and its tag name this commit.",
+      "Commit, stash or remove changes first: the build and its tag name this commit.",
     );
   }
+  // CI fingerprints a fresh install from the lockfile; a stale node_modules here would not match.
+  run("vp", ["i", "--frozen-lockfile", "--", "--yes"]);
+  const scratch = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-fork-release-"));
+  try {
+    archiveAndUpload(env, scratch);
+  } finally {
+    NodeFS.rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
+function archiveAndUpload(env: NodeJS.ProcessEnv, scratch: string): void {
   const hash = fingerprint(env);
   const number = buildNumber(new Date());
   const ios = NodePath.join(MOBILE_ROOT, "ios");
@@ -146,10 +153,12 @@ function testflight(env: NodeJS.ProcessEnv): void {
   for (const target of NodeFS.readdirSync(ios)) {
     const plist = NodePath.join(ios, target, "Info.plist");
     if (!NodeFS.existsSync(plist)) continue;
-    const current = run("/usr/libexec/PlistBuddy", ["-c", "Print :CFBundleVersion", plist], {
-      capture: true,
-    }).trim();
-    if (!current.startsWith("$(")) {
+    const current = NodeChildProcess.spawnSync(
+      "/usr/libexec/PlistBuddy",
+      ["-c", "Print :CFBundleVersion", plist],
+      { encoding: "utf8" },
+    );
+    if (current.status === 0 && !current.stdout.trim().startsWith("$(")) {
       run("/usr/libexec/PlistBuddy", ["-c", `Set :CFBundleVersion ${number}`, plist]);
     }
   }
@@ -157,7 +166,6 @@ function testflight(env: NodeJS.ProcessEnv): void {
   const workspace = NodeFS.readdirSync(ios).find((name) => name.endsWith(".xcworkspace"));
   if (!workspace) throw new Error("prebuild made no Xcode workspace.");
   const scheme = workspace.replace(/\.xcworkspace$/, "");
-  const scratch = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-fork-release-"));
   const archive = NodePath.join(
     NodeOS.homedir(),
     "Library/Developer/Xcode/Archives",
@@ -177,8 +185,7 @@ function testflight(env: NodeJS.ProcessEnv): void {
       "generic/platform=iOS",
       "-archivePath",
       archive,
-      "-derivedDataPath",
-      NodePath.join(scratch, "DerivedData"),
+      // Xcode's default DerivedData sits outside the checkout and is reused by the next release.
       "-allowProvisioningUpdates",
       `CURRENT_PROJECT_VERSION=${number}`,
       "archive",

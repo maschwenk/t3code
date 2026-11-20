@@ -11,13 +11,12 @@ on:
     branches: [main]
     paths:
       - apps/mobile/**
-      - packages/client-runtime/**
-      - packages/contracts/**
-      - packages/shared/**
+      - packages/**
       - assets/**
       - scripts/mobile-fork-release.ts
       - scripts/lib/**
       - patches/**
+      - package.json
       - pnpm-lock.yaml
       - pnpm-workspace.yaml
       - .github/workflows/mobile-fork-update.yml

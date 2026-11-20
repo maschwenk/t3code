@@ -21,6 +21,7 @@ type Environment = Readonly<Record<string, string | undefined>>;
 
 const REPO_ROOT = NodePath.resolve(NodeURL.fileURLToPath(import.meta.url), "../../..");
 
+/** `T3CODE_IGNORE_ENV_FILES=1` skips the root env files, for builds that must not depend on them. */
 export function loadRepoEnv({
   baseEnv = process.env,
   repoRoot = REPO_ROOT,
@@ -28,8 +29,9 @@ export function loadRepoEnv({
   readonly baseEnv?: Environment;
   readonly repoRoot?: string;
 } = {}): Record<string, string | undefined> {
-  const rootEnv = readEnvFile(NodePath.join(repoRoot, ".env"));
-  const localEnv = readEnvFile(NodePath.join(repoRoot, ".env.local"));
+  const ignoreFiles = baseEnv.T3CODE_IGNORE_ENV_FILES === "1";
+  const rootEnv = ignoreFiles ? {} : readEnvFile(NodePath.join(repoRoot, ".env"));
+  const localEnv = ignoreFiles ? {} : readEnvFile(NodePath.join(repoRoot, ".env.local"));
   const config = resolvePublicConfig(baseEnv, localEnv, rootEnv);
 
   return {

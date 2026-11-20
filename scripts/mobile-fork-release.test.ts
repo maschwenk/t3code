@@ -12,12 +12,15 @@ it("builds and publishes from the release file, not the shell's app-config varia
       T3CODE_MOBILE_VERSION: "9.0.0",
       EXPO_PUBLIC_OTLP_TRACES_URL: "https://traces.example",
       APP_VARIANT: "development",
+      T3_SHOWCASE_CAPTURE_BUILD: "1",
     },
     "APP_VARIANT=production\nT3CODE_RELAY_URL=https://relay.example\n",
   );
   expect(env).toEqual({
     PATH: "/usr/bin",
     EXPO_TOKEN: "robot-token",
+    T3CODE_IGNORE_ENV_FILES: "1",
+    EXPO_NO_DOTENV: "1",
     APP_VARIANT: "production",
     T3CODE_RELAY_URL: "https://relay.example",
   });
