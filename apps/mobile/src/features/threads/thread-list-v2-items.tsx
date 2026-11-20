@@ -329,6 +329,12 @@ export const ThreadListV2SettledShelfHeader = memo(function ThreadListV2SettledS
   return <ThreadListV2ShelfHeader {...props} kind="settled" />;
 });
 
+export const ThreadListV2ActiveSectionHeader = memo(
+  function ThreadListV2ActiveSectionHeader(props: { readonly pane?: "screen" | "sidebar" }) {
+    return <ThreadListV2SectionDivider label="Active" pane={props.pane} />;
+  },
+);
+
 export const ThreadListV2ShowMoreRow = memo(function ThreadListV2ShowMoreRow(props: {
   readonly pane?: "screen" | "sidebar";
   readonly hiddenCount: number;

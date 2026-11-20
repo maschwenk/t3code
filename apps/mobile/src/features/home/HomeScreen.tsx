@@ -72,6 +72,7 @@ import type { PendingNewTask } from "../../state/use-pending-new-tasks";
 import { useQueuedThreadKeys } from "../../state/use-thread-outbox";
 import {
   ThreadListV2PendingRow,
+  ThreadListV2ActiveSectionHeader,
   ThreadListV2Row,
   ThreadListV2SettledShelfHeader,
   ThreadListV2ShowMoreRow,
@@ -382,6 +383,7 @@ export function HomeScreen(props: HomeScreenProps) {
     setSettledVisibleCount((count) => count + THREAD_LIST_V2_SETTLED_PAGE_COUNT);
   const {
     loaded: shelfPreferencesLoaded,
+    sectionOrder,
     settledShelfExpanded,
     snoozedShelfExpanded,
     workingShelfEnabled,
@@ -431,6 +433,7 @@ export function HomeScreen(props: HomeScreenProps) {
     workingShelfExpanded,
     snoozedShelfExpanded,
     settledShelfExpanded,
+    sectionOrder,
     selectedThreadKey,
   });
   // Called as `props.onSelectThread(...)`, the compiler would cache this handler on the whole
@@ -517,6 +520,21 @@ export function HomeScreen(props: HomeScreenProps) {
           disabled={item.disabled}
           expanded={item.expanded}
           onToggle={toggleSettledShelf}
+        />
+      );
+    }
+    if (item.type === "v2-active-section") {
+      return <ThreadListV2ActiveSectionHeader />;
+    }
+    if (item.type === "v2-show-more") {
+      return (
+        <ThreadListV2ShowMoreRow
+          hiddenCount={item.hiddenCount}
+          {...(item.state === undefined ? {} : { state: item.state })}
+          onPress={() => {
+            olderSettledShelf.retry();
+            showMoreSettled();
+          }}
         />
       );
     }
@@ -775,22 +793,6 @@ export function HomeScreen(props: HomeScreenProps) {
                 ListHeaderComponent={v2ListHeader}
                 // Lifted above the rows so an iOS filter menu's dismissal morph is not covered.
                 ListHeaderComponentStyle={{ zIndex: 1 }}
-                ListFooterComponent={
-                  settledShelfExpanded && threadListV2Layout.hiddenSettledCount > 0 ? (
-                    <ThreadListV2ShowMoreRow
-                      hiddenCount={threadListV2Layout.hiddenSettledCount}
-                      {...(olderSettledShelf.loading
-                        ? { state: "loading" as const }
-                        : olderSettledShelf.failed
-                          ? { state: "failed" as const }
-                          : {})}
-                      onPress={() => {
-                        olderSettledShelf.retry();
-                        showMoreSettled();
-                      }}
-                    />
-                  ) : null
-                }
                 ListEmptyComponent={v2ListEmpty}
                 style={{ flex: 1 }}
                 automaticallyAdjustsScrollIndicatorInsets={Platform.OS === "ios"}

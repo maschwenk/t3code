@@ -1,5 +1,6 @@
 import type { OlderSettledScope } from "@t3tools/client-runtime/state/threads";
 import type { EnvironmentId } from "@t3tools/contracts";
+import type { SidebarSectionKey } from "@t3tools/contracts/settings";
 import { useMemo, useSyncExternalStore } from "react";
 
 import { scopedProjectKey } from "../../lib/scopedEntities";
@@ -64,6 +65,7 @@ export function useThreadListV2(input: {
   readonly workingShelfExpanded: boolean;
   readonly snoozedShelfExpanded: boolean;
   readonly settledShelfExpanded: boolean;
+  readonly sectionOrder: readonly SidebarSectionKey[];
   readonly selectedThreadKey: string | null;
 }) {
   const { threads, workingShelfEnabled } = input;
@@ -223,6 +225,13 @@ export function useThreadListV2(input: {
         settledCount: layout.settledCount,
         settledShelfExpanded: input.settledShelfExpanded,
         settledShelfHeaderIndex: layout.settledShelfHeaderIndex,
+        hiddenSettledCount: layout.hiddenSettledCount,
+        ...(olderSettledShelf.loading
+          ? { settledShowMoreState: "loading" as const }
+          : olderSettledShelf.failed
+            ? { settledShowMoreState: "failed" as const }
+            : {}),
+        sectionOrder: input.sectionOrder,
         snoozeLabelNow: `${input.now.slice(0, 16)}:00.000Z`,
         snoozeEnvironmentIds: input.snoozeEnvironmentIds,
         queuedThreadKeys: input.queuedThreadKeys,
@@ -235,6 +244,9 @@ export function useThreadListV2(input: {
       input.workingShelfExpanded,
       input.snoozedShelfExpanded,
       input.settledShelfExpanded,
+      olderSettledShelf.loading,
+      olderSettledShelf.failed,
+      input.sectionOrder,
       input.now,
       input.snoozeEnvironmentIds,
       input.queuedThreadKeys,

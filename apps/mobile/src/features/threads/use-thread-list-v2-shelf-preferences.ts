@@ -1,7 +1,9 @@
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { AsyncResult } from "effect/reactivity";
+import { useMemo } from "react";
 
 import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../state/preferences";
+import { resolveThreadListSectionOrder } from "./threadListSectionOrder";
 
 export function useThreadListV2ShelfPreferences() {
   const preferencesResult = useAtomValue(mobilePreferencesAtom);
@@ -14,6 +16,12 @@ export function useThreadListV2ShelfPreferences() {
   const workingShelfEnabled = loaded && preferencesResult.value.workingShelfEnabled !== false;
   const workingShelfExpanded =
     loaded && preferencesResult.value.threadListWorkingShelfExpanded === true;
+  const storedSectionOrder = loaded ? preferencesResult.value.threadListSectionOrder : undefined;
+  // The list rebuilds when this identity changes; the stored array keeps its identity until saved.
+  const sectionOrder = useMemo(
+    () => resolveThreadListSectionOrder(storedSectionOrder),
+    [storedSectionOrder],
+  );
 
   // Transforms read optimistic state so same-frame presses toggle twice.
   const toggleSnoozedShelf = () => {
@@ -43,6 +51,7 @@ export function useThreadListV2ShelfPreferences() {
 
   return {
     loaded,
+    sectionOrder,
     settledShelfExpanded,
     snoozedShelfExpanded,
     workingShelfEnabled,

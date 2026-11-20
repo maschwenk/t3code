@@ -10,6 +10,7 @@ import { expect, it, vi } from "vite-plus/test";
 
 import { olderSettledThreads } from "../../state/threads";
 import { makeRawThreadShell } from "../../test-fixtures";
+import { DEFAULT_THREAD_LIST_SECTION_ORDER } from "./threadListSectionOrder";
 import { useThreadListV2 } from "./useThreadListV2";
 
 vi.mock("../../state/threads", () => ({
@@ -59,6 +60,7 @@ it("reuses a large thread list across tab renders and updates when its inputs ch
     workingShelfExpanded: false,
     snoozedShelfExpanded: false,
     settledShelfExpanded: true,
+    sectionOrder: DEFAULT_THREAD_LIST_SECTION_ORDER,
     selectedThreadKey: null,
   };
   const seen: Array<ReturnType<typeof useThreadListV2>> = [];

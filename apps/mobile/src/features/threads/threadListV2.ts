@@ -33,10 +33,11 @@ import {
   sortSettledThreads,
 } from "@t3tools/client-runtime/state/thread-sort";
 import { isListedThreadLineage, type EnvironmentId, type ProjectId } from "@t3tools/contracts";
-import type { SnoozePresetSetting } from "@t3tools/contracts/settings";
+import type { SidebarSectionKey, SnoozePresetSetting } from "@t3tools/contracts/settings";
 import type { MenuAction } from "@react-native-menu/menu";
 
 import type { ThreadListProvider } from "../../state/thread-list-environments";
+import { DEFAULT_THREAD_LIST_SECTION_ORDER } from "./threadListSectionOrder";
 import type { ThreadMoveAvailability } from "./threadOrder";
 
 import { relativeTime } from "../../lib/time";
@@ -469,24 +470,29 @@ export interface ThreadListV2SettledShelfListItem {
   readonly disabled: boolean;
 }
 
+/** Labels the pinned and active rows when a section is ordered above them. */
+export interface ThreadListV2ActiveSectionListItem {
+  readonly type: "v2-active-section";
+  readonly key: "v2-active-section";
+}
+
+/** Pages in more settled threads; it follows the settled rows wherever that section sits. */
+export interface ThreadListV2ShowMoreListItem {
+  readonly type: "v2-show-more";
+  readonly key: "v2-show-more";
+  readonly hiddenCount: number;
+  /** Older settled threads are loading, or their last read failed. */
+  readonly state?: "loading" | "failed";
+}
+
 export type ThreadListV2ListItem =
   | ThreadListV2ThreadListItem
   | ThreadListV2PendingListItem
   | ThreadListV2WorkingShelfListItem
   | ThreadListV2SnoozedShelfListItem
-  | ThreadListV2SettledShelfListItem;
-
-export function isThreadListV2ListItem(value: {
-  readonly type: string;
-}): value is ThreadListV2ListItem {
-  return (
-    value.type === "v2-thread" ||
-    value.type === "v2-pending" ||
-    value.type === "v2-working-shelf" ||
-    value.type === "v2-snoozed-shelf" ||
-    value.type === "v2-settled-shelf"
-  );
-}
+  | ThreadListV2SettledShelfListItem
+  | ThreadListV2ActiveSectionListItem
+  | ThreadListV2ShowMoreListItem;
 
 /** Compare rebuilt items by content so minute ticks and partition runs do not re-render every mounted row. */
 export function threadListV2ListItemsAreEqual(
@@ -540,6 +546,14 @@ export function threadListV2ListItemsAreEqual(
         previous.expanded === item.expanded &&
         previous.disabled === item.disabled
       );
+    case "v2-active-section":
+      return previous.type === "v2-active-section";
+    case "v2-show-more":
+      return (
+        previous.type === "v2-show-more" &&
+        previous.hiddenCount === item.hiddenCount &&
+        previous.state === item.state
+      );
   }
 }
 
@@ -575,6 +589,11 @@ export function buildThreadListV2ListItems(input: {
   readonly settledCount?: number;
   readonly settledShelfExpanded?: boolean;
   readonly settledShelfHeaderIndex?: number | null;
+  /** Settled threads past the shelf's page; an expanded shelf ends with a "Show more" row. */
+  readonly hiddenSettledCount?: number;
+  readonly settledShowMoreState?: "loading" | "failed";
+  /** Top-to-bottom section order. Unsent tasks always lead. */
+  readonly sectionOrder?: readonly SidebarSectionKey[];
   readonly snoozeLabelNow?: string;
   readonly snoozeEnvironmentIds?: ReadonlySet<EnvironmentId>;
   readonly queuedThreadKeys?: ReadonlySet<string>;
@@ -626,40 +645,71 @@ export function buildThreadListV2ListItems(input: {
   const snoozedShelfHeaderIndex = input.snoozedShelfHeaderIndex ?? null;
   const settledCount = input.settledCount ?? 0;
   const settledShelfHeaderIndex = input.settledShelfHeaderIndex ?? null;
+  // The layout lists rows as pinned, active, working, snoozed, settled; the header indices cut it.
   const snoozedEnd = settledShelfHeaderIndex ?? threadItems.length;
   const workingEnd = snoozedShelfHeaderIndex ?? snoozedEnd;
   const activeEnd = workingShelfHeaderIndex ?? workingEnd;
-  const result: ThreadListV2ListItem[] = [...pendingItems, ...threadItems.slice(0, activeEnd)];
+  const result: ThreadListV2ListItem[] = [...pendingItems];
   const shelfDisabled = input.shelfPreferencesLoading === true;
-  if (workingShelfHeaderIndex !== null && workingCount > 0) {
-    result.push({
-      type: "v2-working-shelf",
-      key: "v2-working-shelf",
-      count: workingCount,
-      expanded: input.workingShelfExpanded === true,
-      disabled: shelfDisabled,
-    });
-    result.push(...threadItems.slice(workingShelfHeaderIndex, workingEnd));
-  }
-  if (snoozedShelfHeaderIndex !== null && snoozedCount > 0) {
-    result.push({
-      type: "v2-snoozed-shelf",
-      key: "v2-snoozed-shelf",
-      count: snoozedCount,
-      expanded: input.snoozedShelfExpanded === true,
-      disabled: shelfDisabled,
-    });
-    result.push(...threadItems.slice(snoozedShelfHeaderIndex, snoozedEnd));
-  }
-  if (settledShelfHeaderIndex !== null && settledCount > 0) {
-    result.push({
-      type: "v2-settled-shelf",
-      key: "v2-settled-shelf",
-      count: settledCount,
-      expanded: input.settledShelfExpanded !== false,
-      disabled: shelfDisabled,
-    });
-    result.push(...threadItems.slice(settledShelfHeaderIndex));
+  const settledShelfExpanded = input.settledShelfExpanded !== false;
+  const hiddenSettledCount = input.hiddenSettledCount ?? 0;
+  for (const section of input.sectionOrder ?? DEFAULT_THREAD_LIST_SECTION_ORDER) {
+    switch (section) {
+      case "active": {
+        const rows = threadItems.slice(0, activeEnd);
+        if (rows.length > 0 && result.length > pendingItems.length) {
+          result.push({ type: "v2-active-section", key: "v2-active-section" });
+        }
+        result.push(...rows);
+        break;
+      }
+      case "working":
+        if (workingShelfHeaderIndex !== null && workingCount > 0) {
+          result.push({
+            type: "v2-working-shelf",
+            key: "v2-working-shelf",
+            count: workingCount,
+            expanded: input.workingShelfExpanded === true,
+            disabled: shelfDisabled,
+          });
+          result.push(...threadItems.slice(workingShelfHeaderIndex, workingEnd));
+        }
+        break;
+      case "snoozed":
+        if (snoozedShelfHeaderIndex !== null && snoozedCount > 0) {
+          result.push({
+            type: "v2-snoozed-shelf",
+            key: "v2-snoozed-shelf",
+            count: snoozedCount,
+            expanded: input.snoozedShelfExpanded === true,
+            disabled: shelfDisabled,
+          });
+          result.push(...threadItems.slice(snoozedShelfHeaderIndex, snoozedEnd));
+        }
+        break;
+      case "settled":
+        if (settledShelfHeaderIndex !== null && settledCount > 0) {
+          result.push({
+            type: "v2-settled-shelf",
+            key: "v2-settled-shelf",
+            count: settledCount,
+            expanded: settledShelfExpanded,
+            disabled: shelfDisabled,
+          });
+          result.push(...threadItems.slice(settledShelfHeaderIndex));
+          if (settledShelfExpanded && hiddenSettledCount > 0) {
+            result.push({
+              type: "v2-show-more",
+              key: "v2-show-more",
+              hiddenCount: hiddenSettledCount,
+              ...(input.settledShowMoreState === undefined
+                ? {}
+                : { state: input.settledShowMoreState }),
+            });
+          }
+        }
+        break;
+    }
   }
   return result.map((entry, index) => {
     if (entry.type !== "v2-thread" && entry.type !== "v2-pending") return entry;

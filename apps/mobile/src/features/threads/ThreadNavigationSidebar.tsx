@@ -61,6 +61,7 @@ import { useFabScroll } from "../home/FabScrollContext";
 import { WorkspaceListHeader } from "../layout/workspace/WorkspaceListHeader";
 import { WorkspaceSidebarColumn } from "../layout/workspace/WorkspaceSidebarColumn";
 import {
+  ThreadListV2ActiveSectionHeader,
   ThreadListV2PendingRow,
   ThreadListV2Row,
   ThreadListV2SettledShelfHeader,
@@ -72,7 +73,6 @@ import { useThreadRowProviderInstanceResolver } from "./thread-provider-instance
 import type { ThreadPrPresentation } from "../../state/thread-pr-presentation";
 import { ThreadPrDemandProvider } from "../../state/thread-pr-demand";
 import {
-  isThreadListV2ListItem,
   threadListV2ListItemsAreEqual,
   THREAD_LIST_V2_SETTLED_INITIAL_COUNT,
   THREAD_LIST_V2_SETTLED_PAGE_COUNT,
@@ -80,15 +80,6 @@ import {
 } from "./threadListV2";
 import { useSelectWorkspaceDetail } from "../layout/workspace/useSelectWorkspaceDetail";
 import { NativeScrollView } from "../../native/NativeScrollViewMarker";
-
-type SidebarListItem =
-  | ThreadListV2ListItem
-  | {
-      readonly type: "v2-show-more";
-      readonly key: string;
-      readonly hiddenCount: number;
-      readonly state?: "loading" | "failed";
-    };
 
 interface ThreadNavigationSidebarProps {
   readonly width: number;
@@ -241,6 +232,7 @@ function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
     setSettledVisibleCount((count) => count + THREAD_LIST_V2_SETTLED_PAGE_COUNT);
   const {
     loaded: shelfPreferencesLoaded,
+    sectionOrder,
     settledShelfExpanded,
     snoozedShelfExpanded,
     workingShelfEnabled,
@@ -266,7 +258,6 @@ function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
   const resolveProviderInstance = useThreadRowProviderInstanceResolver(providersByEnvironmentId);
   const pendingOrder = usePendingThreadOrder();
   const {
-    layout: threadListV2Layout,
     items: threadListV2Items,
     contentOnlyThreadKeys,
     olderSettledShelf,
@@ -290,24 +281,9 @@ function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
     workingShelfExpanded,
     snoozedShelfExpanded,
     settledShelfExpanded,
+    sectionOrder,
     selectedThreadKey,
   });
-  const listItems: readonly SidebarListItem[] =
-    settledShelfExpanded && threadListV2Layout.hiddenSettledCount > 0
-      ? [
-          ...threadListV2Items,
-          {
-            type: "v2-show-more",
-            key: "v2-show-more",
-            hiddenCount: threadListV2Layout.hiddenSettledCount,
-            ...(olderSettledShelf.loading
-              ? { state: "loading" as const }
-              : olderSettledShelf.failed
-                ? { state: "failed" as const }
-                : {}),
-          },
-        ]
-      : threadListV2Items;
 
   const handleSwipeableWillOpen = (methods: SwipeableMethods) => {
     if (openSwipeableRef.current !== methods) {
@@ -361,17 +337,8 @@ function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
     threadSearchMatchByKey,
     workingShelfEnabled,
   };
-  useThreadJumpShortcuts(listItems, handleSelectThread);
-  const sidebarItemsAreEqual = (previous: SidebarListItem, item: SidebarListItem): boolean => {
-    if (isThreadListV2ListItem(previous) && isThreadListV2ListItem(item)) {
-      return threadListV2ListItemsAreEqual(previous, item);
-    }
-    if (previous.type === "v2-show-more" && item.type === "v2-show-more") {
-      return previous.hiddenCount === item.hiddenCount && previous.state === item.state;
-    }
-    return false;
-  };
-  const renderListItem = ({ item }: { readonly item: SidebarListItem }) => {
+  useThreadJumpShortcuts(threadListV2Items, handleSelectThread);
+  const renderListItem = ({ item }: { readonly item: ThreadListV2ListItem }) => {
     switch (item.type) {
       case "v2-pending": {
         const pendingScopeKey = scopedProjectKey(
@@ -514,6 +481,8 @@ function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
             pane="sidebar"
           />
         );
+      case "v2-active-section":
+        return <ThreadListV2ActiveSectionHeader pane="sidebar" />;
       case "v2-show-more":
         return (
           <ThreadListV2ShowMoreRow
@@ -606,12 +575,12 @@ function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
               <AnimatedLegendList
                 renderScrollComponent={NativeScrollView}
                 itemLayoutAnimation={THREAD_LIST_ROW_LAYOUT}
-                data={listItems}
+                data={threadListV2Items}
                 drawDistance={500}
                 estimatedItemSize={64}
                 extraData={listExtraData}
                 getItemType={(item) => item.type}
-                itemsAreEqual={sidebarItemsAreEqual}
+                itemsAreEqual={threadListV2ListItemsAreEqual}
                 keyExtractor={(item) => item.key}
                 renderItem={renderListItem}
                 automaticallyAdjustsScrollIndicatorInsets
@@ -655,7 +624,7 @@ function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
           overflow: "hidden",
         }}
       >
-        {listItems.length === 0 ? (
+        {threadListV2Items.length === 0 ? (
           <View className="flex-1 items-center justify-center">{listEmpty}</View>
         ) : (
           <SwipeableScrollGateProvider enabled={swipeEnabled}>
@@ -663,12 +632,12 @@ function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
               {/* oxlint-disable-next-line t3code/require-registered-list-scroll -- The Android sidebar has no native header to register with. */}
               <AnimatedLegendList
                 itemLayoutAnimation={THREAD_LIST_ROW_LAYOUT}
-                data={listItems}
+                data={threadListV2Items}
                 drawDistance={500}
                 estimatedItemSize={64}
                 extraData={listExtraData}
                 getItemType={(item) => item.type}
-                itemsAreEqual={sidebarItemsAreEqual}
+                itemsAreEqual={threadListV2ListItemsAreEqual}
                 keyExtractor={(item) => item.key}
                 renderItem={renderListItem}
                 contentContainerStyle={{

@@ -7,14 +7,12 @@ import {
   type HardwareKeyboardCommand,
 } from "./hardwareKeyboardCommands";
 
-type ThreadShortcutListItem = ThreadListV2ListItem | { readonly type: "v2-show-more" };
-
 export function threadJumpIndex(command: HardwareKeyboardCommand) {
   return THREAD_JUMP_KEYBINDING_COMMANDS.findIndex((candidate) => candidate === command);
 }
 
 export function threadJumpTarget(
-  items: ReadonlyArray<ThreadShortcutListItem>,
+  items: ReadonlyArray<ThreadListV2ListItem>,
   command: HardwareKeyboardCommand,
 ) {
   let index = threadJumpIndex(command);
@@ -27,7 +25,7 @@ export function threadJumpTarget(
 }
 
 export function useThreadJumpShortcuts(
-  items: ReadonlyArray<ThreadShortcutListItem>,
+  items: ReadonlyArray<ThreadListV2ListItem>,
   onSelectThread: (thread: EnvironmentThreadShell) => void,
 ) {
   const jumpToThread = (command: HardwareKeyboardCommand) => {
