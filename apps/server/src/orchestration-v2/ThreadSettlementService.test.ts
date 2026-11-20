@@ -52,6 +52,7 @@ import * as ServerActivation from "../serverActivation.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as TerminalManager from "../terminal/Manager.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
+import * as CompletionNotificationTriage from "./CompletionNotificationTriage.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
@@ -827,6 +828,8 @@ interface HarnessOptions {
   /** What the reply gate reads about each thread's latest run; see `latestRunRecords`. */
   readonly runRecords?: ReadonlyArray<OrchestrationV2ThreadProjection>;
   readonly checkSettlementReply?: TextGeneration.TextGeneration["Service"]["checkSettlementReply"];
+  /** Whether notification triage calls a run news; unset, any triage read fails the test. */
+  readonly shouldNotify?: CompletionNotificationTriage.CompletionNotificationTriage["Service"]["shouldNotify"];
   readonly projections?: ProjectionStore.ProjectionStoreV2Shape;
 }
 
@@ -861,6 +864,7 @@ const makeHarness = Effect.fn("makeThreadSettlementHarness")(function* (options:
     yield* Queue.unbounded<ProjectSetupScriptRunner.ProjectSetupScriptRunnerInput>();
   const runRecords = yield* Ref.make(options.runRecords ?? []);
   const replyChecks = yield* Ref.make<ReadonlyArray<SettlementReplyCheckInput>>([]);
+  const triagedRuns = yield* Ref.make<ReadonlyArray<RunId>>([]);
 
   const updateSettings = (patch: ServerSettingsPatch) =>
     Effect.gen(function* () {
@@ -969,6 +973,14 @@ const makeHarness = Effect.fn("makeThreadSettlementHarness")(function* (options:
           ),
         ),
     }),
+    Layer.mock(CompletionNotificationTriage.CompletionNotificationTriage)({
+      shouldNotify: (input) =>
+        Ref.update(triagedRuns, (runs) => [...runs, input.runId]).pipe(
+          Effect.andThen(
+            options.shouldNotify?.(input) ?? Effect.die(new Error("Unexpected completion triage")),
+          ),
+        ),
+    }),
     Layer.mock(Orchestrator.OrchestratorV2)({
       streamDomainEvents: Stream.fromPubSub(domainEvents).pipe(
         Stream.tap((event) => Queue.offer(observedEvents, event.id)),
@@ -1033,6 +1045,7 @@ const makeHarness = Effect.fn("makeThreadSettlementHarness")(function* (options:
     scriptRuns,
     runRecords,
     replyChecks,
+    triagedRuns,
     observedEvents,
     publishEvent: (event: OrchestrationV2DomainEvent) => PubSub.publish(domainEvents, event),
     updateSettings,
@@ -2727,6 +2740,73 @@ describe("ThreadSettlementServiceV2 reply check", () => {
         }).pipe(Effect.provide(fixture.layer));
       }),
     ),
+  );
+
+  it.effect.each([true, false])(
+    "keeps a scheduled report visible when its run reopened a long-merged thread (triage %s)",
+    (notificationTriage) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          yield* TestClock.setTime(Date.parse(NOW));
+          // Merged a week before the scheduled run that reopened each thread.
+          const mergedLastWeek = {
+            pullRequests: [
+              finishedLink("merged", "2026-08-20T00:00:00.000Z", "2026-08-21T00:00:00.000Z"),
+            ],
+          };
+          const digest = mergedThread("daily-digest", mergedLastWeek);
+          const monitor = mergedThread("quiet-monitor", mergedLastWeek);
+          // Merged once the run was under way: the run's own outcome, which settles as before.
+          const mergedByRun = mergedThread("merged-by-run");
+          const fixture = yield* makeHarness({
+            snapshot: makeSnapshot([digest, monitor, mergedByRun]),
+            settings: { ...settings, notificationTriage },
+            runRecords: [
+              records(digest, "Theo's new video compares three models; on X, two launches.", {
+                by: "scheduled",
+              }),
+              records(monitor, "No change since yesterday.", { by: "scheduled" }),
+              records(mergedByRun, "Merged it once CI passed.", { by: "scheduled" }),
+            ],
+            checkSettlementReply: asksWhenQuestion,
+            shouldNotify: (input) => Effect.succeed(input.threadId === digest.id),
+          });
+          yield* Effect.gen(function* () {
+            const service = yield* ThreadSettlementService.ThreadSettlementServiceV2;
+            yield* startHarness(service, fixture.activation, fixture.snapshotReads);
+            const settled = new Map([
+              [monitor.id, "auto_pull_request_merged"],
+              [mergedByRun.id, "auto_pull_request_merged"],
+            ]);
+            if (!notificationTriage) settled.set(digest.id, "auto_pull_request_merged");
+            expect(sources(yield* Ref.get(fixture.commands))).toEqual(settled);
+            expect((yield* Ref.get(fixture.triagedRuns)).toSorted()).toEqual(
+              notificationTriage ? [digest.latestRunId, monitor.latestRunId].toSorted() : [],
+            );
+            if (!notificationTriage) return;
+            // Triage alone held the digest: the reply check, which would have let it settle, never ran.
+            expect(
+              (yield* Ref.get(fixture.replyChecks)).map((check) => check.request).toSorted(),
+            ).toEqual([`Request for ${monitor.id}`, `Request for ${mergedByRun.id}`].toSorted());
+            const held = (yield* recordedDecisions).filter((row) => row.thread_id === digest.id);
+            expect(
+              held.map((row) => ({
+                outcome: row.outcome,
+                rule: row.rule,
+                hold: row.hold_reason,
+                check: JSON.parse(row.reply_check_json ?? "null"),
+              })),
+            ).toEqual([
+              {
+                outcome: "held",
+                rule: "auto_pull_request_merged",
+                hold: "scheduled_news",
+                check: { outcome: "holds", reason: "scheduled_news" },
+              },
+            ]);
+          }).pipe(Effect.provide(fixture.layer));
+        }),
+      ),
   );
 
   it.effect(

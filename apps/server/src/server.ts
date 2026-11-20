@@ -636,6 +636,8 @@ const layerOrchestrationApplication = Layer.merge(
 const layerThreadSettlementWorker = Layer.effectDiscard(
   ThreadSettlementService.make.pipe(Effect.flatMap((service) => service.start())),
 ).pipe(
+  // The same layer value as the relay's, so both share one instance and its per-run verdicts.
+  Layer.provide(CompletionNotificationTriage.layer),
   Layer.provide(layerPullRequestService),
   Layer.provide(ProjectionStoreV2.layer),
   Layer.provide(SettlementDecisions.layer),

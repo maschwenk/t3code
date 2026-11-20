@@ -625,6 +625,7 @@ export const make = Effect.gen(function* () {
             cwd: projects.get(thread.projectId)?.workspaceRoot ?? null,
             modelSelection: currentSettings.textGenerationModelSelection,
             checkReply,
+            notificationTriage: currentSettings.notificationTriage,
           });
           if (held !== null) settlement = decide(true);
         }
