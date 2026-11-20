@@ -12,6 +12,7 @@ import {
   getThreadListV2OrderedSection,
   threadListInboxReturns,
   threadListV2LayoutTime,
+  withThreadListV2ShowMoreState,
 } from "./threadListV2";
 import { computeThreadMoveAvailability } from "./threadOrder";
 
@@ -226,11 +227,6 @@ export function useThreadListV2(input: {
         settledShelfExpanded: input.settledShelfExpanded,
         settledShelfHeaderIndex: layout.settledShelfHeaderIndex,
         hiddenSettledCount: layout.hiddenSettledCount,
-        ...(olderSettledShelf.loading
-          ? { settledShowMoreState: "loading" as const }
-          : olderSettledShelf.failed
-            ? { settledShowMoreState: "failed" as const }
-            : {}),
         sectionOrder: input.sectionOrder,
         snoozeLabelNow: `${input.now.slice(0, 16)}:00.000Z`,
         snoozeEnvironmentIds: input.snoozeEnvironmentIds,
@@ -244,8 +240,6 @@ export function useThreadListV2(input: {
       input.workingShelfExpanded,
       input.snoozedShelfExpanded,
       input.settledShelfExpanded,
-      olderSettledShelf.loading,
-      olderSettledShelf.failed,
       input.sectionOrder,
       input.now,
       input.snoozeEnvironmentIds,
@@ -254,7 +248,16 @@ export function useThreadListV2(input: {
       input.shelfPreferencesLoaded,
     ],
   );
-  return { layout, items, contentOnlyThreadKeys, olderSettledShelf };
+  const showMoreState = olderSettledShelf.loading
+    ? "loading"
+    : olderSettledShelf.failed
+      ? "failed"
+      : undefined;
+  const listItems = useMemo(
+    () => withThreadListV2ShowMoreState(items, showMoreState),
+    [items, showMoreState],
+  );
+  return { layout, items: listItems, contentOnlyThreadKeys, olderSettledShelf };
 }
 
 /** The list's scope per environment: its projects there, or every project. */

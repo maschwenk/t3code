@@ -591,7 +591,6 @@ export function buildThreadListV2ListItems(input: {
   readonly settledShelfHeaderIndex?: number | null;
   /** Settled threads past the shelf's page; an expanded shelf ends with a "Show more" row. */
   readonly hiddenSettledCount?: number;
-  readonly settledShowMoreState?: "loading" | "failed";
   /** Top-to-bottom section order. Unsent tasks always lead. */
   readonly sectionOrder?: readonly SidebarSectionKey[];
   readonly snoozeLabelNow?: string;
@@ -702,9 +701,6 @@ export function buildThreadListV2ListItems(input: {
               type: "v2-show-more",
               key: "v2-show-more",
               hiddenCount: hiddenSettledCount,
-              ...(input.settledShowMoreState === undefined
-                ? {}
-                : { state: input.settledShowMoreState }),
             });
           }
         }
@@ -720,6 +716,15 @@ export function buildThreadListV2ListItems(input: {
       ? entry
       : { ...entry, showTrailingDivider };
   });
+}
+
+/** Stamps the Show more row's load state without rebuilding every other row. */
+export function withThreadListV2ShowMoreState(
+  items: ThreadListV2ListItem[],
+  state: "loading" | "failed" | undefined,
+): ThreadListV2ListItem[] {
+  if (state === undefined) return items;
+  return items.map((item) => (item.type === "v2-show-more" ? { ...item, state } : item));
 }
 
 // Immutable shells and field-only sorting make element-identical inputs produce identical output.

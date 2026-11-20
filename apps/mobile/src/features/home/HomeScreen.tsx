@@ -524,11 +524,12 @@ export function HomeScreen(props: HomeScreenProps) {
       );
     }
     if (item.type === "v2-active-section") {
-      return <ThreadListV2ActiveSectionHeader />;
+      return <ThreadListV2ActiveSectionHeader pane={sidebarSurface ? "sidebar" : "screen"} />;
     }
     if (item.type === "v2-show-more") {
       return (
         <ThreadListV2ShowMoreRow
+          pane={sidebarSurface ? "sidebar" : "screen"}
           hiddenCount={item.hiddenCount}
           {...(item.state === undefined ? {} : { state: item.state })}
           onPress={() => {

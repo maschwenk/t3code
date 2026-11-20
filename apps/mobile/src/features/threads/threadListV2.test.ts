@@ -1904,7 +1904,6 @@ describe("Working section beta", () => {
         settledCount: layout.settledCount,
         settledShelfHeaderIndex: layout.settledShelfHeaderIndex,
         hiddenSettledCount: layout.hiddenSettledCount,
-        settledShowMoreState: "loading",
         sectionOrder,
       }).map((item) =>
         item.type === "v2-thread"
