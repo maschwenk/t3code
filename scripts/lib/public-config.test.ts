@@ -50,6 +50,10 @@ describe("loadRepoEnv", () => {
       T3CODE_RELAY_URL: "https://ci.example.test",
       VITE_T3CODE_RELAY_URL: "https://ci.example.test",
     });
+    // Release builds pin their config; a developer's env files must not reach it.
+    expect(
+      loadRepoEnv({ baseEnv: { T3CODE_IGNORE_ENV_FILES: "1" }, repoRoot }).T3CODE_RELAY_URL,
+    ).toBeUndefined();
   });
 });
 

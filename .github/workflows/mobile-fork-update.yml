@@ -1,0 +1,78 @@
+name: Mobile Fork Update
+
+# Publishes an over-the-air update for T3 Fork, this fork's own-team iOS build, after each
+# mobile change on main. scripts/mobile-fork-release.ts builds T3 Fork for TestFlight on a Mac;
+# an update reaches only builds with its native fingerprint, and the fingerprint differs between
+# macOS and Linux installs, so this runs on macOS too. A change to native code publishes an
+# update no build can take; the summary then says a TestFlight build is due.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - apps/mobile/**
+      - packages/**
+      - assets/**
+      - scripts/mobile-fork-release.ts
+      - scripts/lib/**
+      - patches/**
+      - package.json
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - .github/workflows/mobile-fork-update.yml
+
+jobs:
+  update:
+    name: Publish T3 Fork update
+    if: github.repository == 'maschwenk/t3code'
+    runs-on: macos-latest
+    timeout-minutes: 30
+    # Publish in merge order; a burst of merges collapses into the newest commit.
+    concurrency:
+      group: mobile-fork-update
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    env:
+      NODE_OPTIONS: --max-old-space-size=6144
+    steps:
+      - id: expo-token
+        name: Check for T3_FORK_EXPO_TOKEN
+        env:
+          EXPO_TOKEN: ${{ secrets.T3_FORK_EXPO_TOKEN }}
+        run: |
+          if [ -n "$EXPO_TOKEN" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "T3_FORK_EXPO_TOKEN is not set; skipping the T3 Fork update."
+          fi
+
+      - name: Checkout
+        if: steps.expo-token.outputs.present == 'true'
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Setup Vite+
+        if: steps.expo-token.outputs.present == 'true'
+        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1.15.0
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: |
+            args:
+              - --filter=@t3tools/mobile...
+
+      # eas-cli runs the bundler through the project's package manager.
+      - name: Expose pnpm
+        if: steps.expo-token.outputs.present == 'true'
+        run: |
+          pnpm_version="$(node --print "require('./package.json').packageManager.split('@').pop()")"
+          vp_pnpm_bin="$HOME/.vite-plus/package_manager/pnpm/$pnpm_version/pnpm/bin"
+          echo "$vp_pnpm_bin" >> "$GITHUB_PATH"
+          "$vp_pnpm_bin/pnpm" --version
+
+      - name: Publish the update
+        if: steps.expo-token.outputs.present == 'true'
+        env:
+          EXPO_TOKEN: ${{ secrets.T3_FORK_EXPO_TOKEN }}
+        run: node scripts/mobile-fork-release.ts update
