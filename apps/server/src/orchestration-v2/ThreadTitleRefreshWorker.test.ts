@@ -385,3 +385,35 @@ it.effect("honors an auto-rename opt-out that lands after the pass read its snap
     assert.equal(yield* threadTitle(kept), "Seed title");
   }).pipe(Effect.provide(harness.layer));
 });
+
+it.effect("keeps a title the user typed but still refreshes one set without the opt-out", () => {
+  const harness = makeLayer();
+  return Effect.gen(function* () {
+    const threads = yield* ThreadManagement.ThreadManagementService;
+    const typed = ThreadId.make("thread:title-refresh:typed");
+    // An agent's MCP rename sends a title alone.
+    const agentSet = ThreadId.make("thread:title-refresh:agent-set");
+    yield* seedProject;
+    yield* startThread(typed, "Typed work");
+    yield* startThread(agentSet, "Agent work");
+    for (const [threadId, autoRename] of [
+      [typed, false],
+      [agentSet, undefined],
+    ] as const) {
+      yield* threads.dispatch({
+        type: "thread.metadata.update",
+        commandId: CommandId.make(`rename:${threadId}`),
+        threadId,
+        title: "Chosen title",
+        ...(autoRename === undefined ? {} : { autoRename }),
+      });
+    }
+    yield* TestClock.adjust("30 minutes");
+
+    const pass = yield* ThreadTitleRefreshWorker.makeRefreshPass;
+    yield* pass();
+    assert.deepEqual(harness.sentRenames.splice(0), [agentSet]);
+    assert.equal(yield* threadTitle(typed), "Chosen title");
+    assert.equal(yield* threadTitle(agentSet), "Renamed: Agent work");
+  }).pipe(Effect.provide(harness.layer));
+});

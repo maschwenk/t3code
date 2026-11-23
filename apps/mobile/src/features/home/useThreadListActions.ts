@@ -586,7 +586,7 @@ export function useThreadListActions(): {
       selectionHaptic();
       void updateThreadMetadata({
         environmentId: thread.environmentId,
-        input: { threadId: thread.id, title: resolution.title },
+        input: { threadId: thread.id, title: resolution.title, autoRename: false },
       }).then((result) => {
         if (result._tag === "Success") return;
         const error = Cause.squash(result.cause);

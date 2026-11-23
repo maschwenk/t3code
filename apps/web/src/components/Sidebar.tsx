@@ -1560,7 +1560,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       if (trimmed === originalTitle) return;
       const result = await updateThreadMetadata({
         environmentId: threadRef.environmentId,
-        input: { threadId: threadRef.threadId, title: trimmed },
+        input: { threadId: threadRef.threadId, title: trimmed, autoRename: false },
       });
       if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
         const error = squashAtomCommandFailure(result);
