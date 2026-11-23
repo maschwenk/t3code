@@ -380,6 +380,7 @@ describe("remote thread lifecycle commands", () => {
     ["pin", { orderKey: "a" }, { pinnedAt: expect.any(Object), pinOrderKey: "a" }],
     ["unpin", {}, { pinnedAt: null, pinOrderKey: null }],
     ["setAutoSettle", { enabled: false }, { autoSettleDisabledAt: expect.any(Object) }],
+    ["setAutoRename", { enabled: false }, { autoRenameDisabledAt: expect.any(Object) }],
     ["reorderPin", { orderKey: "b" }, { pinOrderKey: "b" }],
     ["reorderActive", { orderKey: "b" }, { activeOrderKey: "b" }],
   ] as const;

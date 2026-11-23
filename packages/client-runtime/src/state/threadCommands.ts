@@ -50,6 +50,7 @@ import {
   pinThread,
   reorderPinnedThread,
   reorderActiveThread,
+  setThreadAutoRename,
   setThreadAutoSettle,
   settleThread,
   snoozeThread,
@@ -243,6 +244,12 @@ export function createThreadEnvironmentAtoms<R, E>(
     setAutoSettle: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:thread:set-auto-settle",
       execute: setThreadAutoSettle,
+      scheduler,
+      concurrency,
+    }),
+    setAutoRename: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:thread:set-auto-rename",
+      execute: setThreadAutoRename,
       scheduler,
       concurrency,
     }),
@@ -537,6 +544,10 @@ export function createThreadEnvironmentAtoms<R, E>(
     setAutoSettle: optimistic.wrap(commands.setAutoSettle, (thread, input, now) => ({
       ...thread,
       autoSettleDisabledAt: input.enabled ? null : (thread.autoSettleDisabledAt ?? now),
+    })),
+    setAutoRename: optimistic.wrap(commands.setAutoRename, (thread, input, now) => ({
+      ...thread,
+      autoRenameDisabledAt: input.enabled ? null : (thread.autoRenameDisabledAt ?? now),
     })),
     pin: optimistic.wrap(commands.pin, (thread, input, now) => ({
       ...thread,

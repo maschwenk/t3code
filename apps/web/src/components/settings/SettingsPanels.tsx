@@ -2193,7 +2193,7 @@ export function ThreadsSettingsPanel() {
         <SettingsRow
           serverScoped
           {...searchableSetting("auto-rename-recent-threads")}
-          description="Every 30 minutes, regenerate the titles of threads with activity in the last 3 hours."
+          description="Every 30 minutes, regenerate the titles of threads with activity in the last 3 hours. To keep one thread's title, set its Auto-rename behavior to Never."
           settingKeys={["autoRenameRecentThreads"]}
           control={
             <ScopedSwitch

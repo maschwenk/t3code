@@ -1,4 +1,6 @@
 import * as Dialog from "../../components/ui/Dialog";
+import * as Cause from "effect/Cause";
+import * as Haptics from "expo-haptics";
 import type { ThreadRowProviderInstance } from "./thread-provider-instance";
 import {
   THREAD_LIST_V2_MONO_FONT as MONO_FONT,
@@ -697,6 +699,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   readonly snoozePresets: ReadonlyArray<SnoozePresetSetting> | undefined;
   readonly pinningSupported: boolean;
   readonly autoSettleOptOutSupported: boolean;
+  readonly autoRenameOptOutSupported: boolean;
   readonly titleRegenerationSupported: boolean;
   readonly reorderSupported?: boolean;
   readonly onMoveThread?: (
@@ -807,6 +810,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
 
   const visitThread = useAtomCommand(threadEnvironment.visit, { reportFailure: false });
   const markThreadUnread = useAtomCommand(threadEnvironment.markUnread, { reportFailure: false });
+  const setAutoRename = useAtomCommand(threadEnvironment.setAutoRename, { reportFailure: false });
   const handleAcknowledgeWoke = useCallback(() => {
     if (props.wokeAt === null) return;
     void visitThread({
@@ -850,6 +854,24 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   const handleSetAutoSettle = useCallback(
     (enabled: boolean) => onSetThreadAutoSettle(thread, enabled),
     [onSetThreadAutoSettle, thread],
+  );
+  const handleSetAutoRename = useCallback(
+    async (enabled: boolean) => {
+      void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      const result = await setAutoRename({
+        environmentId: thread.environmentId,
+        input: { threadId: thread.id, enabled },
+      });
+      if (result._tag === "Success") return;
+      const error = Cause.squash(result.cause);
+      Dialog.alert(
+        "Could not update auto-rename",
+        error instanceof Error && error.message.trim().length > 0
+          ? error.message
+          : "The auto-rename setting could not be changed.",
+      );
+    },
+    [setAutoRename, thread.environmentId, thread.id],
   );
   const handleMoveUp = useCallback(() => onMoveThread?.(thread, "up"), [onMoveThread, thread]);
   const handleMoveDown = useCallback(() => onMoveThread?.(thread, "down"), [onMoveThread, thread]);
@@ -953,6 +975,27 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
         supported: props.titleRegenerationSupported,
         isRegenerating: isRegeneratingTitle,
       }),
+      ...(props.autoRenameOptOutSupported
+        ? [
+            {
+              id: "auto-rename",
+              title: "Auto-rename behavior",
+              image: "arrow.clockwise",
+              subactions: [
+                {
+                  id: "auto-rename:enabled",
+                  title: "Follow settings",
+                  state: thread.autoRenameDisabledAt == null ? "on" : "off",
+                },
+                {
+                  id: "auto-rename:disabled",
+                  title: "Never",
+                  state: thread.autoRenameDisabledAt == null ? "off" : "on",
+                },
+              ],
+            } satisfies MenuAction,
+          ]
+        : []),
       { id: "mark-unread", title: "Mark unread", image: "envelope.badge" },
       ...(canTurnIntoProject
         ? [
@@ -965,7 +1008,14 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
           ]
         : []),
     ],
-    [canTurnIntoProject, props.titleRegenerationSupported, thread.runtime, isRegeneratingTitle],
+    [
+      canTurnIntoProject,
+      props.autoRenameOptOutSupported,
+      props.titleRegenerationSupported,
+      thread.autoRenameDisabledAt,
+      thread.runtime,
+      isRegeneratingTitle,
+    ],
   );
   const menuActions = useMemo<MenuAction[]>(() => {
     const nested = Platform.OS === "ios";
@@ -1061,6 +1111,8 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       if (nativeEvent.event === "unpin") handleUnpin();
       if (nativeEvent.event === "auto-settle:enabled") handleSetAutoSettle(true);
       if (nativeEvent.event === "auto-settle:disabled") handleSetAutoSettle(false);
+      if (nativeEvent.event === "auto-rename:enabled") void handleSetAutoRename(true);
+      if (nativeEvent.event === "auto-rename:disabled") void handleSetAutoRename(false);
       if (nativeEvent.event === "arrange") appAtomRegistry.set(threadArrangementOpenAtom, true);
       if (nativeEvent.event === "move-up") handleMoveUp();
       if (nativeEvent.event === "move-down") handleMoveDown();
@@ -1119,6 +1171,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       handleSettle,
       handleSnooze,
       handleSetAutoSettle,
+      handleSetAutoRename,
       handleUnpin,
       handleUnsettle,
       handleUnsnooze,

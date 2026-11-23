@@ -98,7 +98,7 @@ describe("threadsDueForTitleRefresh", () => {
     );
   });
 
-  it("skips archived, deleted, regenerating and unchanged renamed threads, listing each once", () => {
+  it("skips archived, deleted, regenerating, opted-out and unchanged renamed threads, listing each once", () => {
     const active = { latestUserMessageAt: hoursAgo(1) };
     assert.deepEqual(
       ThreadTitleRefreshWorker.threadsDueForTitleRefresh(
@@ -109,6 +109,7 @@ describe("threadsDueForTitleRefresh", () => {
             ...active,
             titleRegeneration: { requestId: CommandId.make("pending"), startedAt: hoursAgo(0) },
           }),
+          shell("auto-rename-off", { ...active, autoRenameDisabledAt: hoursAgo(2) }),
           shell("renamed-unchanged", active),
           shell("renamed-then-active", { latestUserMessageAt: hoursAgo(0.5) }),
           shell("repeated", active),
@@ -143,7 +144,12 @@ const adapter = {
   openSession: () => Effect.die("provider execution is disabled in title refresh tests"),
 } as ProviderAdapter.ProviderAdapterV2["Service"];
 
-function makeLayer() {
+function makeLayer(
+  options: {
+    // Turned off right after the pass reads its shell snapshot, as a user would mid-pass.
+    readonly autoRenameOffAfterSnapshot?: ThreadId;
+  } = {},
+) {
   const sentRenames: Array<ThreadId> = [];
   const layerDatabase = SqlitePersistence.layerMemory;
   const layerServerSettings = ServerSettings.layerTest({});
@@ -166,6 +172,21 @@ function makeLayer() {
       const threads = yield* ThreadManagement.ThreadManagementService;
       return ThreadManagement.ThreadManagementService.of({
         ...threads,
+        getShellSnapshot: (input) =>
+          threads.getShellSnapshot(input).pipe(
+            Effect.tap(() =>
+              options.autoRenameOffAfterSnapshot === undefined
+                ? Effect.void
+                : threads
+                    .dispatch({
+                      type: "thread.auto-rename.set",
+                      commandId: CommandId.make("auto-rename:after-snapshot"),
+                      threadId: options.autoRenameOffAfterSnapshot,
+                      enabled: false,
+                    })
+                    .pipe(Effect.orDie),
+            ),
+          ),
         dispatch: (command) => {
           if (command.type !== "thread.metadata.update" || command.regenerateTitle !== true) {
             return threads.dispatch(command);
@@ -311,5 +332,88 @@ it.effect("renames recently active threads once per new activity, past a rejecte
       "Renamed: Follow-up work",
       "Seed title",
     ]);
+  }).pipe(Effect.provide(harness.layer));
+});
+
+const setAutoRename = (threadId: ThreadId, enabled: boolean) =>
+  Effect.flatMap(ThreadManagement.ThreadManagementService, (threads) =>
+    threads.dispatch({
+      type: "thread.auto-rename.set",
+      commandId: CommandId.make(`auto-rename:${threadId}:${enabled}`),
+      threadId,
+      enabled,
+    }),
+  );
+
+const threadTitle = (threadId: ThreadId) =>
+  Effect.flatMap(ThreadManagement.ThreadManagementService, (threads) =>
+    threads.getThreadShell(threadId).pipe(Effect.map((shell) => shell?.title)),
+  );
+
+it.effect("keeps the title of an active thread with auto-rename off until it is back on", () => {
+  const harness = makeLayer();
+  return Effect.gen(function* () {
+    const kept = ThreadId.make("thread:title-refresh:kept");
+    yield* seedProject;
+    yield* startThread(kept, "Kept work");
+    yield* setAutoRename(kept, false);
+    yield* TestClock.adjust("30 minutes");
+
+    const pass = yield* ThreadTitleRefreshWorker.makeRefreshPass;
+    yield* pass();
+    assert.deepEqual(harness.sentRenames.splice(0), []);
+    assert.equal(yield* threadTitle(kept), "Seed title");
+
+    yield* setAutoRename(kept, true);
+    yield* pass();
+    assert.deepEqual(harness.sentRenames.splice(0), [kept]);
+    assert.equal(yield* threadTitle(kept), "Renamed: Kept work");
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect("honors an auto-rename opt-out that lands after the pass read its snapshot", () => {
+  const kept = ThreadId.make("thread:title-refresh:late-opt-out");
+  const harness = makeLayer({ autoRenameOffAfterSnapshot: kept });
+  return Effect.gen(function* () {
+    yield* seedProject;
+    yield* startThread(kept, "Kept work");
+    yield* TestClock.adjust("30 minutes");
+
+    const pass = yield* ThreadTitleRefreshWorker.makeRefreshPass;
+    yield* pass();
+    assert.deepEqual(harness.sentRenames, []);
+    assert.equal(yield* threadTitle(kept), "Seed title");
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect("keeps a title the user typed but still refreshes one set without the opt-out", () => {
+  const harness = makeLayer();
+  return Effect.gen(function* () {
+    const threads = yield* ThreadManagement.ThreadManagementService;
+    const typed = ThreadId.make("thread:title-refresh:typed");
+    // An agent's MCP rename sends a title alone.
+    const agentSet = ThreadId.make("thread:title-refresh:agent-set");
+    yield* seedProject;
+    yield* startThread(typed, "Typed work");
+    yield* startThread(agentSet, "Agent work");
+    for (const [threadId, autoRename] of [
+      [typed, false],
+      [agentSet, undefined],
+    ] as const) {
+      yield* threads.dispatch({
+        type: "thread.metadata.update",
+        commandId: CommandId.make(`rename:${threadId}`),
+        threadId,
+        title: "Chosen title",
+        ...(autoRename === undefined ? {} : { autoRename }),
+      });
+    }
+    yield* TestClock.adjust("30 minutes");
+
+    const pass = yield* ThreadTitleRefreshWorker.makeRefreshPass;
+    yield* pass();
+    assert.deepEqual(harness.sentRenames.splice(0), [agentSet]);
+    assert.equal(yield* threadTitle(typed), "Chosen title");
+    assert.equal(yield* threadTitle(agentSet), "Renamed: Agent work");
   }).pipe(Effect.provide(harness.layer));
 });
