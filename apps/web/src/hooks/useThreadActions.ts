@@ -41,6 +41,7 @@ import {
   readDelegatedUnderParent,
   readEnvironmentServerConfigLoaded,
   readEnvironmentSupportsAutoSettleOptOut,
+  readEnvironmentSupportsAutoRenameOptOut,
   readEnvironmentThreadRefs,
   readProject,
   readThreadShell,
@@ -128,6 +129,18 @@ export class ThreadAutoSettleOptOutUnsupportedError extends Schema.TaggedError<T
 ) {
   override get message(): string {
     return "This environment's server does not support turning auto-settle off per thread yet. Update the server to use it.";
+  }
+}
+
+export class ThreadAutoRenameOptOutUnsupportedError extends Schema.TaggedError<ThreadAutoRenameOptOutUnsupportedError>()(
+  "ThreadAutoRenameOptOutUnsupportedError",
+  {
+    environmentId: EnvironmentId,
+    threadId: ThreadId,
+  },
+) {
+  override get message(): string {
+    return "This environment's server does not support turning auto-rename off per thread yet. Update the server to use it.";
   }
 }
 
@@ -298,6 +311,9 @@ export function useThreadActions() {
     reportFailure: false,
   });
   const setThreadAutoSettleMutation = useOrchestrationCommand(threadEnvironment.setAutoSettle, {
+    reportFailure: false,
+  });
+  const setThreadAutoRenameMutation = useOrchestrationCommand(threadEnvironment.setAutoRename, {
     reportFailure: false,
   });
   const reorderPinnedThreadMutation = useOrchestrationCommand(threadEnvironment.reorderPin, {
@@ -746,6 +762,23 @@ export function useThreadActions() {
     });
   };
 
+  const setThreadAutoRename = async (target: ScopedThreadRef, enabled: boolean) => {
+    if (!readEnvironmentSupportsAutoRenameOptOut(target.environmentId)) {
+      return AsyncResult.failure(
+        Cause.fail(
+          new ThreadAutoRenameOptOutUnsupportedError({
+            environmentId: target.environmentId,
+            threadId: target.threadId,
+          }),
+        ),
+      );
+    }
+    return setThreadAutoRenameMutation({
+      environmentId: target.environmentId,
+      input: { threadId: target.threadId, enabled },
+    });
+  };
+
   const sendPin = async (target: ScopedThreadRef, opts: { orderKey?: string } = {}) => {
     if (!readEnvironmentServerConfigLoaded(target.environmentId)) {
       return AsyncResult.failure(
@@ -1029,6 +1062,7 @@ export function useThreadActions() {
     reorderActiveThread,
     markThreadUnread,
     setThreadAutoSettle,
+    setThreadAutoRename,
     turnThreadIntoProject: (target: ScopedThreadRef) =>
       createProjectFromThread({
         environmentId: target.environmentId,

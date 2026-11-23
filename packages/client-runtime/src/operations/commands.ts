@@ -593,6 +593,20 @@ export const setThreadAutoSettle = Effect.fn("EnvironmentCommands.setThreadAutoS
   });
 });
 
+export interface SetThreadAutoRenameInput extends ThreadCommandInput {
+  readonly enabled: boolean;
+}
+export const setThreadAutoRename = Effect.fn("EnvironmentCommands.setThreadAutoRename")(function* (
+  input: SetThreadAutoRenameInput,
+) {
+  return yield* dispatch({
+    type: "thread.auto-rename.set",
+    commandId: yield* allocateCommandId(input),
+    threadId: input.threadId,
+    enabled: input.enabled,
+  });
+});
+
 export const reorderPinnedThread = Effect.fn("EnvironmentCommands.reorderPinnedThread")(function* (
   input: ReorderPinnedThreadInput,
 ) {

@@ -940,6 +940,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     unpinThread,
     confirmAndUnpinThread,
     setThreadAutoSettle,
+    setThreadAutoRename,
     turnThreadIntoProject,
     reorderPinnedThread,
     reorderActiveThread,
@@ -2612,6 +2613,9 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
         const supportsAutoSettleOptOut =
           serverConfigs.get(thread.environmentId)?.environment.capabilities
             .threadAutoSettleOptOut === true;
+        const supportsAutoRenameOptOut =
+          serverConfigs.get(thread.environmentId)?.environment.capabilities
+            .threadAutoRenameOptOut === true;
         const isRegeneratingTitle = thread.titleRegeneration != null;
         const isSettled = settledThreadKeysRef.current.has(threadKey);
         const isSnoozed = snoozedThreadKeysRef.current.has(threadKey);
@@ -2648,6 +2652,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
               isPinned,
               isSettled,
               autoSettleEnabled: thread.autoSettleDisabledAt == null,
+              autoRenameEnabled: thread.autoRenameDisabledAt == null,
               isSnoozed,
               canSnoozeNow: canSnooze(thread, { now: new Date().toISOString() }),
               isRegeneratingTitle,
@@ -2659,6 +2664,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
               supports: {
                 settlement: configLoaded,
                 autoSettleOptOut: supportsAutoSettleOptOut,
+                autoRenameOptOut: supportsAutoRenameOptOut,
                 snooze: configLoaded,
                 pinning: configLoaded,
                 titleRegeneration: configLoaded,
@@ -2769,6 +2775,24 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                 stackedThreadToast({
                   type: "error",
                   title: "Failed to update auto-settle",
+                  description: error instanceof Error ? error.message : "An error occurred.",
+                }),
+              );
+            }
+            return;
+          }
+          case "auto-rename:enabled":
+          case "auto-rename:disabled": {
+            const result = await setThreadAutoRename(
+              threadRef,
+              clicked.value === "auto-rename:enabled",
+            );
+            if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+              const error = squashAtomCommandFailure(result);
+              toastManager.add(
+                stackedThreadToast({
+                  type: "error",
+                  title: "Failed to update auto-rename",
                   description: error instanceof Error ? error.message : "An error occurred.",
                 }),
               );

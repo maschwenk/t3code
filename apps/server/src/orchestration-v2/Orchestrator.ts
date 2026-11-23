@@ -639,6 +639,7 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "thread.snooze":
     case "thread.unsnooze":
     case "thread.auto-settle.set":
+    case "thread.auto-rename.set":
     case "thread.pin":
     case "thread.unpin":
     case "thread.pin.reorder":
@@ -4125,6 +4126,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           | "thread.snooze"
           | "thread.unsnooze"
           | "thread.auto-settle.set"
+          | "thread.auto-rename.set"
           | "thread.pin"
           | "thread.unpin"
           | "thread.pin.reorder"
@@ -4295,6 +4297,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         command.type === "thread.snooze" ||
         command.type === "thread.unsnooze" ||
         command.type === "thread.auto-settle.set" ||
+        command.type === "thread.auto-rename.set" ||
         command.type === "thread.pin" ||
         command.type === "thread.unpin" ||
         command.type === "thread.pin.reorder" ||
@@ -4775,6 +4778,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           return {
             ...thread,
             autoSettleDisabledAt: command.enabled ? null : (thread.autoSettleDisabledAt ?? now),
+            updatedAt: unchanged ? thread.updatedAt : now,
+          };
+        }
+        case "thread.auto-rename.set": {
+          const unchanged = command.enabled === (thread.autoRenameDisabledAt == null);
+          return {
+            ...thread,
+            autoRenameDisabledAt: command.enabled ? null : (thread.autoRenameDisabledAt ?? now),
             updatedAt: unchanged ? thread.updatedAt : now,
           };
         }
@@ -5272,6 +5283,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           return "thread.unsnoozed" as const;
         case "thread.auto-settle.set":
           return "thread.auto-settle-set" as const;
+        case "thread.auto-rename.set":
+          return "thread.auto-rename-set" as const;
         case "thread.pin":
           return "thread.pinned" as const;
         case "thread.unpin":
@@ -7103,6 +7116,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       !hasTitleSetBeforeFirstMessage(projection.thread, command.titleSeed);
     if (
       !isNativeMaintenanceCommand(command) &&
+      projection.thread.autoRenameDisabledAt == null &&
       (seedsUntitledThread || (command.createdBy === "user" && (yield* onlyMaintenanceHistory)))
     ) {
       const now = yield* DateTime.now;
@@ -15113,6 +15127,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       case "thread.snooze":
       case "thread.unsnooze":
       case "thread.auto-settle.set":
+      case "thread.auto-rename.set":
       case "thread.pin":
       case "thread.unpin":
       case "thread.pin.reorder":

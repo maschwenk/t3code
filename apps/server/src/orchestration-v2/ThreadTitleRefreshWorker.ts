@@ -26,7 +26,8 @@ const TITLE_REFRESH_SETTLE_TIMEOUT = Duration.minutes(4);
 /**
  * Listed threads with a user message or agent turn inside the activity window, newest first,
  * each once. Threads with a title generation in flight, or no activity since
- * `refreshedActivityMs`, are skipped; subagents, delegated tasks and side chats are never renamed.
+ * `refreshedActivityMs`, are skipped; subagents, delegated tasks, side chats and threads with
+ * auto-rename turned off are never renamed.
  */
 export function threadsDueForTitleRefresh(
   threads: ReadonlyArray<
@@ -36,6 +37,7 @@ export function threadsDueForTitleRefresh(
       | "archivedAt"
       | "deletedAt"
       | "titleRegeneration"
+      | "autoRenameDisabledAt"
       | "latestUserMessageAt"
       | "latestRunRequestedAt"
       | "latestRunStartedAt"
@@ -54,6 +56,7 @@ export function threadsDueForTitleRefresh(
       thread.archivedAt !== null ||
       thread.deletedAt !== null ||
       thread.titleRegeneration ||
+      thread.autoRenameDisabledAt != null ||
       !isListedThreadLineage(thread.lineage) ||
       isDelegatedAppThread(thread)
     ) {
@@ -92,6 +95,8 @@ export const makeRefreshPass = Effect.gen(function* () {
     activityMs: number,
     requestId: CommandId,
   ) {
+    // A long pass dispatches from a snapshot read minutes earlier; honor a later opt-out.
+    if ((yield* threads.getThreadShell(threadId))?.autoRenameDisabledAt != null) return;
     const dispatched = yield* threads.dispatch({
       type: "thread.metadata.update",
       commandId: requestId,

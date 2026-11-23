@@ -14,6 +14,9 @@ export type ThreadActionMenuId =
   | "auto-settle"
   | "auto-settle:enabled"
   | "auto-settle:disabled"
+  | "auto-rename"
+  | "auto-rename:enabled"
+  | "auto-rename:disabled"
   | "snooze"
   | `snooze:${string}`
   | "unsnooze"
@@ -78,6 +81,7 @@ export interface ThreadActionMenuState {
   readonly isPinned: boolean;
   readonly isSettled: boolean;
   readonly autoSettleEnabled: boolean;
+  readonly autoRenameEnabled: boolean;
   readonly isSnoozed: boolean;
   readonly canSnoozeNow: boolean;
   readonly isRegeneratingTitle: boolean;
@@ -86,6 +90,7 @@ export interface ThreadActionMenuState {
   readonly supports: {
     readonly settlement: boolean;
     readonly autoSettleOptOut: boolean;
+    readonly autoRenameOptOut: boolean;
     readonly snooze: boolean;
     readonly pinning: boolean;
     readonly titleRegeneration: boolean;
@@ -175,6 +180,27 @@ export function buildThreadActionMenuItems(
             label: state.isRegeneratingTitle ? "Regenerating…" : "Regenerate title",
             icon: "refresh-cw",
             disabled: state.isRegeneratingTitle,
+          },
+        ]
+      : []),
+    ...(state.supports.autoRenameOptOut
+      ? [
+          {
+            id: "auto-rename" as const,
+            label: "Auto-rename behavior",
+            icon: "refresh-cw",
+            children: [
+              {
+                id: "auto-rename:enabled" as const,
+                label: "Follow settings",
+                checked: state.autoRenameEnabled,
+              },
+              {
+                id: "auto-rename:disabled" as const,
+                label: "Never",
+                checked: !state.autoRenameEnabled,
+              },
+            ],
           },
         ]
       : []),
