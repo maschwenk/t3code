@@ -39,6 +39,19 @@ export function formatGrace(graceMs: number | null): string {
   return `${Math.round(graceMs / 1_000)}s`;
 }
 
+/**
+ * A process on the installed app's binary: the app itself (`app`), or a tool under `toolsDir`
+ * that outlives it (`tool`, such as the agent-device daemon). `null` if it only names the binary.
+ */
+export function classifyAppBinaryProcess(
+  command: string,
+  installedApp: string,
+  toolsDir: string,
+): "app" | "tool" | null {
+  if (!command.startsWith(`${installedApp}/Contents/MacOS/`)) return null;
+  return command.includes(` ${toolsDir}/`) ? "tool" : "app";
+}
+
 export interface ResumeSettings {
   /** The global `continueThreadsAfterServerUpdate`, on unless the user turned it off. */
   readonly global: boolean;
