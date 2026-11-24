@@ -2,6 +2,7 @@ import { assert, describe, it } from "@effect/vitest";
 import * as NodeSqlite from "node:sqlite";
 
 import {
+  classifyAppBinaryProcess,
   DEFAULT_GRACE_MS,
   parseGrace,
   readRestartThreads,
@@ -76,6 +77,38 @@ describe("parseGrace", () => {
     assert.strictEqual(parseGrace("1.5h"), 90 * 60_000);
     assert.isNull(parseGrace("forever"));
     assert.throws(() => parseGrace("soon"), /--grace/);
+  });
+});
+
+describe("classifyAppBinaryProcess", () => {
+  const app = "/Applications/T3 Code (Fork).app";
+  const tools = "/Users/max/.t3/tools";
+  const binary = `${app}/Contents/MacOS/T3 Code (Fork)`;
+  const classify = (command: string) => classifyAppBinaryProcess(command, app, tools);
+
+  it("tells the app from the tool daemons that outlive it on its binary", () => {
+    assert.strictEqual(classify(binary), "app");
+    assert.strictEqual(
+      classify(
+        `${binary} --require ${app}/Contents/Resources/app.asar/apps/desktop/dist-electron/compileCache.cjs ${app}/Contents/Resources/app.asar/apps/server/dist/bin.mjs --bootstrap-fd 3`,
+      ),
+      "app",
+    );
+    // The detached agent-device daemon that kept a Nov 24 install from replacing the app.
+    assert.strictEqual(
+      classify(
+        `${binary} ${tools}/agent-device/0.21.36/node_modules/agent-device/dist/src/internal/daemon.js`,
+      ),
+      "tool",
+    );
+    assert.strictEqual(
+      classify(
+        `${binary} ${tools}/expo-device-hub/0.22.1/node_modules/expo-device-hub/dist/server/cli.mjs`,
+      ),
+      "tool",
+    );
+    assert.strictEqual(classify(`/usr/bin/lldb ${binary}`), null);
+    assert.strictEqual(classify("/usr/bin/node scripts/install-fork-desktop.ts"), null);
   });
 });
 

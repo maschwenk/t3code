@@ -11,6 +11,7 @@ import * as NodeSqlite from "node:sqlite";
 import * as NodeUtil from "node:util";
 
 import {
+  classifyAppBinaryProcess,
   describeOutcome,
   formatGrace,
   parseGrace,
@@ -29,6 +30,7 @@ const BUNDLE_ID = "com.t3tools.t3code.fork";
 const APPLICATIONS_DIR = "/Applications";
 const INSTALLED_APP = NodePath.join(APPLICATIONS_DIR, `${PRODUCT_NAME}.app`);
 const USERDATA_DIR = NodePath.join(NodeOS.homedir(), ".t3", "userdata");
+const TOOLS_DIR = NodePath.join(NodeOS.homedir(), ".t3", "tools");
 const STATE_DB = NodePath.join(USERDATA_DIR, "statev2.sqlite");
 const SETTINGS_FILE = NodePath.join(USERDATA_DIR, "settings.json");
 // How long after the relaunch to wait for the server to continue the turns the quit cut short.
@@ -282,10 +284,39 @@ function assertConnectReachable(installedApp: string) {
 }
 
 // pgrep reads its pattern as a regex, where "(Fork)" never matches the literal
-// path. -a keeps the app's processes visible when an agent inside it runs this.
-function appIsRunning(): boolean {
+// path. -a keeps the app's processes visible when an agent inside it runs this,
+// and -l with -f prints each match as "<pid> <full command line>".
+function appBinaryProcesses(): ReadonlyArray<{
+  readonly pid: number;
+  readonly command: string;
+  readonly kind: "app" | "tool";
+}> {
   const pattern = `${INSTALLED_APP}/Contents/MacOS/`.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return capture("pgrep", ["-a", "-f", pattern]) !== "";
+  return capture("pgrep", ["-a", "-l", "-f", pattern])
+    .split("\n")
+    .flatMap((line) => {
+      const match = /^(\d+) (.*)$/.exec(line);
+      if (!match) return [];
+      const kind = classifyAppBinaryProcess(match[2]!, INSTALLED_APP, TOOLS_DIR);
+      return kind === null ? [] : [{ pid: Number(match[1]), command: match[2]!, kind }];
+    });
+}
+
+function appIsRunning(): boolean {
+  return appBinaryProcesses().some((process) => process.kind === "app");
+}
+
+/** Tool daemons outlive the app on its binary; stop them before it is replaced. The app starts them again. */
+function stopToolDaemons() {
+  for (const tool of appBinaryProcesses()) {
+    if (tool.kind !== "tool") continue;
+    console.log(`[fork-install] Stopping T3 tool process ${tool.pid}: ${tool.command}`);
+    try {
+      process.kill(tool.pid, "SIGTERM");
+    } catch {
+      // It already exited.
+    }
+  }
 }
 
 function workingAgentTurns(): ReadonlyArray<string> {
@@ -522,6 +553,7 @@ function installBuiltApp(builtApp: string) {
     if (appIsRunning()) {
       throw new Error(`${PRODUCT_NAME} did not quit; leaving the installed app in place.`);
     }
+    stopToolDaemons();
     NodeFS.rmSync(INSTALLED_APP, { recursive: true, force: true });
   }
   run("ditto", [builtApp, INSTALLED_APP]);
