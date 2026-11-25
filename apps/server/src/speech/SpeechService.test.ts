@@ -10,14 +10,19 @@ import * as Result from "effect/Result";
 import * as Scheduler from "effect/Scheduler";
 import * as Scope from "effect/Scope";
 import * as Exit from "effect/Exit";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
+import * as Schema from "effect/Schema";
 import * as PlatformError from "effect/PlatformError";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { DEFAULT_SPEECH_TRANSCRIPTION_OPTIONS } from "@t3tools/contracts";
+import * as ServerConfig from "../config.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { listNativeSpeechGpuDevices } from "./native.ts";
 import * as SpeechModelStore from "./SpeechModelStore.ts";
 import * as SpeechService from "./SpeechService.ts";
 import { SILERO_VAD } from "./silero.ts";
+import * as VoiceLog from "./VoiceLog.ts";
 
 const native = vi.hoisted(() => ({
   backend: "Vulkan0",
@@ -34,7 +39,21 @@ const native = vi.hoisted(() => ({
   finish: vi.fn(async () => "hello"),
   reset: vi.fn(async () => {}),
   dispose: vi.fn(),
-  transcribe: vi.fn(async (_pcm: Float32Array, _options?: unknown) => ({ text: "hello" })),
+  transcribe: vi.fn(
+    async (
+      _pcm: Float32Array,
+      _options?: unknown,
+    ): Promise<{
+      text: string;
+      audioStats?: {
+        samples: number;
+        keptSamples: number;
+        trailingDroppedSamples: number;
+        chunkChars: number[];
+        silenceModel: boolean;
+      };
+    }> => ({ text: "hello" }),
+  ),
 }));
 const loadNative = vi.hoisted(() =>
   vi.fn(
@@ -114,9 +133,12 @@ const store = Layer.succeed(
 const layer = SpeechService.layer.pipe(
   Layer.provide(store),
   Layer.provideMerge(ServerSettings.layerTest({ speechModelId: "test-model" })),
-  Layer.provide(NodeServices.layer),
+  Layer.provideMerge(VoiceLog.layer),
+  Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-speech-test-" })),
+  Layer.provideMerge(NodeServices.layer),
 );
 const pcm = () => new Uint8Array(new Float32Array([0.25]).buffer);
+const decodeLogLine = Schema.decodeSync(Schema.fromJsonString(Schema.Unknown));
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -468,6 +490,54 @@ it.effect("honors exact aliases and phrase boundaries in batch and streamed text
     const stream = yield* speech.startStream(options);
     expect(yield* stream.finish).toBe(expected);
   }).pipe(Effect.scoped, Effect.provide(layer)),
+);
+
+it.effect("keeps the audio of a transcription that heard speech but returned no text", () =>
+  Effect.gen(function* () {
+    const speech = yield* SpeechService.SpeechService;
+    const { logsDir } = yield* ServerConfig.ServerConfig;
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const samples = (seconds: number) => seconds * 16_000;
+    native.transcribe.mockResolvedValueOnce({
+      text: "",
+      audioStats: {
+        samples: samples(4),
+        keptSamples: samples(3),
+        trailingDroppedSamples: samples(1),
+        chunkChars: [0],
+        silenceModel: true,
+      },
+    });
+    const speechWithoutText = new Uint8Array(new Float32Array(samples(4)).fill(0.25).buffer);
+    expect(yield* speech.transcribe(speechWithoutText, DEFAULT_SPEECH_TRANSCRIPTION_OPTIONS)).toBe(
+      "",
+    );
+    expect(yield* speech.transcribe(pcm(), DEFAULT_SPEECH_TRANSCRIPTION_OPTIONS)).toBe("hello");
+
+    const log = yield* fileSystem.readFileString(path.join(logsDir, VoiceLog.VOICE_LOG_FILE));
+    const entries = log
+      .trim()
+      .split("\n")
+      .map((line) => decodeLogLine(line));
+    expect(entries).toMatchObject([
+      {
+        event: "transcribe",
+        outcome: "transcribed",
+        audioSeconds: 4,
+        keptSeconds: 3,
+        chunkChars: [0],
+        chars: 0,
+        suspectedLoss: "speech-without-text",
+        recording: expect.stringMatching(/\.wav$/),
+      },
+      { event: "transcribe", outcome: "transcribed", chars: 5 },
+    ]);
+    expect(entries[1]).not.toHaveProperty("recording");
+    const kept = yield* fileSystem.readDirectory(path.join(logsDir, VoiceLog.VOICE_RECORDINGS_DIR));
+    expect(kept).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ recording: kept[0] });
+  }).pipe(Effect.provide(layer)),
 );
 
 it.effect("uses vocabulary only for supported transcription and always applies aliases", () =>

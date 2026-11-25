@@ -1,4 +1,5 @@
 import * as Schema from "effect/Schema";
+import type { VoiceDictationOutcome, VoiceDictationReport } from "@t3tools/contracts";
 import { replaceTextRange } from "@t3tools/shared/composerTrigger";
 
 import {
@@ -89,6 +90,8 @@ export type VoiceInputControllerDependencies = {
       ) => Promise<string> | null)
     | undefined;
   readonly onPostProcessingError?: (error: unknown) => void;
+  /** Called once per dictation that got past preparation's first step, however it ended. */
+  readonly onOutcome?: (report: VoiceDictationReport) => void;
   readonly readDraft: () => VoiceDraftSnapshot | null;
   readonly commitDraft: (
     text: string,
@@ -268,6 +271,9 @@ export class VoiceInputController {
   private readonly ownedRecordingUris = new Set<string>();
   private recordingConfigured = false;
   private finishing = false;
+  private startedAt = 0;
+  private recordingStartedAt: number | null = null;
+  private recordedMs: number | null = null;
   private retryRecording: {
     uri: string;
     ownerKey: string;
@@ -291,6 +297,9 @@ export class VoiceInputController {
     }
     let sessionToken: VoiceInputSession | null = null;
     const operationToken = ++this.operationToken;
+    this.startedAt = performance.now();
+    this.recordingStartedAt = null;
+    this.recordedMs = null;
     this.setState({ phase: "preparing", error: null, errorAction: null });
 
     try {
@@ -304,7 +313,7 @@ export class VoiceInputController {
       }
       sessionToken = acquireSession();
       if (!sessionToken) {
-        this.setError("Another voice recording is already active.", "retry");
+        this.fail("Another voice recording is already active.", "retry");
         return;
       }
       this.sessionToken = sessionToken;
@@ -325,14 +334,14 @@ export class VoiceInputController {
       }
       const transcriber = this.dependencies.getTranscriber();
       if (!transcriber) {
-        this.setError("Voice transcription is not available.", null);
+        this.fail("Voice transcription is not available.", null);
         return;
       }
 
       const permission = await this.dependencies.requestPermission();
       if (!this.isCurrent(operationToken)) return;
       if (!permission.granted) {
-        this.setError(
+        this.fail(
           "Microphone access is required for voice input.",
           permission.canAskAgain ? "retry" : "settings",
         );
@@ -344,7 +353,7 @@ export class VoiceInputController {
           transcriber.prepare({ signal: abortController.signal }),
         );
       } catch (error) {
-        if (this.isCurrent(operationToken)) this.setError(preparationErrorMessage(error), "retry");
+        if (this.isCurrent(operationToken)) this.fail(preparationErrorMessage(error), "retry");
         return;
       }
       if (!this.isCurrent(operationToken)) return;
@@ -359,7 +368,7 @@ export class VoiceInputController {
 
       const capturedDraft = this.dependencies.readDraft();
       if (!capturedDraft || capturedDraft.ownerKey !== initiatingDraft.ownerKey) {
-        this.setError("This draft is no longer available.", "retry");
+        this.fail("This draft is no longer available.", "retry");
         return;
       }
       this.capturedDraft = capturedDraft;
@@ -372,6 +381,7 @@ export class VoiceInputController {
           (text) => ({ text }),
           (error: unknown) => {
             if (this.isCurrent(operationToken) && this.state.phase === "recording") {
+              this.report("failed", transcriptionErrorMessage(error));
               void this.discardRecording(transcriptionErrorMessage(error));
             }
             return { error };
@@ -379,10 +389,11 @@ export class VoiceInputController {
         );
       }
       this.dependencies.recorder.record({ forDuration: VOICE_RECORDING_LIMIT_SECONDS });
+      this.recordingStartedAt = performance.now();
       this.setState({ phase: "recording", error: null, errorAction: null });
     } catch (error) {
       if (this.isCurrent(operationToken))
-        this.setError(
+        this.fail(
           isMicrophonePermissionError(error)
             ? MICROPHONE_PERMISSION_ERROR
             : "Could not start voice recording.",
@@ -404,7 +415,8 @@ export class VoiceInputController {
     return this.finishRecording(false, null);
   }
 
-  cancel(): void {
+  /** `reason` names who cancelled, for the dictation report; the person by default. */
+  cancel(reason = "cancelled by the person"): void {
     switch (this.state.phase) {
       case "idle":
         return;
@@ -414,14 +426,17 @@ export class VoiceInputController {
         this.setState(IDLE_STATE);
         return;
       case "preparing":
+        this.report("cancelled", reason);
         this.invalidateOperation();
         this.setState(IDLE_STATE);
         return;
       case "recording":
+        this.report("cancelled", reason);
         this.discardRecording(null);
         return;
       case "transcribing":
       case "post-processing":
+        this.report("cancelled", reason);
         this.invalidateOperation();
         this.setState(IDLE_STATE);
         return;
@@ -437,13 +452,16 @@ export class VoiceInputController {
   interruptRecording(
     message = "Voice recording was interrupted.",
     completedUri: string | null = null,
+    reason = message,
   ): Promise<void> | void {
     if (this.state.phase === "preparing") {
+      this.report("interrupted", reason);
       this.invalidateOperation();
       this.setError(message, "retry");
       return;
     }
     if (this.state.phase !== "recording") return;
+    this.report("interrupted", reason);
     this.rememberRecordingUri(completedUri);
     this.recordingUri = completedUri ?? this.recordingUri;
     return this.discardRecording(message);
@@ -454,6 +472,8 @@ export class VoiceInputController {
       this.state.phase === "preparing"
         ? "Voice input stopped when the app moved to the background."
         : undefined,
+      null,
+      "app moved to the background",
     );
   }
 
@@ -476,7 +496,7 @@ export class VoiceInputController {
 
   ownerChanged(): void {
     if (this.state.phase === "idle") return;
-    this.cancel();
+    this.cancel("the draft's owner changed");
   }
 
   dispose(): void {
@@ -487,9 +507,11 @@ export class VoiceInputController {
         this.cancel();
         return;
       case "recording":
+        this.report("cancelled", "voice input was disposed");
         this.discardRecording(null);
         return;
       default:
+        this.report("cancelled", "voice input was disposed");
         this.invalidateOperation();
         this.setState(IDLE_STATE);
     }
@@ -503,6 +525,8 @@ export class VoiceInputController {
       return;
     this.finishing = true;
     const operationToken = this.operationToken;
+    if (this.recordingStartedAt !== null)
+      this.recordedMs = performance.now() - this.recordingStartedAt;
     this.setState({ phase: "transcribing", error: null, errorAction: null });
 
     try {
@@ -519,7 +543,7 @@ export class VoiceInputController {
         !this.transcriptionAbortController ||
         !this.capturedDraft
       ) {
-        this.setError("Could not finish voice recording.", "retry");
+        this.fail("Could not finish voice recording.", "retry");
         return;
       }
 
@@ -550,7 +574,7 @@ export class VoiceInputController {
               transcription,
             };
           }
-          this.setError(transcriptionErrorMessage(error), "retry");
+          this.fail(transcriptionErrorMessage(error), "retry");
         }
         return;
       }
@@ -597,6 +621,7 @@ export class VoiceInputController {
         transcription.locale,
       );
       if (result.kind === "stale") {
+        this.report("draft-changed", null, transcript.length);
         this.setError(
           "The draft changed while voice input was running. The transcript was not added.",
           "retry",
@@ -604,15 +629,21 @@ export class VoiceInputController {
         return;
       }
       if (result.kind === "empty") {
+        this.report("empty", null, transcript.length);
         this.setError("No speech was detected.", "retry");
         return;
       }
 
+      this.report("inserted", null, transcript.length);
       this.dependencies.commitDraft(result.text, result.selection);
       this.setState(IDLE_STATE);
-    } catch {
+    } catch (error) {
       if (this.isCurrent(operationToken)) {
-        this.setError("Could not finish voice recording.", "retry");
+        this.fail(
+          "Could not finish voice recording.",
+          "retry",
+          error instanceof Error ? error.message : undefined,
+        );
       }
     } finally {
       this.finishing = false;
@@ -692,6 +723,34 @@ export class VoiceInputController {
 
   private setError(error: string, errorAction: VoiceInputState["errorAction"]): void {
     this.setState({ phase: "error", error, errorAction });
+  }
+
+  private fail(error: string, errorAction: VoiceInputState["errorAction"], detail?: string): void {
+    this.report("failed", detail ? `${error} ${detail}` : error);
+    this.setError(error, errorAction);
+  }
+
+  // Runs before the state change, so the report names the phase the dictation ended in.
+  private report(
+    outcome: VoiceDictationOutcome,
+    reason: string | null,
+    transcriptChars?: number,
+  ): void {
+    const phase = this.state.phase;
+    if (!this.dependencies.onOutcome || phase === "idle" || phase === "error") return;
+    const now = performance.now();
+    const recordedMs =
+      this.recordedMs ?? (this.recordingStartedAt === null ? null : now - this.recordingStartedAt);
+    try {
+      this.dependencies.onOutcome({
+        outcome,
+        phase,
+        totalMs: Math.round(Math.max(0, now - this.startedAt)),
+        ...(reason ? { reason: reason.slice(0, 300) } : {}),
+        ...(recordedMs === null ? {} : { recordedMs: Math.round(Math.max(0, recordedMs)) }),
+        ...(transcriptChars === undefined ? {} : { transcriptChars }),
+      });
+    } catch {}
   }
 
   private setState(state: VoiceInputState): void {

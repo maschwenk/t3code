@@ -4,6 +4,7 @@ import {
   type CloudSpeechProvider,
   type EnvironmentId,
   DEFAULT_SPEECH_TRANSCRIPTION_OPTIONS,
+  type VoiceDictationReport,
   type VoiceTranscriptionDestination,
 } from "@t3tools/contracts";
 import {
@@ -13,6 +14,7 @@ import {
   requireCloudSpeechKey,
   transcribeCloudPcm,
   getEnvironmentSpeechStatus,
+  reportEnvironmentDictation,
   transcribeEnvironmentPcm,
   VoiceTranscriptionError,
 } from "@t3tools/client-runtime/voice-input";
@@ -262,3 +264,35 @@ export const voiceRouteAtom = Atom.make((get) => {
       ),
   };
 });
+
+// A dictation lost to a dropped connection reports once the environment is reachable again.
+const MAX_PENDING_DICTATION_REPORTS = 20;
+const pendingDictationReports: VoiceDictationReport[] = [];
+let sendingDictationReports = false;
+
+/** Writes how a dictation ended to the chosen environment's voice log; on-device has none. */
+export function reportVoiceDictation(report: VoiceDictationReport) {
+  const grant = appAtomRegistry.get(voiceGrantAtom);
+  if (!grant) return;
+  pendingDictationReports.push(report);
+  pendingDictationReports.splice(0, pendingDictationReports.length - MAX_PENDING_DICTATION_REPORTS);
+  const connectionAtom =
+    grant.destination.kind === "cloud" ? cloudVoiceConnectionAtom : voiceConnectionAtom;
+  const prepared = appAtomRegistry.get(connectionAtom(grant.destination.environmentId));
+  if (prepared) void sendDictationReports(prepared);
+}
+
+async function sendDictationReports(prepared: PreparedConnection) {
+  if (sendingDictationReports) return;
+  sendingDictationReports = true;
+  try {
+    for (let report = pendingDictationReports[0]; report; report = pendingDictationReports[0]) {
+      await runSpeech(reportEnvironmentDictation(prepared, report));
+      pendingDictationReports.shift();
+    }
+  } catch {
+    // Kept for the next dictation; an older server without the endpoint just drops them.
+  } finally {
+    sendingDictationReports = false;
+  }
+}

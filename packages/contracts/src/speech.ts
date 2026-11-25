@@ -279,6 +279,35 @@ export type EnvironmentSpeechStatus = typeof EnvironmentSpeechStatus.Type;
 
 export const EnvironmentSpeechTranscriptionResult = Schema.Struct({ text: Schema.String });
 
+/** How a dictation ended on the client; everything except "inserted" lost the recording. */
+export const VoiceDictationOutcome = Schema.Literals([
+  "inserted",
+  "empty",
+  "draft-changed",
+  "cancelled",
+  "interrupted",
+  "failed",
+]);
+export type VoiceDictationOutcome = typeof VoiceDictationOutcome.Type;
+
+const DictationMilliseconds = Schema.Int.check(
+  Schema.isBetween({ minimum: 0, maximum: 86_400_000 }),
+);
+
+/** A client's account of one dictation, written to the environment's voice log. */
+export const VoiceDictationReport = Schema.Struct({
+  outcome: VoiceDictationOutcome,
+  phase: Schema.Literals(["preparing", "recording", "transcribing", "post-processing"]),
+  reason: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(300))),
+  recordedMs: Schema.optionalKey(DictationMilliseconds),
+  totalMs: DictationMilliseconds,
+  /** Characters the transcriber returned, before they were inserted or dropped. */
+  transcriptChars: Schema.optionalKey(
+    Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 100_000 })),
+  ),
+});
+export type VoiceDictationReport = typeof VoiceDictationReport.Type;
+
 export const EnvironmentSpeechAccelerationRequest = Schema.Struct({
   acceleration: SpeechAcceleration,
 });

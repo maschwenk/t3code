@@ -13,6 +13,7 @@ import type {
   SpeechModelUnloadTimeout,
   SpeechTranscriptionOptions,
   SpeechPostProcessingOptions,
+  VoiceDictationReport,
 } from "@t3tools/contracts";
 
 import * as RemoteEnvironmentAuthorization from "../authorization/service.ts";
@@ -266,6 +267,19 @@ export const transcribeEnvironmentPcm = (
         headers,
         payload: encodeSpeechPcmRequest(pcm, options),
       }),
+  });
+
+/** Tells the environment how a dictation it may have transcribed ended on this client. */
+export const reportEnvironmentDictation = (
+  prepared: PreparedConnection,
+  report: VoiceDictationReport,
+) =>
+  request({
+    group: "voice",
+    prepared,
+    method: "POST",
+    path: (urls) => urls.reportDictation(),
+    run: ({ client, headers }) => client.reportDictation({ headers, payload: report }),
   });
 
 /** Sends the transcript and draft context to a provider on `prepared`; a separate opt-in. */

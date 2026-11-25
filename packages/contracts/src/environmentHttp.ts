@@ -70,6 +70,7 @@ import {
   EnvironmentSpeechPostProcessingResult,
   EnvironmentSpeechStatus,
   EnvironmentSpeechTranscriptionResult,
+  VoiceDictationReport,
 } from "./speech.ts";
 import { SecretReference } from "./secretReference.ts";
 import {
@@ -994,6 +995,14 @@ export class EnvironmentVoiceHttpApi extends HttpApiGroup.make("voice")
       headers: OptionalBearerHeaders,
       payload: EnvironmentSpeechPostProcessingRequest,
       success: EnvironmentSpeechPostProcessingResult,
+      error: EnvironmentScopedOperationErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("reportDictation", "/api/voice/dictations", {
+      headers: OptionalBearerHeaders,
+      payload: VoiceDictationReport,
+      success: HttpApiSchema.NoContent,
       error: EnvironmentScopedOperationErrors,
     }).middleware(EnvironmentAuthenticatedAuth),
   ) {}

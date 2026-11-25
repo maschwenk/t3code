@@ -25,6 +25,7 @@ export {
   linkEnvironmentSpeechModels,
   postProcessEnvironmentTranscript,
   removeEnvironmentSpeechModel,
+  reportEnvironmentDictation,
   selectEnvironmentSpeechModel,
   transcribeEnvironmentPcm,
   updateEnvironmentSpeechAcceleration,

@@ -27,6 +27,7 @@ import * as SpeechPostProcessing from "./postProcessing.ts";
 import * as CloudSpeech from "./CloudSpeech.ts";
 import * as SpeechService from "./SpeechService.ts";
 import * as SpeechSynthesis from "./SpeechSynthesis.ts";
+import * as VoiceLog from "./VoiceLog.ts";
 
 const MAX_TRANSCRIBE_BODY_BYTES = SpeechService.MAX_SPEECH_BYTES + SPEECH_MAX_OPTIONS_BYTES + 4;
 const parseAudio = Option.liftThrowable(decodeSpeechPcmRequest);
@@ -73,6 +74,7 @@ export const speechHttpApiLayer = HttpApiBuilder.group(
     const cloud = yield* CloudSpeech.CloudSpeech;
     const postProcessing = yield* SpeechPostProcessing.SpeechPostProcessing;
     const synthesis = yield* SpeechSynthesis.SpeechSynthesis;
+    const voiceLog = yield* VoiceLog.VoiceLog;
     const guard = Effect.fnUntraced(function* (
       endpoint: string,
       scope: AuthEnvironmentScope = AuthOrchestrationOperateScope,
@@ -243,6 +245,17 @@ export const speechHttpApiLayer = HttpApiBuilder.group(
           return yield* postProcessing
             .process(args.payload)
             .pipe(Effect.catch((error) => failEnvironmentInternal("internal_error", error)));
+        }),
+      )
+      .handle(
+        "reportDictation",
+        Effect.fn("environment.voice.reportDictation")(function* (args) {
+          yield* guard(args.endpoint.name);
+          const request = yield* HttpServerRequest.HttpServerRequest;
+          yield* voiceLog.record("client", {
+            ...args.payload,
+            userAgent: request.headers["user-agent"]?.slice(0, 200),
+          });
         }),
       );
   }),

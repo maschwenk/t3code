@@ -30,6 +30,7 @@ import type * as NetAddress from "effect/net/NetAddress";
 import * as SpeechService from "./SpeechService.ts";
 import * as CloudSpeech from "./CloudSpeech.ts";
 import * as SpeechSynthesis from "./SpeechSynthesis.ts";
+import * as VoiceLog from "./VoiceLog.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
@@ -51,6 +52,7 @@ const principal = (...scopes: AuthEnvironmentScope[]) =>
 
 const dependencies = Layer.mergeAll(
   Layer.mock(CloudSpeech.CloudSpeech)({}),
+  Layer.mock(VoiceLog.VoiceLog)({}),
   Layer.mock(SpeechSynthesis.SpeechSynthesis)({}),
   Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed([]) }),
   Layer.mock(ServerSettings.ServerSettingsService)({

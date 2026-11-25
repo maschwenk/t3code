@@ -51,6 +51,7 @@ import * as PullRequestHttp from "./pullRequest/http.ts";
 import * as SpeechModelStore from "./speech/SpeechModelStore.ts";
 import * as SpeechService from "./speech/SpeechService.ts";
 import * as SpeechSynthesis from "./speech/SpeechSynthesis.ts";
+import * as VoiceLog from "./speech/VoiceLog.ts";
 import * as CloudSpeech from "./speech/CloudSpeech.ts";
 import { speechHttpApiLayer } from "./speech/http.ts";
 import * as DirectPush from "./push/DirectPush.ts";
@@ -918,7 +919,7 @@ const layerMakeRoutes = Layer.mergeAll(
     Layer.merge(
       SpeechService.layer.pipe(Layer.provide(layerServerSettings)),
       SpeechSynthesis.layer,
-    ).pipe(Layer.provide(SpeechModelStore.layer)),
+    ).pipe(Layer.provide(SpeechModelStore.layer), Layer.provideMerge(VoiceLog.layer)),
   ),
   Layer.provide(CloudSpeech.layer.pipe(Layer.provide(SecretResolver.layer))),
   Layer.provide(layerServerSettings),
