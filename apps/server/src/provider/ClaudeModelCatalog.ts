@@ -28,6 +28,26 @@ import { BUNDLED_MODEL_MANIFEST, resolveProviderCatalog } from "./ModelManifest.
 const CLAUDE = ProviderDriverKind.make("claudeAgent");
 const EMPTY_CAPABILITIES: ModelCapabilities = { optionDescriptors: [] };
 
+/**
+ * Options for a custom model whose settings declare none. Claude Code runs a model it does not
+ * know at high effort and forwards any level it is given, but a gateway that translates effort for
+ * another vendor's model can clamp `xhigh` and `max` to high, so those need per-model options.
+ */
+export const CLAUDE_CUSTOM_MODEL_CAPABILITIES: ModelCapabilities = {
+  optionDescriptors: [
+    {
+      id: "effort",
+      label: "Reasoning",
+      type: "select",
+      options: [
+        { id: "low", label: "Low" },
+        { id: "medium", label: "Medium" },
+        { id: "high", label: "High", isDefault: true },
+      ],
+    },
+  ],
+};
+
 export interface ClaudeCatalogModel {
   readonly model: ServerProviderModel;
   readonly runtime: ClaudeCodeProfile;
@@ -147,13 +167,13 @@ export function scopeClaudeModelCatalog(
   const builtInSlugs = new Set(builtInModels.map((entry) => entry.model.slug));
   const customCatalogModels: Array<ClaudeCatalogModel> = [];
   for (const entry of customEntries) {
-    if (!entry.capabilities || builtInSlugs.has(entry.slug)) continue;
+    if (builtInSlugs.has(entry.slug)) continue;
     customCatalogModels.push({
       model: {
         slug: entry.slug,
         name: entry.name,
         isCustom: true,
-        capabilities: withUltracodeToggle(entry.capabilities),
+        capabilities: withUltracodeToggle(entry.capabilities ?? CLAUDE_CUSTOM_MODEL_CAPABILITIES),
       },
       runtime: {},
       compatibility: {},
