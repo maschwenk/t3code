@@ -31,6 +31,7 @@ final class T3ScrollEdgeBleedView: ExpoView {
     if #available(iOS 27.1, *) {
       registerForTraitChanges(UITraitCollection.systemTraitsAffectingVerticalBarEdge) { (view: T3ScrollEdgeBleedView, _: UITraitCollection) in
         view.setNeedsLayout()
+        T3RailPocketBlur.scheduleUpdate()
       }
     }
     #endif
@@ -44,6 +45,7 @@ final class T3ScrollEdgeBleedView: ExpoView {
     super.didMoveToWindow()
     observeWindowTraits()
     if window == nil { detach() } else { setNeedsLayout() }
+    T3RailPocketBlur.scheduleUpdate()
   }
 
   override func safeAreaInsetsDidChange() {
@@ -64,6 +66,7 @@ final class T3ScrollEdgeBleedView: ExpoView {
         UITraitCollection.systemTraitsAffectingVerticalBarEdge
       ) { [weak self] (_: UIWindow, _: UITraitCollection) in
         self?.setNeedsLayout()
+        T3RailPocketBlur.scheduleUpdate()
       }
     }
     #endif

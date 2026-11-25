@@ -29,6 +29,7 @@ final class T3LayoutMetricsView: ExpoView {
       })
       registerForTraitChanges(UITraitCollection.systemTraitsAffectingVerticalBarEdge) { (view: T3LayoutMetricsView, _: UITraitCollection) in
         view.publishMetrics()
+        T3RailPocketBlur.scheduleUpdate()
       }
     }
     #endif
