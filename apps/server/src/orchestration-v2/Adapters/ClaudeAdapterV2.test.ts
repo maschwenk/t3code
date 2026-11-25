@@ -173,6 +173,9 @@ const CUSTOM_MODEL_CLAUDE_SETTINGS = Schema.decodeSync(ClaudeSettings)({
 const ALIAS_CUSTOM_MODEL_CLAUDE_SETTINGS = Schema.decodeSync(ClaudeSettings)({
   customModels: ["haiku", "sonnet"],
 });
+const BARE_CUSTOM_MODEL_CLAUDE_SETTINGS = Schema.decodeSync(ClaudeSettings)({
+  customModels: ["gemini-4-neon"],
+});
 const ULTRACODE_CUSTOM_MODEL_CLAUDE_SETTINGS = Schema.decodeSync(ClaudeSettings)({
   customModels: [
     {
@@ -20313,6 +20316,47 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         const options = harness.getOpenedOptions()!;
         assert.equal(options.effort, "high");
         assert.equal((options.settings as { ultracode?: boolean }).ultracode, true);
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            NodeCrypto.layer,
+          ),
+        ),
+      ),
+  );
+
+  it.effect.each([
+    { picked: "nothing", options: [], sent: "high" },
+    { picked: "Low", options: [{ id: "effort", value: "low" }], sent: "low" },
+    { picked: "unoffered Max", options: [{ id: "effort", value: "max" }], sent: "high" },
+  ])(
+    "starts Claude Code at the effort a bare custom model shows when $picked is picked",
+    ({ options, sent }) =>
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarnessWithOptions({
+          settings: BARE_CUSTOM_MODEL_CLAUDE_SETTINGS,
+        });
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now: yield* DateTime.now,
+            attemptId: RunAttemptId.make("attempt-bare-custom-effort"),
+            text: "Plan the work.",
+            attachments: [],
+            modelSelection: {
+              instanceId: ClaudeAdapterV2.CLAUDE_DEFAULT_INSTANCE_ID,
+              model: "gemini-4-neon",
+              options,
+            },
+          }),
+        );
+        const opened = harness.getOpenedOptions()!;
+        assert.equal(opened.model, "gemini-4-neon");
+        assert.equal(opened.effort, sent);
       }).pipe(
         Effect.provide(
           Layer.mergeAll(

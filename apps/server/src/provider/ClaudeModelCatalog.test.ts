@@ -182,7 +182,7 @@ describe("Claude model catalog", () => {
     );
   });
 
-  it("appends custom models with their own descriptors and keeps bare slugs opaque", () => {
+  it("appends custom models with their own descriptors and gives bare slugs Low to High effort", () => {
     const catalog = scopeClaudeModelCatalog(catalogFromManifest(manifest()), [
       "synthetic",
       {
@@ -206,9 +206,10 @@ describe("Claude model catalog", () => {
     ]);
 
     assert.strictEqual(resolveClaudeModelSlug(catalog, "synthetic"), "synthetic");
-    assert.isUndefined(resolveClaudeCatalogEffort(catalog, "synthetic", "extreme"));
-    assert.strictEqual(resolveClaudeCatalogEffort(catalog, "synthetic", "max"), "max");
-    assert.strictEqual(normalizeClaudeCatalogEffort(catalog, "max", "synthetic"), "max");
+    // A bare slug runs the High its picker shows by default, and an unoffered level runs that too.
+    assert.strictEqual(resolveClaudeCatalogEffort(catalog, "synthetic", undefined), "high");
+    assert.strictEqual(resolveClaudeCatalogEffort(catalog, "synthetic", "low"), "low");
+    assert.strictEqual(resolveClaudeCatalogEffort(catalog, "synthetic", "max"), "high");
 
     assert.strictEqual(
       resolveClaudeCatalogEffort(catalog, "claude-custom-tuned", "brutal"),
@@ -238,7 +239,7 @@ describe("Claude model catalog", () => {
     );
     assert.deepStrictEqual(
       resolveClaudeModelsForVersion(catalog, "3.2.0").map((model) => model.slug),
-      ["claude-synthetic-next", "claude-custom-tuned"],
+      ["claude-synthetic-next", "synthetic", "claude-custom-tuned"],
     );
   });
 

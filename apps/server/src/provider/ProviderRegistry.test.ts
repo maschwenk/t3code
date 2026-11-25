@@ -4681,6 +4681,46 @@ it.layer(
       ),
     );
 
+    it.effect(
+      "offers Low to High effort, High by default, on custom models that declare no options",
+      () =>
+        Effect.gen(function* () {
+          const status = yield* checkClaudeProviderStatus(
+            {
+              ...defaultClaudeSettings,
+              customModels: [
+                "gemini-4-neon",
+                { slug: "declared-none", capabilities: { optionDescriptors: [] } },
+              ],
+            },
+            claudeCapabilities(),
+          );
+          const descriptors = (slug: string) =>
+            status.models.find((model) => model.slug === slug)?.capabilities?.optionDescriptors;
+          assert.deepStrictEqual(descriptors("gemini-4-neon"), [
+            {
+              id: "effort",
+              label: "Reasoning",
+              type: "select",
+              options: [
+                { id: "low", label: "Low" },
+                { id: "medium", label: "Medium" },
+                { id: "high", label: "High", isDefault: true },
+              ],
+            },
+          ]);
+          assert.deepStrictEqual(descriptors("declared-none"), []);
+        }).pipe(
+          Effect.provide(
+            layerMockSpawner((args) => {
+              const joined = args.join(" ");
+              if (joined === "--version") return { stdout: "1.0.0\n", stderr: "", code: 0 };
+              throw new Error(`Unexpected args: ${joined}`);
+            }),
+          ),
+        ),
+    );
+
     it.effect("advertises Ultracode as a toggle on custom models", () =>
       Effect.gen(function* () {
         const status = yield* checkClaudeProviderStatus(

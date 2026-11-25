@@ -4,7 +4,6 @@ import * as NodeChildProcess from "node:child_process";
 import { resolveProviderProbeTimeoutMs } from "@t3tools/provider-core/server/snapshotProbe";
 import {
   type ClaudeSettings,
-  type ModelCapabilities,
   type ServerProvider,
   type ServerProviderModel,
   type ServerProviderSlashCommand,
@@ -20,7 +19,6 @@ import * as Ref from "effect/Ref";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
-import { createModelCapabilities } from "@t3tools/shared/model";
 import { envTrampoline, supportsEnvChdir } from "@t3tools/shared/envTrampoline";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as SpawnWorker from "../process/SpawnWorker.ts";
@@ -67,6 +65,7 @@ import {
 } from "./claudeUsageLimits.ts";
 import {
   BUNDLED_CLAUDE_MODEL_CATALOG,
+  CLAUDE_CUSTOM_MODEL_CAPABILITIES,
   CLAUDE_EFFORT_LEVELS,
   capClaudeCatalogEffort,
   type ClaudeEffortCapSource,
@@ -79,10 +78,6 @@ import {
   withUltracodeToggle,
 } from "./ClaudeModelCatalog.ts";
 
-const DEFAULT_CLAUDE_MODEL_CAPABILITIES: ModelCapabilities = createModelCapabilities({
-  optionDescriptors: [],
-});
-
 function claudeProviderModels(
   builtInModels: ReadonlyArray<ServerProviderModel>,
   customModels: ClaudeSettings["customModels"],
@@ -90,7 +85,7 @@ function claudeProviderModels(
   return providerModelsFromSettings(
     builtInModels,
     customModels,
-    DEFAULT_CLAUDE_MODEL_CAPABILITIES,
+    CLAUDE_CUSTOM_MODEL_CAPABILITIES,
   ).map((model) =>
     model.isCustom ? { ...model, capabilities: withUltracodeToggle(model.capabilities) } : model,
   );
