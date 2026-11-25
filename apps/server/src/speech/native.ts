@@ -174,7 +174,8 @@ process.on("message", async (message) => {
       await begin(message, false);
       await feed(message.pcm, true);
       const text = texts.join(" ").trim();
-      const audioStats = audio.stats();
+      const audioStats = { ...audio.stats(), chunkChars: texts.map((item) => item.trim().length),
+        silenceModel: useVad };
       audio = undefined;
       process.send({ type: "t3-speech-reply", ok: true, text, audioStats });
     }
@@ -200,7 +201,12 @@ type Reply = {
   readonly languages?: unknown;
   readonly revision?: number;
   readonly preview?: SpeechStreamText | null;
-  readonly audioStats?: ReturnType<ReturnType<typeof createSpeechAudio>["stats"]>;
+  readonly audioStats?: ReturnType<ReturnType<typeof createSpeechAudio>["stats"]> & {
+    /** Trimmed length of each ASR call's text, in order. */
+    readonly chunkChars: ReadonlyArray<number>;
+    /** False when Silero failed to load and the raw recording was used. */
+    readonly silenceModel: boolean;
+  };
 };
 
 // transcribe-cpp has an import-only export. Load its disk entry with require so

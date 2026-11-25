@@ -1,3 +1,4 @@
+import type { VoiceDictationReport } from "@t3tools/contracts";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import {
@@ -61,6 +62,7 @@ function createHarness(
   let currentDraft: VoiceDraftSnapshot | null = initialDraft;
   const commits: Array<{ text: string; selection: { start: number; end: number } }> = [];
   const deleted: string[] = [];
+  const outcomes: VoiceDictationReport[] = [];
   const dependencies: VoiceInputControllerDependencies = {
     recorder,
     getTranscriber: () => ({ prepare: async () => preparedTranscription() }),
@@ -71,6 +73,7 @@ function createHarness(
     readDraft: () => currentDraft,
     commitDraft: (text, selection) => commits.push({ text, selection }),
     onStateChange: vi.fn(),
+    onOutcome: (report) => outcomes.push(report),
     ...overrides,
   };
   return {
@@ -78,6 +81,7 @@ function createHarness(
     recorder,
     commits,
     deleted,
+    outcomes,
     setDraft: (next: VoiceDraftSnapshot | null) => {
       currentDraft = next;
     },
@@ -507,11 +511,24 @@ describe("VoiceInputController", () => {
       { text: "hello new text", selection: { start: 14, end: 14 } },
     ]);
     expect(harness.deleted).toEqual(["file:///voice.m4a"]);
+    expect(harness.outcomes).toEqual([
+      {
+        outcome: "inserted",
+        phase: "transcribing",
+        transcriptChars: 8,
+        recordedMs: expect.any(Number),
+        totalMs: expect.any(Number),
+      },
+    ]);
   });
 
-  it.each(["cancel", "dispose", "ownerChanged"] as const)(
+  it.each([
+    ["cancel", "cancelled by the person"],
+    ["dispose", "voice input was disposed"],
+    ["ownerChanged", "the draft's owner changed"],
+  ] as const)(
     "queues the next recording after %s until transcription and audio cleanup settle",
-    async (action) => {
+    async (action, reason) => {
       const transcription = deferred<string>();
       const transcriptionEntered = deferred<AbortSignal>();
       const audioRelease = deferred<void>();
@@ -565,6 +582,10 @@ describe("VoiceInputController", () => {
       expect(harness.commits).toEqual([]);
       expect(harness.deleted).toEqual(["file:///voice.m4a"]);
       expect(harness.controller.currentState.phase).toBe("idle");
+      // The transcript is dropped without an error on screen, so the report is its only trace.
+      expect(harness.outcomes).toMatchObject([
+        { outcome: "cancelled", phase: "transcribing", reason },
+      ]);
 
       expect(next.controller.currentState.phase).toBe("recording");
       expect(prepare).toHaveBeenCalledTimes(1);
@@ -699,6 +720,7 @@ describe("VoiceInputController", () => {
 
     expect(harness.commits).toEqual([]);
     expect(harness.controller.currentState.error).toContain("draft changed");
+    expect(harness.outcomes).toMatchObject([{ outcome: "draft-changed", transcriptChars: 9 }]);
   });
 
   it("queues the next recording until canceled preparation settles", async () => {
@@ -863,6 +885,9 @@ describe("VoiceInputController", () => {
     expect(signal.aborted).toBe(true);
     expect(harness.controller.currentState.error).toBe("Audio route changed");
     expect(harness.deleted).toEqual(["file:///voice.m4a", "file:///reset-empty.m4a"]);
+    expect(harness.outcomes).toMatchObject([
+      { outcome: "interrupted", phase: "recording", reason: "Audio route changed" },
+    ]);
   });
 
   it("never starts capture after the stream fails while the microphone is opening", async () => {
@@ -907,5 +932,8 @@ describe("VoiceInputController", () => {
 
     expect(harness.recorder.record).not.toHaveBeenCalled();
     expect(harness.controller.currentState.error).toContain("background");
+    expect(harness.outcomes).toMatchObject([
+      { outcome: "interrupted", phase: "preparing", reason: "app moved to the background" },
+    ]);
   });
 });

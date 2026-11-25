@@ -120,8 +120,8 @@ export class VoiceInputSession {
     this.publish({ ...this.snapshot, focusedOwners });
   }
 
-  cancel(ownerKey: string | null): void {
-    if (ownerKey !== null && this.ownerKey === ownerKey) this.controller.cancel();
+  cancel(ownerKey: string | null, reason?: string): void {
+    if (ownerKey !== null && this.ownerKey === ownerKey) this.controller.cancel(reason);
   }
 
   retry(): Promise<void> {

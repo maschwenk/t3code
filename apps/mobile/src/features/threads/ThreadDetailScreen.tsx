@@ -1598,7 +1598,10 @@ function ThreadDetailBody(
                         <ComposerQueuedEditBanner
                           saving={props.isSavingQueuedEdit}
                           onCancel={() => {
-                            voiceInputSession.cancel(props.composerDraftKey);
+                            voiceInputSession.cancel(
+                              props.composerDraftKey,
+                              "the queued edit was cancelled",
+                            );
                             props.onCancelQueuedRunEdit();
                           }}
                         />

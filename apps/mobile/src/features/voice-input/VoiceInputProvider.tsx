@@ -28,7 +28,7 @@ import { createLazyVoiceRecorder } from "./lazyVoiceRecorder";
 import { VOICE_WAVEFORM_SAMPLE_COUNT } from "./voiceInputMetering";
 import { VoiceInputSession } from "./voiceInputSession";
 import { createVoiceRecordingPermission } from "./voiceRecordingPermission";
-import { voiceRouteAtom } from "./voiceDestination";
+import { reportVoiceDictation, voiceRouteAtom } from "./voiceDestination";
 import { makePermissionStatusAtom } from "../../lib/permissionStatusAtom";
 import {
   acquireAudioSession,
@@ -162,8 +162,17 @@ const voiceInputAtom = Atom.make((get) => {
     },
     publishAudioLevels: (levels) => audioLevels.set(levels),
     keepAwake: () => keepScreenAwake(`voice-input:${++keepAwakeSequence}`),
+    onOutcome: reportVoiceDictation,
   });
-  get.subscribe(voiceRouteAtom, () => session.controller.cancel());
+  get.subscribe(voiceRouteAtom, (route) =>
+    session.controller.cancel(
+      route === null
+        ? "voice input switched to on-device"
+        : route.transcriber === null
+          ? "the environment connection dropped"
+          : "the environment connection was replaced",
+    ),
+  );
   get.addFinalizer(() => {
     permission.dispose();
     session.dispose();

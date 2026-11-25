@@ -36,6 +36,7 @@ import { nativeSpeechLanguage } from "./nativeLanguage.ts";
 import { SILERO_VAD } from "./silero.ts";
 import { isSpeechPlatformSupported } from "./platform.ts";
 import * as SpeechModelStore from "./SpeechModelStore.ts";
+import * as VoiceLog from "./VoiceLog.ts";
 
 const SAMPLE_RATE = 16_000;
 const MAX_SPEECH_DURATION_SECONDS = 5 * 60;
@@ -119,6 +120,17 @@ const isSpeechError = Schema.is(
   ]),
 );
 
+const isSpeechOperationError = Schema.is(SpeechOperationError);
+const describeFailure = (cause: Cause.Cause<unknown>) => {
+  const failure = Cause.squash(cause);
+  const detail = isSpeechOperationError(failure)
+    ? `${failure.message} ${failure.cause instanceof Error ? failure.cause.message : String(failure.cause)}`
+    : failure instanceof Error
+      ? `${failure.name}: ${failure.message}`
+      : String(failure);
+  return detail.slice(0, 500);
+};
+
 type LoadedModel = Awaited<ReturnType<typeof loadNativeSpeechModel>>;
 type SpeechModels = { readonly models: ReadonlyArray<EnvironmentSpeechModel> };
 
@@ -171,6 +183,7 @@ const make = Effect.gen(function* () {
   const architecture = yield* HostProcess.Architecture;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const store = yield* SpeechModelStore.SpeechModelStore;
+  const voiceLog = yield* VoiceLog.VoiceLog;
   const scope = yield* Effect.scope;
   const clock = yield* Clock.Clock;
   const now = () => clock.currentTimeMillisUnsafe();
@@ -591,6 +604,7 @@ const make = Effect.gen(function* () {
 
   const transcribe: SpeechService["Service"]["transcribe"] = Effect.fn("SpeechService.transcribe")(
     function* (pcmBytes, options) {
+      const startedAt = now();
       const settings = yield* readSettings("transcription");
       return yield* exclusive(
         "transcription",
@@ -684,18 +698,45 @@ const make = Effect.gen(function* () {
             );
             // Tells a recording that ended early apart from trailing speech the silence filter dropped.
             const seconds = (samples: number) => Math.round(samples / 160) / 100;
+            const stats = result.audioStats;
+            const audioSeconds = seconds(pcm.length);
+            const keptSeconds = stats ? seconds(stats.keptSamples) : audioSeconds;
             yield* Effect.annotateCurrentSpan({
-              "speech.audio_seconds": seconds(pcm.length),
+              "speech.audio_seconds": audioSeconds,
               "speech.silence_filtering": options.speechSilenceFiltering,
               "speech.transcript_chars": transcript.length,
-              ...(result.audioStats
+              "speech.raw_chars": result.text.length,
+              ...(stats
                 ? {
-                    "speech.kept_seconds": seconds(result.audioStats.keptSamples),
-                    "speech.trailing_dropped_seconds": seconds(
-                      result.audioStats.trailingDroppedSamples,
-                    ),
+                    "speech.kept_seconds": keptSeconds,
+                    "speech.trailing_dropped_seconds": seconds(stats.trailingDroppedSamples),
                   }
                 : {}),
+            });
+            const loss = VoiceLog.suspectedLoss({
+              audioSeconds,
+              keptSeconds,
+              chars: transcript.length,
+            });
+            yield* voiceLog.record("transcribe", {
+              outcome: "transcribed",
+              model: definition.id,
+              backend: inference.backend,
+              retriedOnCpu: inference !== loaded,
+              audioSeconds,
+              keptSeconds,
+              trailingDroppedSeconds: stats ? seconds(stats.trailingDroppedSamples) : undefined,
+              silenceFiltering: options.speechSilenceFiltering,
+              silenceModel: stats?.silenceModel,
+              ...VoiceLog.audioLevels(pcm),
+              chunkChars: stats?.chunkChars,
+              rawChars: result.text.length,
+              chars: transcript.length,
+              vocabularyTerms: vocabularyFor(inference).length,
+              removeFillerWords: options.speechRemoveFillerWords,
+              durationMs: now() - startedAt,
+              suspectedLoss: loss,
+              recording: loss ? yield* voiceLog.keepRecording(pcm) : undefined,
             });
             return transcript;
           }).pipe(
@@ -706,6 +747,16 @@ const make = Effect.gen(function* () {
             ),
           );
         }),
+      ).pipe(
+        Effect.tapCause((cause) =>
+          voiceLog.record("transcribe", {
+            outcome: Cause.hasInterruptsOnly(cause) ? "interrupted" : "failed",
+            model: selectedModel(settings).id,
+            audioSeconds: Math.round(pcmBytes.byteLength / 640) / 100,
+            durationMs: now() - startedAt,
+            error: Cause.hasInterruptsOnly(cause) ? undefined : describeFailure(cause),
+          }),
+        ),
       );
     },
   );
@@ -894,7 +945,27 @@ const make = Effect.gen(function* () {
           options,
           translateToEnglish ? "en" : language === "auto" ? undefined : language,
         );
-      }),
+      }).pipe(
+        Effect.onExit((exit) =>
+          voiceLog.record("stream", {
+            outcome: Exit.isSuccess(exit)
+              ? "transcribed"
+              : Cause.hasInterruptsOnly(exit.cause)
+                ? "interrupted"
+                : "failed",
+            model: definition.id,
+            backend: streamModel.backend,
+            retriedOnCpu,
+            audioSeconds: Math.round(byteLength / 640) / 100,
+            silenceFiltering: options.speechSilenceFiltering,
+            chars: Exit.isSuccess(exit) ? exit.value.length : undefined,
+            error:
+              Exit.isFailure(exit) && !Cause.hasInterruptsOnly(exit.cause)
+                ? describeFailure(exit.cause)
+                : undefined,
+          }),
+        ),
+      ),
     };
   });
 
