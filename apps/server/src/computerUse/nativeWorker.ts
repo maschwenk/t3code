@@ -7,7 +7,7 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeTimersPromises from "node:timers/promises";
 import * as NodeUtil from "node:util";
-import { bringsAppForward, type FocusGuard, makeFocusGuard, OPEN_SETTLE_MS } from "./focusGuard.ts";
+import { type FocusGuard, focusGuardFor, makeFocusGuard, OPEN_SETTLE_MS } from "./focusGuard.ts";
 import { isShortcut, menuModifierMask, modifierKeyCode, parseKeyChord, textKey } from "./keys.ts";
 import { loadMacNative, type MacNative, type MenuItem, type PointerWindow } from "./macNative.ts";
 import {
@@ -1131,8 +1131,9 @@ async function execute(
       },
     };
   const focus = focusGuard(native);
-  if (bringsAppForward(request)) focus.disarm();
-  else focus.arm();
+  const guarding = focusGuardFor(request);
+  if (guarding === "disarm") focus.disarm();
+  if (guarding === "arm") focus.arm();
   try {
     stage("app_lookup");
     if (request.kind === "open") return await openApp(App, request, focus);

@@ -1,12 +1,13 @@
 import { expect, it } from "@effect/vitest";
 import {
-  bringsAppForward,
   coveredBy,
+  focusGuardFor,
   type FocusObservation,
   focusMove,
   MAX_RESTORES,
   pointerOnApp,
 } from "./focusGuard.ts";
+import type { WorkerRequest } from "./protocol.ts";
 
 const USER = 10;
 const TARGET = 20;
@@ -69,33 +70,41 @@ it("counts a click as the user's own app only where its window is topmost", () =
   expect(pointerOnApp(stack, { x: 900, y: 100 }, USER)).toBe(false);
 });
 
-it("leaves focus alone only for requests that ask for the app in front", () => {
-  expect(bringsAppForward({ kind: "open", app: "Notes", activate: true })).toBe(true);
-  expect(bringsAppForward({ kind: "open", app: "Notes", activate: false })).toBe(false);
-  expect(
-    bringsAppForward({
-      kind: "snapshot",
-      app: "Notes",
-      includeImage: true,
-      options: { offset: 0, limit: 10, includeOffscreen: false },
-    }),
-  ).toBe(false);
-  const click = (foreground?: boolean) => ({
-    kind: "action" as const,
-    app: "Notes",
-    pid: TARGET,
-    target: null,
-    takeover: true,
-    action: {
-      kind: "click_at" as const,
-      x: 1,
-      y: 1,
-      button: "left" as const,
-      count: 1 as const,
-      ...(foreground === undefined ? {} : { foreground }),
-    },
-  });
-  expect(bringsAppForward(click(true))).toBe(true);
-  expect(bringsAppForward(click(false))).toBe(false);
-  expect(bringsAppForward(click())).toBe(false);
+const click = (foreground?: boolean): WorkerRequest => ({
+  kind: "action",
+  app: "Notes",
+  pid: TARGET,
+  target: null,
+  takeover: true,
+  action: {
+    kind: "click_at",
+    x: 1,
+    y: 1,
+    button: "left",
+    count: 1,
+    ...(foreground === undefined ? {} : { foreground }),
+  },
+});
+const snapshot: WorkerRequest = {
+  kind: "snapshot",
+  app: "Notes",
+  includeImage: true,
+  options: { offset: 0, limit: 10, includeOffscreen: false },
+};
+
+it.each([
+  [
+    "disarm",
+    "an open that asks for the app in front",
+    { kind: "open", app: "Notes", activate: true },
+  ],
+  ["arm", "a background open", { kind: "open", app: "Notes", activate: false }],
+  ["disarm", "a foreground click", click(true)],
+  ["arm", "a background click", click(false)],
+  ["arm", "a click without a foreground flag", click()],
+  // Reading an app never brings it forward, so a guard there could only undo the
+  // user's own switches, such as a link they click that opens the target.
+  ["keep", "a snapshot", snapshot],
+] as const)("%ss the focus guard for %s", (mode, _, request) => {
+  expect(focusGuardFor(request)).toBe(mode);
 });
