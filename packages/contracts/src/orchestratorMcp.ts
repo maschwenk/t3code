@@ -427,6 +427,8 @@ export const OrchestratorMcpThreadListItem = Schema.Struct({
   snoozedUntil: Schema.NullOr(IsoDateTime),
   /** Absent from linked environments that predate it. */
   pinned: Schema.optional(Schema.Boolean),
+  /** Present only while the thread is muted. */
+  muted: Schema.optional(Schema.Boolean),
   /** Absent from linked environments that predate it. */
   blockedOnThreadWait: Schema.optional(Schema.Boolean),
   /** Absent from linked environments that predate it. */
@@ -505,6 +507,8 @@ export const OrchestratorMcpThreadDetail = Schema.Struct({
   snoozedUntil: Schema.NullOr(IsoDateTime),
   /** Absent from linked environments that predate it. */
   pinned: Schema.optional(Schema.Boolean),
+  /** Present only while the thread is muted. */
+  muted: Schema.optional(Schema.Boolean),
   /** Absent from linked environments that predate it. */
   blockedOnThreadWait: Schema.optional(Schema.Boolean),
   /** Absent from linked environments that predate it. */

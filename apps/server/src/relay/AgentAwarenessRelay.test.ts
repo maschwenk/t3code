@@ -1369,6 +1369,39 @@ describe("direct push through the publish pipeline", () => {
     }),
   );
 
+  it.effect("sends no alert for a muted thread, and alerts again once it is unmuted", () =>
+    Effect.gen(function* () {
+      const { relay, currentShell, directPush, secrets, apnsRequests } = yield* makeTestRelay({
+        linked: false,
+      });
+      yield* storeApnsKey(secrets);
+      yield* directPush.registerDevice(PHONE);
+      const muted = shell({ tags: ["muted"] });
+      yield* Ref.set(currentShell, muted);
+      yield* relay.publishThread(THREAD_ID);
+
+      const pendingRuntimeRequest = {
+        id: RuntimeRequestId.make("request-muted"),
+        kind: "command" as const,
+        createdAt: DateTime.makeUnsafe(NOW),
+      };
+      yield* Ref.set(currentShell, shell({ tags: ["muted"], pendingRuntimeRequest }));
+      yield* relay.publishThread(THREAD_ID);
+      yield* Ref.set(currentShell, shell({ tags: ["muted"], status: "completed" }));
+      yield* relay.publishThread(THREAD_ID);
+      yield* TestClock.adjust("5 seconds");
+      yield* relay.drain;
+      assert.equal(apnsRequests.length, 0);
+
+      yield* Ref.set(currentShell, shell({ pendingRuntimeRequest }));
+      yield* relay.publishThread(THREAD_ID);
+      assert.deepStrictEqual(
+        sentAlerts(apnsRequests).map((alert) => alert.body),
+        ["Approval: Project"],
+      );
+    }),
+  );
+
   it.effect("sends both to the relay and to direct push devices when linked", () =>
     Effect.gen(function* () {
       const { relay, currentShell, publications, directPush, secrets, apnsRequests } =

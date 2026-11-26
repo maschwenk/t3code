@@ -1,5 +1,6 @@
 // @effect-diagnostics globalDate:off -- UI snooze presets use local calendar boundaries and Intl labels.
 import * as DateTime from "effect/DateTime";
+import { isThreadMuted } from "@t3tools/contracts";
 import {
   DEFAULT_SNOOZE_PRESETS,
   MAX_SNOOZE_PRESET_MINUTES,
@@ -447,12 +448,12 @@ export function isThreadWokeUnseen(input: {
  * completion time, from older data, is dated by its start.
  */
 export function hasUnseenRunFailure(
-  thread: Pick<EnvironmentThreadShell, "latestRun"> & {
+  thread: Pick<EnvironmentThreadShell, "latestRun" | "tags"> & {
     readonly lastVisitedAt?: string | null | undefined;
   },
 ): boolean {
   const run = thread.latestRun;
-  if (run?.status !== "failed") return false;
+  if (run?.status !== "failed" || isThreadMuted(thread.tags)) return false;
   if (!thread.lastVisitedAt) return true;
   const failedAtMs = Date.parse(run.completedAt ?? run.startedAt ?? run.requestedAt ?? "");
   const lastVisitedAtMs = Date.parse(thread.lastVisitedAt);

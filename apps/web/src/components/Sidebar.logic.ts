@@ -19,6 +19,7 @@ import { foldSearchQuery, rankSearchItems, scoreThreadSearch } from "@t3tools/sh
 import {
   type ContextMenuItem,
   type EnvironmentId,
+  isThreadMuted,
   type ResolvedKeybindingsConfig,
   type ScopedThreadRef,
   type ThreadId,
@@ -762,6 +763,7 @@ type ThreadStatusInput = Pick<
   | "interactionMode"
   | "latestRun"
   | "runtime"
+  | "tags"
 > & {
   lastVisitedAt?: string | null | undefined;
   pendingBackgroundTasks?: SidebarThreadSummary["pendingBackgroundTasks"] | undefined;
@@ -877,7 +879,7 @@ export function resolveThreadLastVisitedAt(
 }
 
 export function hasUnseenCompletion(thread: ThreadStatusInput): boolean {
-  if (!thread.latestRun?.completedAt) return false;
+  if (!thread.latestRun?.completedAt || isThreadMuted(thread.tags)) return false;
   if (thread.latestRun.status === "interrupted" || thread.latestRun.status === "cancelled") {
     return false;
   }

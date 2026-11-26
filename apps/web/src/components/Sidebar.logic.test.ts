@@ -323,6 +323,26 @@ describe("resolveSidebarRowStatus", () => {
     expect(resolveSidebarRowStatus({ ...opened, latestRun: null })).toBe("failed");
   });
 
+  it("shows a muted thread no Done, unread, or failure", () => {
+    const done = {
+      ...failed,
+      runtime: { ...failedRuntime, status: "idle" as const, lastError: null },
+      latestRun: makeLatestRun(),
+      lastVisitedAt: "2026-03-09T10:01:00.000Z",
+    };
+    expect(hasUnseenCompletion(done)).toBe(true);
+    expect(resolveThreadStatusPill({ thread: done })?.label).toBe("Completed");
+    const mutedDone = { ...done, tags: ["muted"] };
+    expect(hasUnseenCompletion(mutedDone)).toBe(false);
+    expect(resolveThreadStatusPill({ thread: mutedDone })).toBeNull();
+
+    const unseenFailure = { ...failed, lastVisitedAt: undefined };
+    expect(resolveSidebarRowStatus(unseenFailure)).toBe("failed");
+    const mutedFailure = { ...unseenFailure, tags: ["muted"] };
+    expect(resolveSidebarRowStatus(mutedFailure)).toBe("ready");
+    expect(resolveThreadStatusPill({ thread: mutedFailure })).toBeNull();
+  });
+
   it("does not show a stopped run as an unseen completion", () => {
     for (const status of ["interrupted", "cancelled"] as const) {
       const stopped = {
