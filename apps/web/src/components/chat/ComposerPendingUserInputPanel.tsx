@@ -14,23 +14,10 @@ import { isInSideChatPane } from "~/lib/sideChatPane";
 import { ComposerBanner } from "./ComposerBanner";
 import ChatMarkdown from "../ChatMarkdown";
 import { remarkEnableLeadingWhitespace } from "@t3tools/shared/markdownPipeline";
-import type { Nodes, Root } from "mdast";
-
-// A <br> is followed by a "\n", which the preview's pre-wrap would show as a second line break.
-function remarkBreaksAsNewlines() {
-  const visit = (node: Nodes) => {
-    if (!("children" in node)) return;
-    for (const [index, child] of node.children.entries()) {
-      if (child.type === "break") node.children[index] = { type: "text", value: "\n" };
-      else visit(child);
-    }
-  };
-  return (tree: Root) => visit(tree);
-}
 
 // Claude writes option previews for a monospace box (mockups, code, config): lines keep their
 // indent and alignment, and tags such as <button> in a mockup read as typed.
-const OPTION_PREVIEW_REMARK_PLUGINS = [remarkEnableLeadingWhitespace, remarkBreaksAsNewlines];
+const OPTION_PREVIEW_REMARK_PLUGINS = [remarkEnableLeadingWhitespace];
 
 interface PendingUserInputPanelProps {
   pendingUserInputs: PendingUserInput[];
