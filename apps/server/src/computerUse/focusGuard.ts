@@ -93,9 +93,20 @@ export function coveredBy(
 }
 
 /** Requests that ask for the app in front, where the guard leaves focus alone. */
-export function bringsAppForward(request: WorkerRequest): boolean {
+function bringsAppForward(request: WorkerRequest): boolean {
   if (request.kind === "open") return request.activate;
   return request.kind === "action" && "foreground" in request.action && !!request.action.foreground;
+}
+
+/**
+ * What a request does to the guard. Reading an app never brings it forward, so
+ * a snapshot starts no guard: one would only misread the user's own switches,
+ * such as a link they click that opens the target. A snapshot inside a batch
+ * keeps the batch's guard watching for apps that come forward late.
+ */
+export function focusGuardFor(request: WorkerRequest): "arm" | "disarm" | "keep" {
+  if (bringsAppForward(request)) return "disarm";
+  return request.kind === "snapshot" ? "keep" : "arm";
 }
 
 /**
