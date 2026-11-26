@@ -200,7 +200,14 @@ const setup = (calls: WorkerRequest[], enabled = true, failAction = false) =>
               };
             calls.push(request);
             return request.kind === "snapshot"
-              ? { ok: true as const, snapshot: { ...snapshot, app: request.app } }
+              ? {
+                  ok: true as const,
+                  snapshot: {
+                    ...snapshot,
+                    app: request.app,
+                    pid: request.app === snapshot.app ? snapshot.pid : snapshot.pid + 1,
+                  },
+                }
               : failAction
                 ? { ok: false as const, code: "failed" as const }
                 : { ok: true as const };
@@ -211,7 +218,7 @@ const setup = (calls: WorkerRequest[], enabled = true, failAction = false) =>
     Layer.provideMerge(
       ServerSettings.layerTest({
         enableAgentComputerAccess: enabled,
-        computerUseAllowedApps: ["Calculator"],
+        computerUseAllowedApps: ["Calculator", "Notes"],
       }),
     ),
     Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
@@ -721,7 +728,7 @@ it.effect("returns no baseline when the batch's view could not be shown again", 
   );
 });
 
-it.effect("expires snapshots and invalidates all observations after an uncertain action", () => {
+it.effect("expires snapshots and drops the app's observations after an uncertain action", () => {
   const calls: WorkerRequest[] = [];
   return Effect.gen(function* () {
     const computer = yield* ComputerUse.ComputerUse;
@@ -737,6 +744,7 @@ it.effect("expires snapshots and invalidates all observations after an uncertain
     ).toBe("snapshot_expired");
     const first = yield* computer.snapshot("a", { app: "Calculator", includeImage: false });
     const second = yield* computer.snapshot("b", { app: "Calculator", includeImage: false });
+    const elsewhere = yield* computer.snapshot("c", { app: "Notes", includeImage: false });
     const failed = yield* computer.act("a", {
       snapshotId: first.snapshotId,
       steps: [
@@ -756,5 +764,14 @@ it.effect("expires snapshots and invalidates all observations after an uncertain
       ),
     ).toBe("snapshot_expired");
     expect(calls.filter((call) => call.kind === "action")).toHaveLength(1);
+    // The action never touched another app, so a snapshot of one stays usable.
+    expect(
+      yield* code(
+        computer.act("c", {
+          snapshotId: elsewhere.snapshotId,
+          steps: [{ ref: 1, action: "click" }],
+        }),
+      ),
+    ).toBe("success");
   }).pipe(Effect.provide(setup(calls, true, true)));
 });

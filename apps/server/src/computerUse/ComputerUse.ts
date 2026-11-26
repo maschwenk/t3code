@@ -538,8 +538,10 @@ const make = Effect.gen(function* () {
           driver.withSession(
             Effect.gen(function* () {
               // A failed/uncertain write is never replayed. An action also invalidates
-              // other threads' observations of the same desktop.
-              receipts.clear();
+              // other threads' observations of this app; their snapshots of other
+              // apps stay usable, since steps re-find their element and stop on change.
+              for (const [id, held] of receipts)
+                if (held.caller === caller || held.snapshot.pid === pid) receipts.delete(id);
               const completed: ActResult["completed"][number][] = [];
               const goals: NonNullable<ActResult["goals"]>[number][] = [];
               let error: ComputerUseError | undefined;
