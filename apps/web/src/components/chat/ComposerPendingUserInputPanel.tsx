@@ -13,6 +13,11 @@ import { cn } from "~/lib/utils";
 import { isInSideChatPane } from "~/lib/sideChatPane";
 import { ComposerBanner } from "./ComposerBanner";
 import ChatMarkdown from "../ChatMarkdown";
+import { remarkEnableLeadingWhitespace } from "@t3tools/shared/markdownPipeline";
+
+// Claude writes option previews for a monospace box (mockups, code, config): lines keep their
+// indent and alignment, and tags such as <button> in a mockup read as typed.
+const OPTION_PREVIEW_REMARK_PLUGINS = [remarkEnableLeadingWhitespace];
 
 interface PendingUserInputPanelProps {
   pendingUserInputs: PendingUserInput[];
@@ -333,7 +338,9 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
                         cwd={cwd}
                         threadRef={threadRef}
                         lineBreaks
-                        className="ps-9 pe-2 pb-1.5 text-xs text-foreground/70 sm:ps-8"
+                        parseRawHtml={false}
+                        extraRemarkPlugins={OPTION_PREVIEW_REMARK_PLUGINS}
+                        className="question-option-preview w-auto ms-9 me-2 mb-1.5 rounded-md border border-border/60 bg-muted/30 px-2.5 py-2 font-mono text-xs text-foreground/70 sm:ms-8"
                       />
                     ) : null}
                   </div>

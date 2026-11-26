@@ -38,6 +38,7 @@ import { isWindowsAbsolutePath } from "./path.ts";
 import { THREAD_LINK_PROTOCOL } from "./threadLinks.ts";
 
 export { remarkEnableOrderedListNumbers } from "./markdownOrderedListNumbers.ts";
+export { remarkEnableLeadingWhitespace } from "./markdownLeadingWhitespace.ts";
 
 type MarkdownImageHastNode = {
   type?: string;
