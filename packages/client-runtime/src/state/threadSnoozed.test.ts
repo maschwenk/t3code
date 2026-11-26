@@ -231,6 +231,9 @@ describe("hasUnseenRunFailure", () => {
     const visitedAt = "2026-04-10T09:06:00.000Z";
 
     expect(hasUnseenRunFailure({ latestRun: run, lastVisitedAt: null })).toBe(true);
+    expect(hasUnseenRunFailure({ latestRun: run, lastVisitedAt: null, tags: ["muted"] })).toBe(
+      false,
+    );
     expect(hasUnseenRunFailure({ latestRun: run, lastVisitedAt: visitedAt })).toBe(false);
     const failedAgain = { ...run, completedAt: "2026-04-10T09:10:00.000Z" };
     expect(hasUnseenRunFailure({ latestRun: failedAgain, lastVisitedAt: visitedAt })).toBe(true);

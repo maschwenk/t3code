@@ -7,7 +7,12 @@ import { isShownUnderParent } from "@t3tools/client-runtime/state/threads";
 import type { AnyRouter } from "@tanstack/react-router";
 import { parseThreadKey, threadKey } from "@t3tools/client-runtime/state/entities";
 import { runAtomCommand } from "@t3tools/client-runtime/state/runtime";
-import type { EnvironmentId, OrchestrationV2ThreadShell, ThreadId } from "@t3tools/contracts";
+import {
+  type EnvironmentId,
+  isThreadMuted,
+  type OrchestrationV2ThreadShell,
+  type ThreadId,
+} from "@t3tools/contracts";
 import { monitorHoldsWakeCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import type { ClientSettings } from "@t3tools/contracts/settings";
 import * as Option from "effect/Option";
@@ -240,6 +245,7 @@ export function startThreadNotifications(
     state: NotificationState,
     kind: ThreadNotificationKind,
   ) => {
+    if (isThreadMuted(state.thread.tags)) return;
     const runId = state.thread.latestRun?.runId;
     if (
       kind !== "completion" ||

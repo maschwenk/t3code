@@ -1,5 +1,6 @@
 import {
   type CommandId,
+  MUTED_THREAD_TAG,
   type RuntimeRequestId,
   ThreadId,
   type OrchestrationV2ThreadProjection,
@@ -387,6 +388,15 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
           break;
         case "mark_unread":
           command = { ...common, type: "thread.mark-unread" };
+          break;
+        case "mute":
+        case "unmute":
+          command = {
+            ...common,
+            type: "thread.tag.set",
+            tag: MUTED_THREAD_TAG,
+            tagged: input.action === "mute",
+          };
           break;
         case "pin": {
           // Always send a key, as the client does: the reducer ignores it for a

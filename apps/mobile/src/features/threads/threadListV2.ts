@@ -13,6 +13,7 @@ import {
   type SnoozePreset,
 } from "@t3tools/client-runtime/state/thread-settled";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
+import { isThreadMuted } from "@t3tools/contracts";
 import { resolveThreadProviderStack } from "@t3tools/client-runtime/state/models";
 import {
   threadSearchMatchKey,
@@ -235,10 +236,10 @@ export const THREAD_LIST_V2_SETTLED_INITIAL_COUNT = 10;
 export const THREAD_LIST_V2_SETTLED_PAGE_COUNT = 25;
 
 export function threadHasUnseenCompletion(
-  thread: Pick<EnvironmentThreadShell, "latestRun" | "lastVisitedAt">,
+  thread: Pick<EnvironmentThreadShell, "latestRun" | "lastVisitedAt" | "tags">,
 ): boolean {
   const completedAt = thread.latestRun?.completedAt;
-  if (!completedAt) return false;
+  if (!completedAt || isThreadMuted(thread.tags)) return false;
   const status = thread.latestRun?.status;
   if (status === "interrupted" || status === "cancelled") return false;
   const completedAtMs = Date.parse(completedAt);
@@ -334,7 +335,7 @@ export function threadListV2RowAccessibilityLabel(input: {
 /** Row status: a failure the user has already opened settles to ready, like Done. */
 export function resolveThreadListV2RowStatus(
   thread: Parameters<typeof resolveThreadListV2Status>[0] &
-    Pick<EnvironmentThreadShell, "latestRun" | "lastVisitedAt">,
+    Pick<EnvironmentThreadShell, "latestRun" | "lastVisitedAt" | "tags">,
 ): ThreadListV2Status {
   const status = resolveThreadListV2Status(thread);
   // A runtime failure without a failed run has nothing to date it, so it stays.

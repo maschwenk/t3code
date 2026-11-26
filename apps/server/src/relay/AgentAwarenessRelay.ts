@@ -1,6 +1,7 @@
 import type { AgentAwarenessThread } from "../orchestration-v2/ProjectionStore.ts";
 import {
   isListedThreadLineage,
+  isThreadMuted,
   type CompletionNotificationTriageInput,
   type EnvironmentId,
   type OrchestrationV2DomainEvent,
@@ -366,9 +367,11 @@ function resolveAgentAwarenessRelayPublishSnapshot(input: {
     state?.phase !== projectThreadAwarenessV2(awarenessInput)?.phase;
   return {
     projectId: input.thread.value.projectId,
-    state: snoozedCompletion(input.thread.value, state)
-      ? null
-      : sanitizeRelayAgentActivityState(state),
+    // A muted thread publishes nothing, so a waiting subagent's alert stays quiet too.
+    state:
+      isThreadMuted(input.thread.value.tags) || snoozedCompletion(input.thread.value, state)
+        ? null
+        : sanitizeRelayAgentActivityState(state),
     subagentWait: childDrivesWait ? input.pendingSubagentRequest : null,
     reason: "snapshot",
   };

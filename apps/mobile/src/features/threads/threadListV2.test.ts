@@ -227,6 +227,23 @@ describe("resolveThreadListV2Status", () => {
     },
   );
 
+  it("does not present a muted thread's completion as unseen", () => {
+    const completed = {
+      latestRunId: RunId.make("run-muted-completion"),
+      status: "completed" as const,
+      latestRunCompletedAt: DateTime.makeUnsafe(NOW),
+      lastVisitedAt: DateTime.makeUnsafe("2026-06-01T23:59:00.000Z"),
+    };
+    expect(
+      threadHasUnseenCompletion(presentThreadShell(environmentId, makeRawThreadShell(completed))),
+    ).toBe(true);
+    expect(
+      threadHasUnseenCompletion(
+        presentThreadShell(environmentId, makeRawThreadShell({ ...completed, tags: ["muted"] })),
+      ),
+    ).toBe(false);
+  });
+
   it.each(["interrupted", "cancelled"] as const)(
     "does not present a %s run as an unseen completion",
     (status) => {
