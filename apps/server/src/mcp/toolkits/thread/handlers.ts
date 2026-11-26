@@ -362,8 +362,26 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
   ),
   t3_thread_organize: writesThread((input) =>
     Effect.gen(function* () {
-      const { threads, projection, caller } = yield* readThread(input.threadId);
+      const { threads, projection, caller } = yield* readThread(input.threadId, ["runs"]);
       const common = { commandId: yield* newCommandId(), threadId: projection.thread.id };
+      if (input.action === "quiet") {
+        const run = projection.runs.find(
+          (candidate) =>
+            candidate.status === "starting" ||
+            candidate.status === "running" ||
+            candidate.status === "waiting",
+        );
+        if (caller?.id !== projection.thread.id || run === undefined) {
+          return yield* new OrchestratorMcpFailure({
+            code: "invalid_request",
+            message: "quiet marks the turn you are running, so call it from that thread's turn.",
+          });
+        }
+        const result = yield* threads
+          .dispatch({ ...common, type: "thread.quiet-run.record", runId: run.id })
+          .pipe(Effect.mapError(dispatchFailure));
+        return { sequence: result.sequence };
+      }
       if (input.action === "settle") {
         return yield* threads
           .settleThread({ ...common, byOwnAgent: caller?.id === projection.thread.id })

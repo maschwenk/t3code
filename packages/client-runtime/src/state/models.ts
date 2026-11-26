@@ -8,6 +8,7 @@ import type {
   OrchestrationV2ProviderGoal,
   OrchestrationV2RunStatus,
   OrchestrationV2ProviderFailureClass,
+  OrchestrationV2QuietRun,
   OrchestrationV2ThreadProjection,
   OrchestrationV2ThreadShell,
   PlanId,
@@ -188,6 +189,8 @@ export interface EnvironmentThreadShell {
   readonly pinnedAt: string | null;
   readonly autoSettleDisabledAt?: string | null;
   readonly autoRenameDisabledAt?: string | null;
+  /** The latest run was quiet; read state and inbox order use `shownRun` instead. */
+  readonly quietRun?: OrchestrationV2QuietRun | null;
   readonly pinOrderKey: string | null;
   readonly activeOrderKey: string | null;
   readonly tags?: ReadonlyArray<string>;
@@ -348,6 +351,7 @@ export function presentThreadShell(
     pinnedAt: nullableIso(thread.pinnedAt ?? null),
     autoSettleDisabledAt: nullableIso(thread.autoSettleDisabledAt ?? null),
     autoRenameDisabledAt: nullableIso(thread.autoRenameDisabledAt ?? null),
+    quietRun: thread.quietRun ?? null,
     pinOrderKey: thread.pinOrderKey ?? null,
     activeOrderKey: thread.activeOrderKey ?? null,
     ...(thread.tags === undefined ? {} : { tags: thread.tags }),
@@ -382,6 +386,22 @@ export function resolveThreadProviderStack(
   const current = thread.runtime?.providerInstanceId ?? thread.modelSelection.instanceId;
   const previous = thread.providerInstanceHistory.filter((instanceId) => instanceId !== current);
   return [...previous.slice(-(THREAD_PROVIDER_STACK_LIMIT - 1)), current];
+}
+
+export type ShownRun = Pick<ThreadRunSummary, "runId" | "status" | "requestedAt" | "completedAt">;
+
+/**
+ * The run that Done and inbox order go by: the latest run, or, when notification triage found it
+ * quiet, the last run before it that was not. A monitor that checks in with nothing to say then
+ * neither reads as unread nor moves up.
+ */
+export function shownLatestRun(thread: {
+  readonly latestRun: ShownRun | null;
+  readonly quietRun?: OrchestrationV2QuietRun | null | undefined;
+}): ShownRun | null {
+  const latest = thread.latestRun;
+  if (latest?.status !== "completed" || thread.quietRun?.runId !== latest.runId) return latest;
+  return thread.quietRun.shownRun;
 }
 
 /**

@@ -237,6 +237,60 @@ describe("createInboxReturnTracker", () => {
   });
 });
 
+describe("sortInboxThreadsByReturn", () => {
+  const completedRun = (runId: string, at: string) => ({
+    runId: RunId.make(runId),
+    status: "completed" as const,
+    requestedAt: at,
+    startedAt: at,
+    completedAt: at,
+    assistantMessageId: null,
+  });
+
+  it("keeps a monitor in place while it checks in quietly, and moves it up on news", () => {
+    const news = completedRun("run:news", "2026-06-01T01:00:00.000Z");
+    const quietRun = { runId: RunId.make("run:quiet"), shownRun: news };
+    const monitor = {
+      ...thread("monitor", false),
+      latestRun: completedRun("run:quiet", "2026-06-01T03:00:00.000Z"),
+      quietRun,
+    };
+    const other = {
+      ...thread("other", false),
+      latestRun: completedRun("run:other", "2026-06-01T02:00:00.000Z"),
+    };
+    // The client also saw the quiet sweep stop working; that must not lift it either.
+    const sawReturn = (entry: { readonly id: string }) =>
+      entry.id === "monitor" ? Date.parse("2026-06-01T03:00:00.000Z") : undefined;
+
+    expect(sortInboxThreadsByReturn([monitor, other], sawReturn).map((entry) => entry.id)).toEqual([
+      "other",
+      "monitor",
+    ]);
+
+    const reported = {
+      ...monitor,
+      latestRun: completedRun("run:alert", "2026-06-01T04:00:00.000Z"),
+    };
+    expect(sortInboxThreadsByReturn([reported, other], sawReturn).map((entry) => entry.id)).toEqual(
+      ["monitor", "other"],
+    );
+
+    // A run its agent marked quiet that then failed still moves the thread up.
+    const failed = {
+      ...monitor,
+      latestRun: {
+        ...completedRun("run:quiet", "2026-06-01T03:00:00.000Z"),
+        status: "failed" as const,
+      },
+    };
+    expect(sortInboxThreadsByReturn([failed, other], sawReturn).map((entry) => entry.id)).toEqual([
+      "monitor",
+      "other",
+    ]);
+  });
+});
+
 describe("sortWorkingThreadsBySend", () => {
   it("orders by the last message the user sent, not by later runs", () => {
     const sentFirst = {

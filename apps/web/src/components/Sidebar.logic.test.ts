@@ -357,6 +357,55 @@ describe("resolveSidebarRowStatus", () => {
   });
 });
 
+describe("hasUnseenCompletion", () => {
+  const news = {
+    runId: RunId.make("run:news"),
+    status: "completed" as const,
+    requestedAt: "2026-03-09T10:00:00.000Z",
+    completedAt: "2026-03-09T10:05:00.000Z",
+  };
+  const quietCheckIn = {
+    ...makeLatestRun({
+      startedAt: "2026-03-09T10:20:00.000Z",
+      completedAt: "2026-03-09T10:20:10.000Z",
+    }),
+    runId: RunId.make("run:quiet"),
+    requestedAt: "2026-03-09T10:20:00.000Z",
+  };
+  const monitor = {
+    hasActionableProposedPlan: false,
+    hasPendingApprovals: false,
+    hasPendingUserInput: false,
+    interactionMode: "default" as const,
+    runtime: null,
+    latestRun: quietCheckIn,
+    quietRun: { runId: quietCheckIn.runId, shownRun: news },
+  };
+
+  it("shows no Done for a quiet check-in once the user saw the last news", () => {
+    expect(hasUnseenCompletion({ ...monitor, lastVisitedAt: "2026-03-09T10:06:00.000Z" })).toBe(
+      false,
+    );
+  });
+
+  it("still shows Done for news the user has not seen, and for a run that was not quiet", () => {
+    expect(hasUnseenCompletion({ ...monitor, lastVisitedAt: "2026-03-09T10:01:00.000Z" })).toBe(
+      true,
+    );
+    const alert = {
+      ...makeLatestRun({ completedAt: "2026-03-09T10:35:00.000Z" }),
+      runId: RunId.make("run:alert"),
+    };
+    expect(
+      hasUnseenCompletion({
+        ...monitor,
+        latestRun: alert,
+        lastVisitedAt: "2026-03-09T10:06:00.000Z",
+      }),
+    ).toBe(true);
+  });
+});
+
 describe("searchSidebarThreads", () => {
   const searchThread = (id: string, title: string, latestUserMessageAt: string) => ({
     environmentId: localEnvironmentId,

@@ -190,6 +190,7 @@ import * as RunExecutionService from "./RunExecutionService.ts";
 import { ProviderSessionManagerV2 } from "./ProviderSessionManager.ts";
 import { ProviderSwitchServiceV2 } from "./ProviderSwitchService.ts";
 import { isAutomaticCompletionRun, queuedRunsInDeliveryOrder } from "./QueuedRunOrder.ts";
+import { nextQuietRun } from "./quietRun.ts";
 import { isRuntimePolicyAboveCeilingError, RuntimePolicyV2 } from "./RuntimePolicy.ts";
 import {
   endOrphanedNativeSubagent,
@@ -659,6 +660,7 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "thread.pull-request.sync":
     case "thread.title.regeneration.complete":
     case "thread.project.adopt-folder":
+    case "thread.quiet-run.record":
     case "thread.runtime-mode.set":
     case "thread.interaction-mode.set":
     case "thread.model-selection.set":
@@ -5623,6 +5625,36 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         },
       } satisfies PendingOrchestrationEffectV2;
       yield* Ref.update(effects, (existing) => [...existing, pendingEffect]);
+    },
+  );
+
+  const dispatchThreadQuietRunRecord = Effect.fn("orchestrationV2.dispatch.threadQuietRunRecord")(
+    function* (
+      command: Extract<OrchestrationV2ServerCommand, { readonly type: "thread.quiet-run.record" }>,
+      events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+    ) {
+      const projection = yield* projectionStore
+        .getThreadRecords(command.threadId, ["runs"], { turnItemTypes: [] })
+        .pipe(
+          Effect.mapError(
+            (cause) => new OrchestratorProjectionError({ threadId: command.threadId, cause }),
+          ),
+        );
+      const thread = projection.thread;
+      if (thread.deletedAt !== null) return;
+      const quietRun = nextQuietRun(thread.quietRun, projection.runs, command.runId);
+      if (quietRun === null) return;
+      // Read state like a visit: the thread's activity time stays where it was.
+      yield* emit(
+        events,
+        command,
+      )({
+        type: "thread.quiet-run-recorded",
+        threadId: command.threadId,
+        providerInstanceId: thread.providerInstanceId,
+        occurredAt: yield* DateTime.now,
+        payload: { ...thread, quietRun },
+      });
     },
   );
 
@@ -15184,6 +15216,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       case "thread.project.adopt-folder":
         yield* dispatchThreadProjectAdoptFolder(command, events);
         break;
+      case "thread.quiet-run.record":
+        yield* dispatchThreadQuietRunRecord(command, events);
+        break;
       case "message.dispatch": {
         const thread = yield* refuseNativeSubagentMessage(command);
         const guestSend =
@@ -15535,6 +15570,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           command.type === "thread.background-work.settle" ||
           // A stale visit changes no read state.
           command.type === "thread.visit" ||
+          // A newer run, or a repeat verdict, leaves nothing to record.
+          command.type === "thread.quiet-run.record" ||
           // A read can answer a watch again before a push's reopen lands; nothing is left to clear.
           command.type === "thread.pull-request-watch.checks-reopen" ||
           command.type === "thread.interrupt.unresponsive" ||
