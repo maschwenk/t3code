@@ -496,8 +496,12 @@ async function captureWindow(
   }
 }
 
+// Agents write menu titles with straight quotes and spaces; macOS menus use typographic ones.
 const menuTitle = (title: string | null) =>
   (title ?? "")
+    .replace(/[“”„]/g, '"')
+    .replace(/[‘’]/g, "'")
+    .replace(/\s+/g, " ")
     .trim()
     .replace(/(\.\.\.|…)$/, "")
     .trim()
@@ -548,11 +552,17 @@ export function findShortcut(
   return undefined;
 }
 
-function pressMenuPath(native: MacNative, pid: number, path: readonly string[]): WorkerResponse {
-  let items = agentMenuBar(native.menuBar(pid));
+/** The item at `path` in an agent's menu bar, or why the path stopped. */
+export function menuPathItem(
+  bar: readonly MenuItem[],
+  path: readonly string[],
+): MenuItem | Extract<WorkerResponse, { ok: false }> {
+  let items = bar;
   for (const [index, title] of path.entries()) {
     const item = items.find((candidate) => menuTitle(candidate.title) === menuTitle(title));
-    if (!item || (index === path.length - 1 && !item.enabled))
+    if (index === path.length - 1 && item && !item.enabled)
+      return { ok: false, code: "menu_item_disabled" };
+    if (!item)
       return {
         ok: false,
         code: "menu_not_found",
@@ -562,11 +572,16 @@ function pressMenuPath(native: MacNative, pid: number, path: readonly string[]):
           )
           .slice(0, 40),
       };
-    if (index === path.length - 1)
-      return item.press() ? { ok: true, via: "menu" } : { ok: false, code: "failed" };
+    if (index === path.length - 1) return item;
     items = item.children();
   }
   return { ok: false, code: "menu_not_found" };
+}
+
+function pressMenuPath(native: MacNative, pid: number, path: readonly string[]): WorkerResponse {
+  const item = menuPathItem(agentMenuBar(native.menuBar(pid)), path);
+  if ("ok" in item) return item;
+  return item.press() ? { ok: true, via: "menu" } : { ok: false, code: "failed" };
 }
 
 async function pressKey(

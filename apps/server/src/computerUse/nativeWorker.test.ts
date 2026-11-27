@@ -10,6 +10,7 @@ import {
   findShortcut,
   identityMatches,
   launchServicesPids,
+  menuPathItem,
   nativeFailure,
   relocationMatches,
   systemMenus,
@@ -302,6 +303,25 @@ const menuBar = [
   ]),
   menu("File", [menu("New", [], { character: "n", mask: 0 })]),
 ];
+
+it("finds a menu item written with straight quotes, and says when it is there but disabled", () => {
+  const bar = agentMenuBar([
+    ...menuBar.slice(0, 2),
+    menu("File", [{ ...menu("New Folder"), enabled: false }, menu("Rename “draft.txt”…")]),
+  ]);
+  expect(menuPathItem(bar, ["File", 'Rename "draft.txt"...'])).toMatchObject({
+    title: "Rename “draft.txt”…",
+  });
+  expect(menuPathItem(bar, ["File", "New Folder"])).toEqual({
+    ok: false,
+    code: "menu_item_disabled",
+  });
+  expect(menuPathItem(bar, ["File", "New Window"])).toEqual({
+    ok: false,
+    code: "menu_not_found",
+    available: ["Rename “draft.txt”…"],
+  });
+});
 
 it("keeps the Apple menu and Services out of an agent's menu bar and shortcuts", () => {
   const bar = agentMenuBar(menuBar);
