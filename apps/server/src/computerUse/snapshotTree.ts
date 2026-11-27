@@ -35,7 +35,7 @@ const CUSTOM_ACTION = /^name:(.*?)\n_target:/su;
  * description, `name:_mark as _unread\n_target:0x0\n_selector:(null)`; agents see its title in
  * quotes, "Mark as Unread", and perform takes that title.
  */
-export function actionLabel(action: string): string {
+function actionLabel(action: string): string {
   const title = CUSTOM_ACTION.exec(action)?.[1];
   return title === undefined
     ? action
