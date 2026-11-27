@@ -301,6 +301,7 @@ export const WorkerResponse = Schema.Union([
       "input_requires_foreground",
       "user_active",
       "menu_not_found",
+      "menu_item_disabled",
       "failed",
     ]),
     detail: Schema.optionalKey(FailureDetail),
@@ -328,6 +329,7 @@ export class ComputerUseError extends Schema.TaggedError<ComputerUseError>()("Co
     "user_active",
     "invalid_point",
     "menu_not_found",
+    "menu_item_disabled",
     "invalid_key",
     "goal_incomplete",
     "failed",
@@ -374,6 +376,8 @@ export class ComputerUseError extends Schema.TaggedError<ComputerUseError>()("Co
         return "A step's x, y and a drag target's x, y are pixels of the app's latest window image and must lie inside it. Take computer_snapshot with includeImage=true and read coordinates from that image.";
       case "menu_not_found":
         return `No enabled menu item matched that path.${this.available?.length ? ` Available here: ${this.available.join(", ")}.` : ""}`;
+      case "menu_item_disabled":
+        return "That menu item is there but disabled right now. Some apps enable an item only while they are in front, as Finder does for New Folder; if the user is away or asks for it, use computer_open with activate=true and retry. Otherwise use another control for the same thing.";
       case "invalid_key":
         return "Unknown key. Use names like Return, Tab, Escape, Space, Delete, Up, Down, Left, Right, Home, End, PageUp, PageDown, F1-F12, or a character, optionally with cmd+, shift+, option+ or ctrl+ (for example cmd+shift+t). Use type for text.";
       case "unavailable":
