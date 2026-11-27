@@ -1229,7 +1229,17 @@ export function nativeFailure(cause: unknown, stage?: FailureStage): WorkerRespo
   };
 }
 
+/** Loads the native libraries while a started worker waits for its first request. */
+function preload() {
+  // oxlint-disable-next-line t3code/no-global-process-runtime -- This isolated CLI worker runs before an Effect runtime exists.
+  if (process.platform !== "darwin") return;
+  // A failed load fails the first request instead, as it would without the preload.
+  (nativeLibrary ??= loadMacNative()).catch(() => undefined);
+  import("@crowecawcaw/xa11y").catch(() => undefined);
+}
+
 export async function runComputerUseWorker(session = false): Promise<void> {
+  if (session) preload();
   let previousWasAction = false;
   // One guard per session, so it keeps watching between the steps of a batch.
   let guard: FocusGuard | undefined;

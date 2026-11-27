@@ -24,10 +24,19 @@ const isComputerUseError = Schema.is(ComputerUseError);
 const failure = (stage: "worker_start" | "worker_exit" | "worker_response") =>
   new ComputerUseError({ code: "failed", detail: { stage, reason: "unknown" } });
 
-type Session = { execute: Driver["Service"]["execute"]; close: () => Promise<void> };
+type Session = {
+  execute: Driver["Service"]["execute"];
+  close: () => Promise<void>;
+  /** Hands the process to one batch and starts that batch's lifetime limit. */
+  claim: () => void;
+  readonly alive: () => boolean;
+};
 const CurrentSession = Context.Reference<Session | undefined>("t3/computerUse/CurrentSession", {
   defaultValue: () => undefined,
 });
+
+/** How long a started worker waits for a call before it exits. */
+const SPARE_IDLE_MS = 120_000;
 
 function start(execPath: string, args: string[], env: NodeJS.ProcessEnv): Session {
   // No prompt or user text enters argv, nor inherited --watch/--inspect flags.
@@ -51,9 +60,7 @@ function start(execPath: string, args: string[], env: NodeJS.ProcessEnv): Sessio
       resolve();
     }),
   );
-  // A batch owns the process; even a forgotten caller cannot keep it indefinitely.
-  const lifetime = setTimeout(() => stop(failure("worker_exit")), 300_000);
-  lifetime.unref();
+  let lifetime: ReturnType<typeof setTimeout> | undefined;
   void closed.then(() => clearTimeout(lifetime));
   child.on("error", () => stop(failure("worker_start")));
   child.stdin.on("error", () => stop(failure("worker_exit")));
@@ -112,6 +119,13 @@ function start(execPath: string, args: string[], env: NodeJS.ProcessEnv): Sessio
       stop(failure("worker_exit"));
       return closed;
     },
+    claim: () => {
+      if (lifetime) return;
+      // A batch owns the process; even a forgotten caller cannot keep it indefinitely.
+      lifetime = setTimeout(() => stop(failure("worker_exit")), 300_000);
+      lifetime.unref();
+    },
+    alive: () => stopped === undefined && child.exitCode === null && child.signalCode === null,
   };
 }
 
@@ -120,15 +134,48 @@ const make = Effect.gen(function* () {
   const execPath = yield* HostProcess.ExecutablePath;
   const env = yield* HostProcess.Environment;
   const isExecutable = yield* HostProcess.IsExecutable;
+  const spawn = () => {
+    if (!isExecutable && !argv[1]) throw failure("worker_start");
+    return start(execPath, isExecutable ? ["__computer-use"] : [argv[1]!, "__computer-use"], env);
+  };
+  // Starting a worker and loading its native libraries takes longer than most
+  // calls, so each batch still gets a fresh process, started before it asked.
+  let spare: { readonly worker: Session; readonly idle: ReturnType<typeof setTimeout> } | undefined;
+  const takeSpare = () => {
+    const ready = spare;
+    spare = undefined;
+    if (!ready) return undefined;
+    clearTimeout(ready.idle);
+    if (ready.worker.alive()) return ready.worker;
+    void ready.worker.close();
+    return undefined;
+  };
+  const refill = () => {
+    if (spare) return;
+    try {
+      const worker = spawn();
+      const idle = setTimeout(() => {
+        if (spare?.worker === worker) spare = undefined;
+        void worker.close();
+      }, SPARE_IDLE_MS);
+      idle.unref();
+      spare = { worker, idle };
+    } catch {
+      // The next batch starts its own worker and reports the failure.
+    }
+  };
+  yield* Effect.addFinalizer(() =>
+    Effect.promise(async () => {
+      await takeSpare()?.close();
+    }),
+  );
   const session = Effect.acquireRelease(
     Effect.try({
       try: () => {
-        if (!isExecutable && !argv[1]) throw failure("worker_start");
-        return start(
-          execPath,
-          isExecutable ? ["__computer-use"] : [argv[1]!, "__computer-use"],
-          env,
-        );
+        const worker = takeSpare() ?? spawn();
+        worker.claim();
+        refill();
+        return worker;
       },
       catch: () => failure("worker_start"),
     }),
