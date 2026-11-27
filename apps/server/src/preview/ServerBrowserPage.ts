@@ -931,6 +931,82 @@ type Baseline = { revision: string; epoch: string; tree: string; at: number };
 const observations = new WeakMap<Page, Map<string, Baseline>>();
 const OBSERVATION_BYTES = 16_000;
 
+/** Layout nodes that say nothing while they have no name, value, state or click handler. */
+const LAYOUT_ROLES = new Set([
+  "generic",
+  "group",
+  "table",
+  "rowgroup",
+  "row",
+  "cell",
+  "gridcell",
+  "list",
+  "listitem",
+  "paragraph",
+  "none",
+  "presentation",
+]);
+/** Roles that are clickable by definition, so `[cursor=pointer]` on them says nothing. */
+const CONTROL_ROLES = new Set([
+  "link",
+  "button",
+  "checkbox",
+  "radio",
+  "switch",
+  "tab",
+  "menuitem",
+  "menuitemcheckbox",
+  "menuitemradio",
+  "option",
+  "combobox",
+  "textbox",
+  "searchbox",
+  "slider",
+  "spinbutton",
+  "treeitem",
+]);
+const LEAN_LINE = /^(\s*)- ('?)([^\s"':]+)( "(?:[^"\\]|\\.)*")?((?: \[[^\]]+\])*)('?)(:.*)?$/;
+// "|", "(", "·" and other separators carry nothing an agent reads.
+const SEPARATOR_TEXT = /^\s*- text: (?:"[^\p{L}\p{N}"]*"|[^\p{L}\p{N}"]*)$/u;
+
+/**
+ * The page tree an agent reads: unnamed layout wrappers (table rows and cells, divs) are
+ * dropped and their children moved up, separator text goes, and links and buttons lose the
+ * cursor hint their role already implies. Landmarks, names, values, states and refs stay, so
+ * a page needs about half the bytes and a 16 KB read covers twice as much of it.
+ */
+export const leanTree = (tree: string) => {
+  const lines: string[] = [];
+  // Indents of the dropped wrappers above the current line.
+  const dropped: number[] = [];
+  for (const line of tree.split("\n")) {
+    const indent = line.length - line.trimStart().length;
+    while (dropped.length && dropped.at(-1)! >= indent) dropped.pop();
+    if (SEPARATOR_TEXT.test(line)) continue;
+    const shift = " ".repeat(Math.max(0, indent - 2 * dropped.length));
+    const node = LEAN_LINE.exec(line);
+    if (!node) {
+      lines.push(shift + line.trimStart());
+      continue;
+    }
+    const [, , open = "", role = "", name = "", attributes = "", close = "", rest = ""] = node;
+    if (
+      LAYOUT_ROLES.has(role) &&
+      (name === "" || name === ' ""') &&
+      (rest === "" || rest === ":") &&
+      !/\[(?:active|checked|expanded|pressed|selected|cursor=pointer)/.test(attributes)
+    ) {
+      if (rest === ":") dropped.push(indent);
+      continue;
+    }
+    const shown = CONTROL_ROLES.has(role)
+      ? attributes.replace(" [cursor=pointer]", "")
+      : attributes;
+    lines.push(`${shift}- ${open}${role}${name}${shown}${close}${rest}`);
+  }
+  return lines.join("\n");
+};
+
 /** Baselines store exactly the bounded, redacted tree the caller received. */
 export const observe = async (
   input: SnapshotInput,
@@ -943,16 +1019,21 @@ export const observe = async (
     ...input,
     includeImage: false,
     settle: true,
-    // Boxes and cursor hints are about a quarter of a tree, so a compact read starts from more.
-    maxTreeChars: compact ? Math.ceil(maxBytes * 1.4) : maxBytes,
+    // Wrappers, boxes and cursor hints are most of a raw tree, so each read starts from
+    // several times the page text it can return.
+    maxTreeChars: maxBytes * (compact ? 5 : 4),
   });
   const revision = captureRevisions.get(captured)!;
   if (refsFor(input.page).generation !== revision.generation) throw pageChanged();
   const refPrefix = `t3-${revision.generation}-`;
-  const full = String(captured.accessibilityTree || captured.visibleText).replace(
-    /\[ref=t3-[a-z0-9-]+-((?:f\d+)?e\d+)\]/g,
-    "[ref=$1]",
-  );
+  const full = captured.accessibilityTree
+    ? leanTree(
+        String(captured.accessibilityTree).replace(
+          /\[ref=t3-[a-z0-9-]+-((?:f\d+)?e\d+)\]/g,
+          "[ref=$1]",
+        ),
+      )
+    : String(captured.visibleText);
   // Compact reads feed a decider that cannot see the screen: drop elements with no visible area
   // (1×1 live regions, screen-reader-only text), such as Slack's lingering "loading…" alert.
   const normalized = compact
