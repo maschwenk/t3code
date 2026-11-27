@@ -116,6 +116,7 @@ const SETTINGS_SEARCH_TERMS = {
     "link machine",
     "fast worktree checkout",
     "clone cache",
+    "worktree disk space",
     "suggest next prompt",
     "autocomplete",
   ],
