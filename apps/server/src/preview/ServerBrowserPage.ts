@@ -966,8 +966,10 @@ const CONTROL_ROLES = new Set([
   "treeitem",
 ]);
 const LEAN_LINE = /^(\s*)- ('?)([^\s"':]+)( "(?:[^"\\]|\\.)*")?((?: \[[^\]]+\])*)('?)(:.*)?$/;
-// "|", "(", "·" and other separators carry nothing an agent reads.
-const SEPARATOR_TEXT = /^\s*- text: (?:"[^\p{L}\p{N}"]*"|[^\p{L}\p{N}"]*)$/u;
+// Text that is only separators such as "|", "(", "·" or "—" carries nothing an agent reads.
+// Currency, math and other symbols ("$", "%", "+") stay: a price can be split across nodes.
+const SEPARATOR_TEXT =
+  /^\s*- text: (?:"[\s|·•∙⋅‧/\\,;:()[\]{}.…\-–—]*"|[\s|·•∙⋅‧/\\,;:()[\]{}.…\-–—]*)$/u;
 
 /**
  * The page tree an agent reads: unnamed layout wrappers (table rows and cells, divs) are
