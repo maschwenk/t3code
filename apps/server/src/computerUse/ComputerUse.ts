@@ -233,6 +233,17 @@ export type Observation = NativeSnapshot & {
   /** The app came forward on its own and was sent back behind the user's app. */
   readonly sentBack?: true;
 };
+/**
+ * Why a step or the closing snapshot failed, as plain data. Effect's toolkit encodes a tool's
+ * result as JSON before it is rendered, and an Error instance is not a JSON value: carrying the
+ * ComputerUseError itself turned every batch with a failed step into "Failed to encode result".
+ */
+export type StepFailure = { readonly code: ComputerUseError["code"]; readonly message: string };
+const stepFailure = (error: ComputerUseError): StepFailure => ({
+  code: error.code,
+  message: error.message,
+});
+
 export type ActResult = {
   readonly total: number;
   /** The app came forward on its own during the batch and was sent back behind the user's app. */
@@ -244,12 +255,12 @@ export type ActResult = {
   /** Each goal step's run, including one that stopped the batch. */
   readonly goals?: ReadonlyArray<BrowserGoal.GoalOutcome & { readonly goal: string }>;
   /** Why the batch stopped early. Later steps did not run. */
-  readonly error?: ComputerUseError;
+  readonly error?: StepFailure;
   /** The app after the batch, viewed the same way as the snapshot it started from. */
   readonly snapshot?: Observation;
   /** The snapshot the batch ran against, when `snapshot` shows the same view of the app. */
   readonly before?: NativeSnapshot;
-  readonly snapshotError?: ComputerUseError;
+  readonly snapshotError?: StepFailure;
 };
 
 export class ComputerUse extends Context.Service<
@@ -618,13 +629,13 @@ const make = Effect.gen(function* () {
                 total: steps.length,
                 completed,
                 ...(goals.length ? { goals } : {}),
-                ...(error ? { error } : {}),
+                ...(error ? { error: stepFailure(error) } : {}),
                 ...(Result.isSuccess(after)
                   ? {
                       snapshot: after.success,
                       ...(sameView ? { before: receipt.snapshot } : {}),
                     }
-                  : { snapshotError: after.failure }),
+                  : { snapshotError: stepFailure(after.failure) }),
               };
             }),
           ),
