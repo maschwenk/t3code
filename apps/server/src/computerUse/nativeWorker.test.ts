@@ -7,6 +7,7 @@ import {
   agentMenuBar,
   backgroundAction,
   clickNeedsPointer,
+  expansionState,
   findShortcut,
   identityMatches,
   launchServicesApp,
@@ -341,4 +342,15 @@ it("keeps the Apple menu and Services out of an agent's menu bar and shortcuts",
   expect(findShortcut(bar, "q", 1)).toBeUndefined();
   expect(findShortcut(systemMenus(menuBar), "q", 1)?.title).toBe("Log Out Max…");
   expect(systemMenus(menuBar).map((item) => item.title)).toEqual(["Apple", "Services"]);
+});
+
+it.each([
+  ["tree_item", false, "collapsed"],
+  ["button", true, "expanded"],
+  ["static_text", false, undefined],
+  ["group", false, undefined],
+  ["image", true, undefined],
+  ["tree_item", null, undefined],
+] as const)("shows a %s with expanded=%s as %s", (role, expanded, state) => {
+  expect(expansionState(role, expanded)).toBe(state);
 });
