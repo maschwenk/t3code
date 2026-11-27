@@ -26,6 +26,7 @@ import type { CDPSession, ConsoleMessage, Frame, Locator, Page } from "playwrigh
 import * as NodeCrypto from "node:crypto";
 import * as NodeUtil from "node:util";
 import { BrowserControlInterrupted } from "./SessionControl.ts";
+import { fieldValue, VALUE_FORMATS, type ValueFieldType } from "./fieldValue.ts";
 
 const isBrowserControlInterrupted = Schema.is(BrowserControlInterrupted);
 
@@ -1179,11 +1180,48 @@ const focusTextTarget = (target: FocusCandidate | null) => {
   }
   element.focus?.();
   const active = element.getRootNode().activeElement;
-  return active != null && (active === element || element.contains(active));
+  if (active == null || (active !== element && !element.contains(active))) return false;
+  // These inputs ignore typed text, so the caller sets their value instead.
+  const valueTypes = ["date", "datetime-local", "month", "time", "week"];
+  const type = element.tagName === "INPUT" ? (element.type ?? "") : "";
+  return valueTypes.includes(type) ? type : true;
 };
 
+type ValueCandidate = FocusCandidate & {
+  value: string;
+  dispatchEvent(event: unknown): boolean;
+};
+
+// Serialized into the page's main world, so it must not reference module scope. A locator calls it
+// with (element, value); the focused-field path calls it with just the value.
+const assignFieldValue = (first: ValueCandidate | string, second?: string) => {
+  const scope = globalThis as unknown as {
+    document: { activeElement: ValueCandidate | null };
+    Event: new (type: string, init: { bubbles: boolean }) => unknown;
+  };
+  const focused = typeof first === "string";
+  let element = focused ? scope.document.activeElement : first;
+  if (focused) {
+    while (element?.shadowRoot?.activeElement)
+      element = element.shadowRoot.activeElement as ValueCandidate;
+  }
+  if (element == null) return "";
+  // The prototype's setter, so frameworks that track the instance value see the change.
+  Object.getOwnPropertyDescriptor(Object.getPrototypeOf(element), "value")?.set?.call(
+    element,
+    focused ? first : second,
+  );
+  element.dispatchEvent(new scope.Event("input", { bubbles: true }));
+  element.dispatchEvent(new scope.Event("change", { bubbles: true }));
+  return element.value;
+};
+
+const inputType = (element: FocusCandidate) => (element.tagName === "INPUT" ? element.type : "");
+const isValueFieldType = (type: unknown): type is ValueFieldType =>
+  typeof type === "string" && Object.hasOwn(VALUE_FORMATS, type);
+
 // A `*:focus` locator needs Playwright's utility world, which some desktop tabs never get.
-const focusedTextField = async (page: Page, timeout: number) => {
+const inFocusedField = async <R>(timeout: number, evaluate: Promise<R>): Promise<R> => {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const expired = new Promise<never>((_, reject) => {
     timer = setTimeout(
@@ -1198,27 +1236,59 @@ const focusedTextField = async (page: Page, timeout: number) => {
       timeout,
     );
   });
-  return await Promise.race([page.evaluate(focusTextTarget, null), expired]).finally(() =>
-    clearTimeout(timer),
-  );
+  return await Promise.race([evaluate, expired]).finally(() => clearTimeout(timer));
+};
+
+const setFieldValue = async (
+  page: Page,
+  locator: Locator | null,
+  type: ValueFieldType,
+  text: string,
+  timeout: number,
+) => {
+  const value = fieldValue(type, text);
+  if (value === undefined) {
+    throw new ServerBrowserOperationError({
+      tag: "PreviewAutomationTargetNotEditableError",
+      message: `This ${type} field takes a value like ${VALUE_FORMATS[type]}, and "${text}" could not be read as one, so nothing was typed.`,
+    });
+  }
+  const set =
+    locator === null
+      ? await inFocusedField(timeout, page.evaluate(assignFieldValue, value))
+      : await locator.evaluate(assignFieldValue, value, { timeout });
+  if (set !== value) {
+    throw new ServerBrowserOperationError({
+      tag: "PreviewAutomationTargetNotEditableError",
+      message: `The ${type} field did not accept ${value}; it holds "${set}".`,
+    });
+  }
 };
 
 export const type = async (page: Page, input: PreviewAutomationTypeInput) => {
   const timeout = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const locator = targetLocator(page, input);
-  if (locator !== null && input.clear) {
+  if (
+    locator !== null &&
+    input.clear &&
+    !isValueFieldType(await locator.evaluate(inputType, undefined, { timeout }))
+  ) {
     await locator.fill(input.text, { timeout });
     return;
   }
   const focused =
     locator === null
-      ? await focusedTextField(page, timeout)
+      ? await inFocusedField(timeout, page.evaluate(focusTextTarget, null))
       : await locator.evaluate(focusTextTarget, undefined, { timeout });
-  if (focused !== true) {
+  if (focused === false) {
     throw new ServerBrowserOperationError({
       tag: "PreviewAutomationTargetNotEditableError",
       message: "The target is not an enabled text field, so no text was typed.",
     });
+  }
+  if (isValueFieldType(focused)) {
+    await setFieldValue(page, locator, focused, input.text, timeout);
+    return;
   }
   if (input.clear) {
     await page.keyboard.press("ControlOrMeta+A");
