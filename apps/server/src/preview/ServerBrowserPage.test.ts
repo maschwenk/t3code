@@ -249,6 +249,47 @@ it("labels extension UI with page boxes, drops what its frame clips, and never s
   );
 });
 
+it("reads a page without its layout wrappers or separators, keeping landmarks, states and refs", () => {
+  const tree = [
+    "- navigation [ref=e1] [box=0,0,800,20]:",
+    "  - table [ref=e2] [box=0,0,800,20]:",
+    "    - rowgroup [ref=e3] [box=0,0,800,20]:",
+    "      - row [ref=e4] [box=0,0,800,20]:",
+    '        - cell "1." [ref=e5] [box=0,0,20,20]',
+    "        - cell [ref=e6] [box=20,0,700,20]:",
+    '          - link "Story" [ref=e7] [cursor=pointer] [box=20,0,40,20]:',
+    "            - /url: https://example.com/story",
+    "          - text: (",
+    '          - text: "|"',
+    "          - text: 12 points",
+    "          - text: $",
+    '          - text: "—"',
+    '          - text: "%"',
+    '          - generic "posted 2026-11-27" [ref=e8] [box=70,0,60,20]',
+    "          - generic [ref=e9] [cursor=pointer] [box=140,0,30,20]:",
+    "            - text: hide",
+    "      - row [ref=e10] [box=0,20,800,5]",
+    "  - checkbox [checked] [ref=e11] [box=0,30,10,10]",
+    "  - group [expanded] [ref=e12] [box=0,40,10,10]",
+  ].join("\n");
+  expect(ServerBrowserPage.leanTree(tree)).toBe(
+    [
+      "- navigation [ref=e1] [box=0,0,800,20]:",
+      '  - cell "1." [ref=e5] [box=0,0,20,20]',
+      '  - link "Story" [ref=e7] [box=20,0,40,20]:',
+      "    - /url: https://example.com/story",
+      "  - text: 12 points",
+      "  - text: $",
+      '  - text: "%"',
+      '  - generic "posted 2026-11-27" [ref=e8] [box=70,0,60,20]',
+      "  - generic [ref=e9] [cursor=pointer] [box=140,0,30,20]:",
+      "    - text: hide",
+      "  - checkbox [checked] [ref=e11] [box=0,30,10,10]",
+      "  - group [expanded] [ref=e12] [box=0,40,10,10]",
+    ].join("\n"),
+  );
+});
+
 describe("server browser element refs", () => {
   let browser: Browser;
   let context: BrowserContext;
@@ -358,6 +399,24 @@ describe("server browser element refs", () => {
     expect(view.tree).toContain('button "open"');
     expect(view.tree).not.toContain("loading");
     expect(view.tree).not.toContain("[box=");
+  });
+
+  it("fits a long table-laid-out list in one default read, with refs that still click", async () => {
+    const stories = Array.from(
+      { length: 30 },
+      (_, i) =>
+        `<tr><td>${i + 1}.</td><td><a href="vote?id=${i}">upvote</a></td><td><a href="https://example.com/${i}">Story number ${i + 1}</a> (<a href="from?site=example.com">example.com</a>)</td></tr>` +
+        `<tr><td></td><td></td><td>${100 + i} points by <a href="user?id=u${i}">user${i}</a> | <a href="item?id=${i}" onclick="document.title='opened ${i + 1}';return false">${i} comments</a></td></tr><tr style="height:5px"></tr>`,
+    ).join("");
+    await page.setContent(`<table><tr><td><table>${stories}</table></td></tr></table>`);
+    const view = await observe();
+    if (view.mode !== "full") throw new Error("Expected a full observation");
+    expect(view.truncated).toBe(false);
+    expect(view.tree).not.toMatch(/^\s*- (?:row|cell|rowgroup|table) \[/m);
+    const last = /link "29 comments" \[ref=([^\]]+)\]/.exec(view.tree)?.[1];
+    if (!last) throw new Error("The last story is missing from the read");
+    await ServerBrowserPage.click(page, { locator: `aria-ref=${view.refPrefix}${last}` });
+    expect(await page.title()).toBe("opened 30");
   });
 
   it("returns reconstructable changes with fresh refs and a full view after takeover", async () => {
