@@ -53,6 +53,8 @@ const WALK_BUDGET_MS = 6_500;
 // AXManualAccessibility is set when the window is in the background.
 const ELECTRON_SETTLE_MS = 2_500;
 const MAX_IMAGE_SIDE = 1600;
+/** How long an in-process window capture may take before screencapture takes over. */
+const NATIVE_CAPTURE_TIMEOUT_MS = 2_000;
 // How long a type step waits for typed text to show in the field, and at most
 // for it to stop changing; both well inside the driver's 12 s deadline.
 const TYPE_SETTLE_MS = 500;
@@ -474,7 +476,10 @@ async function captureWindow(
   const file = NodePath.join(NodeOS.tmpdir(), `t3-computer-${process.pid}-${match.id}.png`);
   try {
     // Retina captures are twice the window's point size; models need far less.
-    if (!native.windowPng(match.id, MAX_IMAGE_SIDE, file)) {
+    const written = await native
+      .windowPng(match.id, MAX_IMAGE_SIDE, file, NATIVE_CAPTURE_TIMEOUT_MS)
+      .catch(() => undefined);
+    if (!written) {
       await execFile("/usr/sbin/screencapture", ["-x", "-o", "-t", "png", `-l${match.id}`, file], {
         timeout: 5_000,
       });

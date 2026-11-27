@@ -6,6 +6,7 @@
  * CF refs cross ffi-rs as BigInt (tagged pointers overflow JS numbers); one request per worker, no release.
  */
 import * as NodeProcess from "node:process";
+import * as NodeTimersPromises from "node:timers/promises";
 
 type Ffi = typeof import("ffi-rs");
 type FfiParams = Parameters<Ffi["load"]>[0];
@@ -556,16 +557,34 @@ export async function loadMacNative() {
     /**
      * Writes one window, at most `maxSide` pixels on its long edge, as a PNG at `path`, in this
      * process: about 10-30 ms where `screencapture` and `sips` take 100-250. Undefined when the
-     * window server gives no image, such as for a window on another Space.
+     * window server gives no image within `timeoutMs`, or none at all, such as for a window on
+     * another Space.
      */
-    windowPng: (windowId: number, maxSide: number, path: string) => {
-      const image = call<bigint>(
-        "cg",
-        "CGWindowListCreateImage",
-        Ref,
-        [CGRect, T.U32, T.U32, T.U32],
-        [{ x: Infinity, y: Infinity, width: 0, height: 0 }, ONE_WINDOW, windowId, WITHOUT_SHADOW],
-      );
+    windowPng: async (windowId: number, maxSide: number, path: string, timeoutMs: number) => {
+      // On macOS 26 the window server can route this through ScreenCaptureKit and wait up to
+      // 30 seconds; it runs on its own thread so the caller can give up and use screencapture.
+      const capture = ffi.load({
+        library: "cg",
+        funcName: "CGWindowListCreateImage",
+        retType: Ref,
+        paramsType: [CGRect, T.U32, T.U32, T.U32],
+        paramsValue: [
+          { x: Infinity, y: Infinity, width: 0, height: 0 },
+          ONE_WINDOW,
+          windowId,
+          WITHOUT_SHADOW,
+        ],
+        runInNewThread: true,
+      }) as unknown as Promise<bigint>;
+      const image = await Promise.race([
+        capture,
+        NodeTimersPromises.setTimeout(timeoutMs, undefined, { ref: false }),
+      ]);
+      if (image === undefined) {
+        // An image that arrives after the caller gave up is freed, not returned.
+        capture.then((late) => late && release(late)).catch(() => undefined);
+        return undefined;
+      }
       if (!image) return undefined;
       let shown = image;
       let context = 0n;
