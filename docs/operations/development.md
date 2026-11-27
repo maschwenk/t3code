@@ -284,7 +284,11 @@ it `--home .t3`.
 `bakeoff` serves [computer-use-bakeoff.html](../../scripts/computer-use-bakeoff.html), opens it
 in Google Chrome with the harness's own profile and in the background, then runs button, canvas
 point, hover, typing, Return, scroll, drag and select tasks through `computer_action`. Quit any
-other Chrome first, since computer tools find apps by name. The page logs every DOM event with
+other Chrome first, since computer tools find apps by name, or keep it open and pass another
+Chromium app with `--browser`, such as Playwright's
+`~/Library/Caches/ms-playwright/chromium-<n>/chrome-mac-arm64/Google Chrome for Testing.app`.
+A brand-new profile can miss the page on its first run or two while a managed extension opens
+its welcome tab; run it again. The page logs every DOM event with
 `isTrusted`. A task passes when the page logged the expected trusted events, shows the result
 at the end, and the user's pointer and front app never moved. The table also lists each
 `computer_action` response's size and delivery path.

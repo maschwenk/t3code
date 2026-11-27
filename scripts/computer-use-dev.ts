@@ -508,26 +508,45 @@ JSON.stringify({
   ),
 );
 
+/** The Chromium app the bake-off page runs in: its name, as computer tools find it, and what `open -a` takes. */
+interface BakeoffBrowser {
+  readonly name: string;
+  readonly open: string;
+}
+const GOOGLE_CHROME: BakeoffBrowser = { name: "Google Chrome", open: "Google Chrome" };
+
 /**
- * Opens `url` in the bake-off's own background Chrome profile, quit by the pid
- * that profile names. The profile is kept so managed extensions open their
+ * Opens `url` in the bake-off's own background profile of `browser`, quit by the
+ * pid that profile names. The profile is kept so managed extensions open their
  * welcome tab only on its first run.
  */
-const launchChrome = Effect.fn("computerUseDev.launchChrome")(function* (url: string) {
+const launchChrome = Effect.fn("computerUseDev.launchChrome")(function* (
+  url: string,
+  browser: BakeoffBrowser,
+) {
   const fs = yield* FileSystem.FileSystem;
-  const profile = (yield* Path.Path).join(NodeOS.tmpdir(), "t3-computer-use-bakeoff-chrome");
+  const slug = browser.name.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+  const profile = (yield* Path.Path).join(
+    NodeOS.tmpdir(),
+    browser === GOOGLE_CHROME
+      ? "t3-computer-use-bakeoff-chrome"
+      : `t3-computer-use-bakeoff-${slug}`,
+  );
   yield* fs.makeDirectory(profile, { recursive: true });
+  const binary = `/Contents/MacOS/${browser.name} `;
   const ours = (command: string) =>
-    /\/Contents\/MacOS\/Google Chrome /.test(command) &&
-    command.split(" ").includes(`--user-data-dir=${profile}`);
+    command.includes(binary) && command.split(" ").includes(`--user-data-dir=${profile}`);
   yield* run("open", [
     "-g",
     "-na",
-    "Google Chrome",
+    browser.open,
     "--args",
     `--user-data-dir=${profile}`,
     "--no-first-run",
     "--no-default-browser-check",
+    // Chrome for Testing otherwise asks for the login keychain.
+    "--use-mock-keychain",
+    "--password-store=basic",
     // A covered Chrome stops painting without these two.
     "--disable-backgrounding-occluded-windows",
     "--disable-renderer-backgrounding",
@@ -555,7 +574,6 @@ const launchChrome = Effect.fn("computerUseDev.launchChrome")(function* (url: st
 });
 
 type Harness = Effect.Success<ReturnType<typeof makeHarness>>;
-const CHROME = "Google Chrome";
 const PAGE_TITLE = "Computer use bake-off";
 
 interface Page {
@@ -603,10 +621,13 @@ const pageOf = (result: ToolResult): Page => {
  * The page with a window image. Closes any other tab first, such as the
  * welcome tab a managed extension opens some seconds after launch.
  */
-const snapshotPage = Effect.fn("computerUseDev.snapshotPage")(function* (harness: Harness) {
+const snapshotPage = Effect.fn("computerUseDev.snapshotPage")(function* (
+  harness: Harness,
+  browser: BakeoffBrowser,
+) {
   for (let attempt = 0; attempt < 10; attempt++) {
     const page = pageOf(
-      yield* harness.call("computer_snapshot", { app: CHROME, includeImage: true }),
+      yield* harness.call("computer_snapshot", { app: browser.name, includeImage: true }),
     );
     const steps = page.elements.flatMap((element, index) => {
       if (element.role !== "tab" || element.name?.startsWith(PAGE_TITLE)) return [];
@@ -762,16 +783,29 @@ const describeEvents = (events: readonly PageEvent[]) => {
 
 const bakeoff = Command.make(
   "bakeoff",
-  { home },
-  Effect.fn(function* ({ home }) {
+  {
+    home,
+    browser: Flag.String("browser").pipe(
+      Flag.withDescription(
+        "Path to another Chromium app to run the page in, such as Playwright's Google Chrome for Testing.app, so a running Google Chrome can stay open.",
+      ),
+      Flag.optional,
+    ),
+  },
+  Effect.fn(function* ({ home, browser }) {
+    const path = yield* Path.Path;
+    const chrome = Option.match(browser, {
+      onNone: () => GOOGLE_CHROME,
+      onSome: (app) => ({ name: path.basename(app, ".app"), open: app }),
+    });
     const harness = yield* makeHarness(home);
     const user = yield* probeUser;
-    if (user.chrome > 0)
+    if (user.chrome > 0 && chrome === GOOGLE_CHROME)
       return yield* fail(
-        "Quit Google Chrome first: computer tools find Chrome by app name, so the bake-off's must be the only one.",
+        "Quit Google Chrome first, or pass --browser: computer tools find Chrome by app name, so the bake-off's must be the only one.",
       );
     const page = yield* servePage;
-    yield* launchChrome(page.url);
+    yield* launchChrome(page.url, chrome);
     yield* waitFor(
       Effect.sync(() => page.events.some((event) => event.type === "ready")),
       "The bake-off page did not load.",
@@ -781,7 +815,7 @@ const bakeoff = Command.make(
       if ((yield* probeUser).front !== user.front) yield* run("open", ["-b", user.front]);
     });
     yield* restoreFront;
-    yield* snapshotPage(harness);
+    yield* snapshotPage(harness, chrome);
     yield* restoreFront;
     const baseline = yield* probeUser;
 
@@ -795,7 +829,7 @@ const bakeoff = Command.make(
       let error: string | undefined;
       let moved = false;
       for (const build of task.actions) {
-        const view = yield* snapshotPage(harness);
+        const view = yield* snapshotPage(harness, chrome);
         snapshotSize ||= view.text.length;
         const steps = build(view);
         if (!steps) {
@@ -823,7 +857,7 @@ const bakeoff = Command.make(
       ).pipe(Effect.ignore);
       runs.push({ task, events: page.events.slice(start), responses, error, moved });
     }
-    const final = pageOf(yield* harness.call("computer_snapshot", { app: CHROME }));
+    const final = pageOf(yield* harness.call("computer_snapshot", { app: chrome.name }));
     const rows = runs.map(({ task, events, responses, error, moved }) => {
       const ok = !error && !moved && task.logged(events) && (task.shows?.(final) ?? true);
       const result = ok ? "pass" : `FAIL${error ? `: ${error}` : ""}`;
