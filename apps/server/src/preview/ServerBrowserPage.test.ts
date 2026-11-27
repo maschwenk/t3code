@@ -526,6 +526,39 @@ describe("server browser element refs", () => {
     expect(await page.getByRole("textbox", { name: "parent" }).inputValue()).toBe("");
   });
 
+  it("fills date and time fields from the dates agents type, and refuses a date it would have to guess", async () => {
+    await page.setContent(`
+      <label>Arrival <input id="date" type="date"></label>
+      <label>Start <input id="time" type="time"></label>
+      <p id="events"></p>
+      <script>
+        for (const kind of ["input", "change"])
+          date.addEventListener(kind, () => (events.textContent += kind + ":" + date.value + " "));
+      </script>`);
+    const tree = String((await takeSnapshot()).accessibilityTree);
+    const arrival = locators(tree.split("\n").find((line) => line.includes('"Arrival"')))[0]!;
+
+    await ServerBrowserPage.type(page, { locator: arrival, text: "12/15/2026" });
+    expect(await page.locator("#date").inputValue()).toBe("2026-12-15");
+    expect(await page.locator("#events").textContent()).toBe("input:2026-12-15 change:2026-12-15 ");
+
+    await ServerBrowserPage.type(page, { locator: arrival, text: "January 3, 2027", clear: true });
+    expect(await page.locator("#date").inputValue()).toBe("2027-01-03");
+
+    // 03/04 is March 4 or April 3 depending on the reader.
+    await expect(
+      ServerBrowserPage.type(page, { locator: arrival, text: "03/04/2027" }),
+    ).rejects.toMatchObject({
+      tag: "PreviewAutomationTargetNotEditableError",
+      message: expect.stringContaining("YYYY-MM-DD"),
+    });
+    expect(await page.locator("#date").inputValue()).toBe("2027-01-03");
+
+    await page.locator("#time").focus();
+    await ServerBrowserPage.type(page, { text: "2:30 PM" });
+    expect(await page.locator("#time").inputValue()).toBe("14:30");
+  });
+
   it("types after a click by coordinates into a shadow-root field, and refuses a field inside an editable frame", async () => {
     await page.setContent(
       `<div id="host"></div><div contenteditable="true"><iframe srcdoc="<input id=inner>"></iframe></div><script>document.getElementById("host").attachShadow({mode:"open"}).innerHTML = "<input id=field>";</script>`,
