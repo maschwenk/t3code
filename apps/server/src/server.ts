@@ -230,6 +230,7 @@ import * as RunFinalizationService from "./orchestration-v2/RunFinalizationServi
 import * as ProjectionMaintenance from "./orchestration-v2/ProjectionMaintenance.ts";
 import * as ProjectionStoreV2 from "./orchestration-v2/ProjectionStore.ts";
 import * as PromptSuggestionFallback from "./orchestration-v2/PromptSuggestionFallback.ts";
+import * as QuietRunRecorder from "./orchestration-v2/QuietRunRecorder.ts";
 import { makePersistedServerRuntimeState } from "./serverRuntimeState.ts";
 import { closeNonPrivateNetworkConnections, loopbackUrlHostForAddress } from "./startupAccess.ts";
 import * as OrchestrationHttp from "./orchestration-v2/http.ts";
@@ -652,6 +653,14 @@ const layerPromptSuggestionFallbackWorker = Layer.effectDiscard(
   PromptSuggestionFallback.make.pipe(Effect.flatMap((service) => service.start())),
 ).pipe(Layer.provide(ProjectionStoreV2.layer));
 
+const layerQuietRunRecorderWorker = Layer.effectDiscard(
+  QuietRunRecorder.make.pipe(Effect.flatMap((service) => service.start())),
+).pipe(
+  // The relay's layer value, so all three share one instance and its per-run verdicts.
+  Layer.provide(CompletionNotificationTriage.layer),
+  Layer.provide(ProjectionStoreV2.layer),
+);
+
 const layerThreadPullRequestWorker = Layer.effectDiscard(
   ThreadPullRequestService.make.pipe(Effect.flatMap((service) => service.start())),
 ).pipe(Layer.provide(layerPullRequestService));
@@ -712,6 +721,7 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   layerThreadSettlementWorker,
   layerIdleCompactionWorker,
   layerPromptSuggestionFallbackWorker,
+  layerQuietRunRecorderWorker,
   StorageCleanup.layer.pipe(Layer.provide(ProjectionStoreV2.layer)),
   DatabaseStorage.layer.pipe(
     Layer.provide(ProjectionMaintenance.layer),

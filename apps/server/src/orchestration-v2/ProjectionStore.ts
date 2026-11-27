@@ -1013,6 +1013,7 @@ export function applyToProjection(
     // Reordering and PR refreshes preserve the orchestrator's activity timestamp.
     case "thread.active-reordered":
     case "thread.tags-updated":
+    case "thread.quiet-run-recorded":
     case "thread.pull-request-synced":
     case "thread.issue-synced":
       return {
@@ -1944,6 +1945,7 @@ export function threadShellFromProjection(
 
     autoSettleDisabledAt: projection.thread.autoSettleDisabledAt ?? null,
     autoRenameDisabledAt: projection.thread.autoRenameDisabledAt ?? null,
+    quietRun: projection.thread.quietRun ?? null,
     pinOrderKey: projection.thread.pinOrderKey ?? null,
     ...(projection.thread.tags?.length ? { tags: projection.thread.tags } : {}),
     lastVisitedAt: projection.thread.lastVisitedAt,
@@ -2246,6 +2248,7 @@ function shellFromState(input: {
 
     autoSettleDisabledAt: input.state.thread.autoSettleDisabledAt ?? null,
     autoRenameDisabledAt: input.state.thread.autoRenameDisabledAt ?? null,
+    quietRun: input.state.thread.quietRun ?? null,
     pinOrderKey: input.state.thread.pinOrderKey ?? null,
     ...(input.state.thread.tags?.length ? { tags: input.state.thread.tags } : {}),
     lastVisitedAt: input.state.thread.lastVisitedAt,
@@ -2423,6 +2426,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             case "thread.pin-reordered":
             case "thread.active-reordered":
             case "thread.tags-updated":
+            case "thread.quiet-run-recorded":
             case "thread.visited":
             case "thread.marked-unread":
             case "thread.metadata-updated":
@@ -3264,6 +3268,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             event.type !== "thread.pin-reordered" &&
             event.type !== "thread.active-reordered" &&
             event.type !== "thread.tags-updated" &&
+            event.type !== "thread.quiet-run-recorded" &&
             event.type !== "thread.visited" &&
             event.type !== "thread.visit-recorded" &&
             event.type !== "thread.marked-unread" &&

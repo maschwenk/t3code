@@ -13268,3 +13268,140 @@ it.layer(layerQueueResumeDisabledInstanceTest)(
     );
   },
 );
+
+it.layer(layerTest)("quiet runs", (it) => {
+  it.effect("keeps a monitor's quiet check-ins from reading as new activity", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const eventSink = yield* EventSink.EventSinkV2;
+      const threadId = ThreadId.make("runtime-layer-quiet-run-thread");
+
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        createdBy: "user",
+        creationSource: "web",
+        commandId: CommandId.make("runtime-layer-quiet-run-create"),
+        threadId,
+        projectId: ProjectId.make("runtime-layer-quiet-run-project"),
+        title: "On-call monitor",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: "/tmp/runtime-layer-quiet-run",
+      });
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        createdBy: "user",
+        creationSource: "web",
+        commandId: CommandId.make("runtime-layer-quiet-run-message"),
+        threadId,
+        messageId: MessageId.make("runtime-layer-quiet-run-message"),
+        text: "Sweep the support channel.",
+        attachments: [],
+        modelSelection,
+        dispatchMode: { type: "start_immediately" },
+      });
+      const first = (yield* orchestrator.getThreadProjection(threadId)).runs[0];
+      if (first === undefined) return yield* Effect.die(new Error("Run missing."));
+
+      // The first sweep reports news; the next two check in with nothing to say.
+      const finish = Effect.fn("test.finishRun")(function* (
+        id: string,
+        ordinal: number,
+        type: "run.created" | "run.updated",
+        status: "completed" | "running" = "completed",
+      ) {
+        yield* TestClock.adjust("15 minutes");
+        const now = yield* DateTime.now;
+        const run: OrchestrationV2Run = {
+          ...first,
+          id: RunId.make(id),
+          ordinal,
+          status,
+          requestedAt: now,
+          startedAt: now,
+          completedAt: status === "completed" ? now : null,
+        };
+        yield* eventSink.write({
+          commandId: CommandId.make(`${id}-completed`),
+          events: [
+            {
+              id: EventId.make(`${id}-completed`),
+              type,
+              threadId,
+              runId: run.id,
+              occurredAt: now,
+              payload: run,
+            },
+          ],
+        });
+        return run;
+      });
+      const news = yield* finish(first.id, first.ordinal, "run.updated");
+      const quiet = yield* finish("runtime-layer-quiet-run-2", first.ordinal + 1, "run.created");
+      const record = (runId: RunId) =>
+        orchestrator.dispatch({
+          type: "thread.quiet-run.record",
+          commandId: CommandId.make(`server:quiet-run:${runId}`),
+          threadId,
+          runId,
+        });
+      const shownNews = {
+        runId: news.id,
+        status: "completed" as const,
+        requestedAt: DateTime.formatIso(news.requestedAt),
+        completedAt: DateTime.formatIso(news.completedAt!),
+      };
+
+      const before = (yield* orchestrator.getThreadProjection(threadId)).thread;
+      yield* record(quiet.id);
+      const afterQuiet = (yield* orchestrator.getThreadProjection(threadId)).thread;
+      assert.deepEqual(afterQuiet.quietRun, { runId: quiet.id, shownRun: shownNews });
+      // Recording a verdict is not activity.
+      assert.deepEqual(afterQuiet.updatedAt, before.updatedAt);
+
+      const nextQuiet = yield* finish(
+        "runtime-layer-quiet-run-3",
+        first.ordinal + 2,
+        "run.created",
+      );
+      yield* record(nextQuiet.id);
+      // Back-to-back quiet runs keep pointing at the news.
+      assert.deepEqual((yield* orchestrator.getThreadProjection(threadId)).thread.quietRun, {
+        runId: nextQuiet.id,
+        shownRun: shownNews,
+      });
+
+      // A verdict that lands after a newer run finished records nothing.
+      yield* orchestrator.dispatch({
+        type: "thread.quiet-run.record",
+        commandId: CommandId.make("runtime-layer-quiet-run-late-verdict"),
+        threadId,
+        runId: quiet.id,
+      });
+      assert.equal(
+        (yield* orchestrator.getThreadProjection(threadId)).thread.quietRun?.runId,
+        nextQuiet.id,
+      );
+
+      const shell = (yield* orchestrator.getShellSnapshot()).threads.find(
+        (candidate) => candidate.id === threadId,
+      );
+      assert.deepEqual(shell?.quietRun, { runId: nextQuiet.id, shownRun: shownNews });
+
+      // A sweep's own agent marks it quiet before its turn ends.
+      const marked = yield* finish(
+        "runtime-layer-quiet-run-4",
+        first.ordinal + 3,
+        "run.created",
+        "running",
+      );
+      yield* record(marked.id);
+      assert.deepEqual((yield* orchestrator.getThreadProjection(threadId)).thread.quietRun, {
+        runId: marked.id,
+        shownRun: shownNews,
+      });
+    }),
+  );
+});

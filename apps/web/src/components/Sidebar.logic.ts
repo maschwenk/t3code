@@ -1,6 +1,9 @@
 import type { EnvironmentServerConfig } from "@t3tools/client-runtime/connection";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
-import { resolveThreadWorkingStartedAt } from "@t3tools/client-runtime/state/models";
+import {
+  resolveThreadWorkingStartedAt,
+  shownLatestRun,
+} from "@t3tools/client-runtime/state/models";
 import { isShownUnderParent } from "@t3tools/client-runtime/state/threads";
 import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { threadPullRequestSearchTerms } from "@t3tools/shared/threadPullRequests";
@@ -765,6 +768,7 @@ type ThreadStatusInput = Pick<
   | "runtime"
   | "tags"
 > & {
+  quietRun?: SidebarThreadSummary["quietRun"] | undefined;
   lastVisitedAt?: string | null | undefined;
   pendingBackgroundTasks?: SidebarThreadSummary["pendingBackgroundTasks"] | undefined;
   blockedOnThreadWait?: boolean | undefined;
@@ -879,11 +883,12 @@ export function resolveThreadLastVisitedAt(
 }
 
 export function hasUnseenCompletion(thread: ThreadStatusInput): boolean {
-  if (!thread.latestRun?.completedAt || isThreadMuted(thread.tags)) return false;
-  if (thread.latestRun.status === "interrupted" || thread.latestRun.status === "cancelled") {
+  const run = shownLatestRun(thread);
+  if (!run?.completedAt || isThreadMuted(thread.tags)) return false;
+  if (run.status === "interrupted" || run.status === "cancelled") {
     return false;
   }
-  const completedAt = Date.parse(thread.latestRun.completedAt);
+  const completedAt = Date.parse(run.completedAt);
   if (Number.isNaN(completedAt)) return false;
   if (!thread.lastVisitedAt) return false;
 

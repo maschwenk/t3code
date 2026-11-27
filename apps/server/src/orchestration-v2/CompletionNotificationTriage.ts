@@ -113,6 +113,8 @@ const make = Effect.gen(function* () {
       const settings = yield* serverSettings.getSettings;
       if (!settings.notificationTriage) return true;
       const { thread, runs } = yield* threads.getThreadRecords(input.threadId, ["runs"]);
+      // The run's own agent said it had nothing new.
+      if (thread.quietRun?.runId === input.runId) return false;
       const run = runs.find((candidate) => candidate.id === input.runId);
       const earlierRunIds = earlierTriageRunIds(run, runs);
       const { messages } = yield* threads.getThreadRecords(input.threadId, ["messages"], {

@@ -519,6 +519,43 @@ const OrchestrationV2LastTitleRegeneration = Schema.Struct({
   completedAt: Schema.DateTimeUtc,
 });
 
+export const OrchestrationV2RunStatus = Schema.Literals([
+  "preparing",
+  "queued",
+  "starting",
+  "running",
+  "waiting",
+  "completed",
+  "interrupted",
+  "failed",
+  "cancelled",
+  "rolled_back",
+]);
+export type OrchestrationV2RunStatus = typeof OrchestrationV2RunStatus.Type;
+
+/**
+ * The thread's latest run finished with nothing worth an alert, as notification triage judged
+ * it. Clients show `shownRun`, the latest run before it that was not quiet, in its place for
+ * read state and inbox order, so a monitor that keeps checking in neither reads as Done nor
+ * moves up. A later run that is not quiet makes this stale; compare `runId` with the latest run.
+ */
+export const OrchestrationV2QuietRun = Schema.Struct({
+  runId: RunId,
+  shownRun: Schema.NullOr(
+    Schema.Struct({
+      runId: RunId,
+      status: OrchestrationV2RunStatus,
+      requestedAt: IsoDateTime,
+      completedAt: Schema.NullOr(IsoDateTime),
+    }),
+  ),
+});
+export type OrchestrationV2QuietRun = typeof OrchestrationV2QuietRun.Type;
+
+const LenientQuietRun = Schema.NullOr(OrchestrationV2QuietRun).pipe(
+  Schema.catchDecoding(() => Effect.succeedSome(null)),
+);
+
 export const OrchestrationV2AppThread = Schema.Struct({
   ...OrchestrationV2CreationFields,
   id: ThreadId,
@@ -579,6 +616,7 @@ export const OrchestrationV2AppThread = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
   opens: Schema.optional(LenientThreadOpens),
+  quietRun: Schema.optional(LenientQuietRun),
   titleRegeneration: Schema.optional(
     Schema.NullOr(
       Schema.Struct({
@@ -695,20 +733,6 @@ export function idleCompactionOf(
     ? "beforeCacheExpires"
     : undefined;
 }
-
-export const OrchestrationV2RunStatus = Schema.Literals([
-  "preparing",
-  "queued",
-  "starting",
-  "running",
-  "waiting",
-  "completed",
-  "interrupted",
-  "failed",
-  "cancelled",
-  "rolled_back",
-]);
-export type OrchestrationV2RunStatus = typeof OrchestrationV2RunStatus.Type;
 
 export const OrchestrationV2DelegatedCompletionTaskDeliveryState = Schema.Literals([
   "pending",
@@ -2062,6 +2086,7 @@ export const OrchestrationV2DomainEvent = Schema.Union([
       "thread.pin-reordered",
       "thread.active-reordered",
       "thread.tags-updated",
+      "thread.quiet-run-recorded",
       "thread.visited",
       "thread.marked-unread",
       "thread.metadata-updated",
@@ -2333,6 +2358,7 @@ export const OrchestrationV2ThreadShell = Schema.Struct({
   tags: Schema.optional(StoredThreadTags),
   lastVisitedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
   opens: Schema.optional(LenientThreadOpens),
+  quietRun: Schema.optional(LenientQuietRun),
   titleRegeneration: Schema.optional(
     Schema.NullOr(
       Schema.Struct({
@@ -3015,6 +3041,7 @@ export const OrchestrationV2DomainEventJson = Schema.Union([
       "thread.pin-reordered",
       "thread.active-reordered",
       "thread.tags-updated",
+      "thread.quiet-run-recorded",
       "thread.visited",
       "thread.marked-unread",
       "thread.pull-request-synced",
@@ -3709,6 +3736,13 @@ const OrchestrationV2InternalCommand = Schema.Union([
     guestMessageId: GuestMessageId,
     text: Schema.String,
     attachments: Schema.optional(Schema.Array(ChatAttachment)),
+  }),
+  /** Notification triage found the run had nothing worth an alert; applies only while it is the latest run. */
+  Schema.Struct({
+    type: Schema.Literal("thread.quiet-run.record"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    runId: RunId,
   }),
   /** Moves a thread to a project rooted at the folder it already works in, so its cwd never changes. */
   Schema.Struct({

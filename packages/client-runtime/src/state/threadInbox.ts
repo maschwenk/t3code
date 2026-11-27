@@ -1,5 +1,5 @@
 // @effect-diagnostics globalTimers:off - Shelf placement timers run in web and native clients, outside an Effect runtime.
-import { threadRuntimeIsActive, type EnvironmentThreadShell } from "./models.ts";
+import { shownLatestRun, threadRuntimeIsActive, type EnvironmentThreadShell } from "./models.ts";
 import { toSortableTimestamp } from "./threadSort.ts";
 import { effectiveSnoozed } from "./threadSettled.ts";
 
@@ -51,7 +51,7 @@ export function asLaunchingThread<T extends EnvironmentThreadShell>(thread: T): 
 
 type InboxThreadInput = Pick<
   EnvironmentThreadShell,
-  "id" | "environmentId" | "createdAt" | "unsettledAt" | "latestRun"
+  "id" | "environmentId" | "createdAt" | "unsettledAt" | "latestRun" | "quietRun"
 >;
 
 export function sortInboxThreadsByReturn<T extends InboxThreadInput>(
@@ -59,16 +59,21 @@ export function sortInboxThreadsByReturn<T extends InboxThreadInput>(
   observedReturnAt?: (thread: T) => number | undefined,
 ): T[] {
   const timestamps = new Map(
-    threads.map((thread) => [
-      thread,
-      Math.max(
-        toSortableTimestamp(thread.createdAt) ?? 0,
-        toSortableTimestamp(thread.unsettledAt ?? undefined) ?? 0,
-        toSortableTimestamp(thread.latestRun?.requestedAt ?? undefined) ?? 0,
-        toSortableTimestamp(thread.latestRun?.completedAt ?? undefined) ?? 0,
-        observedReturnAt?.(thread) ?? 0,
-      ),
-    ]),
+    threads.map((thread) => {
+      const run = shownLatestRun(thread);
+      // The client saw a quiet run end, which must not move the thread either.
+      const quiet = run !== thread.latestRun;
+      return [
+        thread,
+        Math.max(
+          toSortableTimestamp(thread.createdAt) ?? 0,
+          toSortableTimestamp(thread.unsettledAt ?? undefined) ?? 0,
+          toSortableTimestamp(run?.requestedAt ?? undefined) ?? 0,
+          toSortableTimestamp(run?.completedAt ?? undefined) ?? 0,
+          (quiet ? undefined : observedReturnAt?.(thread)) ?? 0,
+        ),
+      ];
+    }),
   );
   return sortNewestFirst(threads, timestamps);
 }
