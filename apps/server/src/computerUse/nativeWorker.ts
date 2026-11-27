@@ -250,6 +250,30 @@ async function resolve(app: App, target: ElementTarget): Promise<Resolved | unde
   return matches.length === 1 ? matches[0] : undefined;
 }
 
+/** Roles that open and close. */
+const EXPANDABLE_ROLES = new Set([
+  "tree_item",
+  "row",
+  "table_row",
+  "list_item",
+  "button",
+  "combo_box",
+  "pop_up_button",
+  "menu_button",
+  "menu_item",
+  "disclosure_triangle",
+  "link",
+]);
+
+/**
+ * An element's open or closed state, on roles that can have one. Chromium apps (Slack, Notion,
+ * Discord) report nearly every node as collapsed, static text and images included.
+ */
+export function expansionState(role: string, expanded: boolean | null) {
+  if (expanded === null || !EXPANDABLE_ROLES.has(role)) return undefined;
+  return expanded ? "expanded" : "collapsed";
+}
+
 const elementStates = (element: Element) =>
   [
     element.focused && "focused",
@@ -257,8 +281,7 @@ const elementStates = (element: Element) =>
     element.checked === "on" && "checked",
     element.checked === "off" && "unchecked",
     element.checked === "mixed" && "mixed",
-    element.expanded === true && "expanded",
-    element.expanded === false && "collapsed",
+    expansionState(element.role, element.expanded),
   ].filter((state): state is string => typeof state === "string");
 
 async function takeSnapshot(
