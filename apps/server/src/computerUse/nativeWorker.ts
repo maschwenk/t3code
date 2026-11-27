@@ -1229,13 +1229,22 @@ export function nativeFailure(cause: unknown, stage?: FailureStage): WorkerRespo
   };
 }
 
-/** Loads the native libraries while a started worker waits for its first request. */
+/**
+ * Loads the native libraries while a started worker waits for its first request, then reads
+ * the front app's accessibility element once: xa11y's first read of any app costs 60-80 ms.
+ * The front app is the one most likely to answer at once, and the read changes nothing.
+ */
 function preload() {
   // oxlint-disable-next-line t3code/no-global-process-runtime -- This isolated CLI worker runs before an Effect runtime exists.
   if (process.platform !== "darwin") return;
   // A failed load fails the first request instead, as it would without the preload.
-  (nativeLibrary ??= loadMacNative()).catch(() => undefined);
-  import("@crowecawcaw/xa11y").catch(() => undefined);
+  const native = (nativeLibrary ??= loadMacNative());
+  Promise.all([native, import("@crowecawcaw/xa11y")])
+    .then(([loaded, xa11y]) => {
+      const front = loaded.frontmostPid();
+      return front === undefined ? undefined : xa11y.default.App.byPid(front, { timeout: 0 });
+    })
+    .catch(() => undefined);
 }
 
 export async function runComputerUseWorker(session = false): Promise<void> {
