@@ -12,7 +12,7 @@ import * as AgentCursor from "./agentCursor.ts";
 import * as Driver from "./Driver.ts";
 import { parseKeyChord } from "./keys.ts";
 import { type Capture, captureToScreen } from "./pointerTarget.ts";
-import { carryRefs, formatElement } from "./snapshotTree.ts";
+import { carryRefs, formatElement, listedAction } from "./snapshotTree.ts";
 import {
   ComputerUseError,
   type ComputerAction,
@@ -180,7 +180,10 @@ export function planStep(
     case "perform":
       return step.perform === undefined
         ? "invalid_input"
-        : plan({ kind: "perform", action: step.perform });
+        : plan({
+            kind: "perform",
+            action: listedAction(target.actions, step.perform) ?? step.perform,
+          });
   }
 }
 export type AppGoalAction = { readonly description: string; readonly target: ElementTarget };

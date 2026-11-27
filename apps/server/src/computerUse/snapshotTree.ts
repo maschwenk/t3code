@@ -28,6 +28,32 @@ export function isAnonymousContainer(element: {
   );
 }
 
+const CUSTOM_ACTION = /^name:(.*?)\n_target:/su;
+
+/**
+ * How an agent sees an action. xa11y lists an AppKit custom action as its snake-cased
+ * description, `name:_mark as _unread\n_target:0x0\n_selector:(null)`; agents see its title in
+ * quotes, "Mark as Unread", and perform takes that title.
+ */
+export function actionLabel(action: string): string {
+  const title = CUSTOM_ACTION.exec(action)?.[1];
+  return title === undefined
+    ? action
+    : JSON.stringify(
+        title.replace(/_(\p{Ll})/gu, (_match, letter: string) => letter.toUpperCase()),
+      );
+}
+
+/** The listed action an agent named, by its action name or a custom action's title. */
+export function listedAction(actions: readonly string[], requested: string): string | undefined {
+  if (actions.includes(requested)) return requested;
+  const quoted = requested.startsWith('"') ? requested : JSON.stringify(requested);
+  return actions.find((action) => action !== requested && actionLabel(action) === quoted);
+}
+
+/** Action lists this long are written once per response, then named by the first ref listing them. */
+const SHARED_ACTIONS_LENGTH = 40;
+
 const hasArea = (rect: Rect | null | undefined): rect is Rect =>
   !!rect &&
   [rect.x, rect.y, rect.width, rect.height].every(Number.isFinite) &&
@@ -77,8 +103,12 @@ export const matchesQuery = (
 const quote = (text: string, max: number) =>
   JSON.stringify(text.length > max ? `${text.slice(0, max)}…` : text);
 
-/** One element per line, indented by depth: `[ref] role "name" = "value" (states) {actions} @x,y wxh`. */
-export function formatElement(element: ElementTarget): string {
+/**
+ * One element per line, indented by depth: `[ref] role "name" = "value" (states) {actions} @x,y wxh`.
+ * With `shared`, a long action list already written in the same response is written as
+ * `{actions of [ref]}`: Messages lists the same twenty tapback and reply actions on every message.
+ */
+export function formatElement(element: ElementTarget, shared?: Map<string, number>): string {
   const parts = [`${"  ".repeat(Math.min(element.depth, 12))}[${element.ref}] ${element.role}`];
   if (element.name) parts.push(quote(element.name, 160));
   if (element.value !== null && element.value !== "" && element.value !== element.name)
@@ -95,7 +125,13 @@ export function formatElement(element: ElementTarget): string {
   const actions = element.actions.filter(
     (action) => !PASSIVE_ACTIONS.has(action) || (offscreen && action === "scroll_to_visible"),
   );
-  if (actions.length) parts.push(`{${actions.join(", ")}}`);
+  const listed = actions.map(actionLabel).join(", ");
+  const first = listed.length >= SHARED_ACTIONS_LENGTH ? shared?.get(listed) : undefined;
+  if (first !== undefined) parts.push(`{actions of [${first}]}`);
+  else if (listed) {
+    if (listed.length >= SHARED_ACTIONS_LENGTH) shared?.set(listed, element.ref);
+    parts.push(`{${listed}}`);
+  }
   const bounds = element.bounds;
   if (hasArea(bounds))
     parts.push(
@@ -202,10 +238,11 @@ function header(snapshot: NativeSnapshot, snapshotId: string) {
 
 /** The text an agent reads for a snapshot. */
 export function formatSnapshot(snapshot: NativeSnapshot, snapshotId: string): string {
+  const shared = new Map<string, number>();
   return [
     header(snapshot, snapshotId),
     ...(snapshot.menus?.length ? [`menus: ${snapshot.menus.join(" | ")}`] : []),
-    ...snapshot.elements.map(formatElement),
+    ...snapshot.elements.map((element) => formatElement(element, shared)),
   ].join("\n");
 }
 
@@ -247,18 +284,19 @@ export function formatChanges(
   const parentsAfter = parentRefs(snapshot.elements);
   const lines: string[] = [];
   const moved: number[] = [];
+  const shared = new Map<string, number>();
   for (const element of snapshot.elements) {
     const old = before.get(element.ref);
     before.delete(element.ref);
     const line = formatElement(element);
-    if (old === undefined) lines.push(`+ ${line}`);
+    if (old === undefined) lines.push(`+ ${formatElement(element, shared)}`);
     else if (formatElement(old) === line) continue;
     else if (
       formatElement({ ...old, bounds: element.bounds }) === line &&
       parentsBefore.get(element.ref) === parentsAfter.get(element.ref)
     )
       moved.push(element.ref);
-    else lines.push(`~ ${line}`);
+    else lines.push(`~ ${formatElement(element, shared)}`);
   }
   if (before.size) lines.push(`removed: ${refRanges([...before.keys()])}`);
   if (moved.length) lines.push(`moved: ${refRanges(moved)}`);

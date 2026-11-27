@@ -105,6 +105,18 @@ it("presses a clicked element that lists press, and clicks exactly at x, y", () 
   expect(plan({ action: "click", x: 800, y: 300 })).toBe("invalid_point");
 });
 
+it("performs a custom action by the title the snapshot shows", () => {
+  const unread = "name:_mark as _unread\n_target:0x0\n_selector:(null)";
+  const row = { ...seven, ref: 4, role: "row", name: "lunch?", actions: ["press", unread] };
+  const performed = (perform: string) => {
+    const planned = ComputerUse.planStep([row], undefined, { action: "perform", ref: 4, perform });
+    return typeof planned === "object" && "action" in planned ? planned.action : planned;
+  };
+  expect(performed("Mark as Unread")).toEqual({ kind: "perform", action: unread });
+  expect(performed('"Mark as Unread"')).toEqual({ kind: "perform", action: unread });
+  expect(performed("press")).toEqual({ kind: "perform", action: "press" });
+});
+
 it.each<[string, ComputerStep, ComputerAction]>([
   ["hover onto an element", { action: "hover", ref: 1 }, { kind: "move" }],
   ["type", { action: "type", ref: 3, text: "hi" }, { kind: "type", text: "hi", replace: false }],

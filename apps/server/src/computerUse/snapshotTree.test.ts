@@ -5,6 +5,7 @@ import {
   childClip,
   formatChanges,
   formatElement,
+  formatSnapshot,
   isAnonymousContainer,
   isOffscreen,
   matchesQuery,
@@ -362,4 +363,35 @@ it("renders one compact line per element", () => {
   expect(formatElement(element)).toBe(
     '    [7] text_field "Search" = "cats" (focused, editable) {press} @10,20 200x24 in "Toolbar"',
   );
+});
+
+// Messages lists AppKit custom actions on every message, as xa11y names them.
+const custom = (title: string) => `name:${title}\n_target:0x0\n_selector:(null)`;
+const MESSAGE_ACTIONS = [
+  "press",
+  custom("_heart"),
+  custom("_thumbs up"),
+  custom("_reply…"),
+  custom("_mark as _unread"),
+  custom("🤣"),
+];
+
+it("names custom actions by title and writes a repeated action list once", () => {
+  const messages = numbered([
+    element({ role: "list", path: [0], depth: 0, name: "Messages" }),
+    element({ role: "row", path: [0, 0], depth: 1, name: "hi", actions: MESSAGE_ACTIONS }),
+    element({ role: "row", path: [0, 1], depth: 1, name: "lunch?", actions: MESSAGE_ACTIONS }),
+    element({ role: "button", path: [1], depth: 0, name: "Send", actions: ["press"] }),
+    element({ role: "button", path: [2], depth: 0, name: "Emoji", actions: ["press"] }),
+  ]);
+  const lines = formatSnapshot(view("Messages", messages), "s1").split("\n").slice(1);
+  expect(lines).toEqual([
+    '[1] list "Messages"',
+    '  [2] row "hi" {press, "Heart", "Thumbs up", "Reply…", "Mark as Unread", "🤣"}',
+    '  [3] row "lunch?" {actions of [2]}',
+    '[4] button "Send" {press}',
+    '[5] button "Emoji" {press}',
+  ]);
+  // Without that response's context, a line stays complete.
+  expect(formatElement(messages[2]!)).toContain('"Mark as Unread"');
 });
