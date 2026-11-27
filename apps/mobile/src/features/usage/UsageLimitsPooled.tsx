@@ -8,11 +8,13 @@ import {
   collectExternalUsageLinks,
   collectLimitNotices,
   collectLimitPools,
+  collectStaleLimitNotices,
   cursorUsageWindowDetails,
   displayLimitWindows,
   formatResetsIn,
   paceRemainingPercent,
   remainingPercent,
+  staleLimitsNotice,
   type LimitAccount,
   type LimitPoolWindow,
 } from "@t3tools/shared/usageLimits";
@@ -237,11 +239,12 @@ function PoolWindowCard({
         const timeLeft = paceRemainingPercent(window, now);
         const credits = account.limits.resetCredits?.availableCount ?? 0;
         const resetsIn = formatResetsIn(window, now)?.replace("resets in ", "");
+        const stale = staleLimitsNotice(account.limits, now) !== null;
         return (
           <Pressable
             key={account.key}
             accessibilityRole="button"
-            accessibilityLabel={`Segment ${index + 1}, ${accountName(account)}, ${remainingPercent(window)}% left${timeLeft === null ? "" : `, ${timeLeft}% of the window left`}`}
+            accessibilityLabel={`Segment ${index + 1}, ${accountName(account)}, ${remainingPercent(window)}% left${timeLeft === null ? "" : `, ${timeLeft}% of the window left`}${stale ? ", may be out of date" : ""}`}
             accessibilityHint="Show account details"
             onPress={() => openAccount(account)}
             className={wide ? "h-9 min-w-0 flex-1 rounded-md" : "h-7 min-w-0 flex-1 rounded-md"}
@@ -274,6 +277,13 @@ function PoolWindowCard({
                   <Text className="text-sm font-t3-bold tabular-nums text-foreground">
                     {remainingPercent(window)}%
                   </Text>
+                  {stale ? (
+                    <SymbolView
+                      name="exclamationmark.triangle"
+                      size={11}
+                      tintColorClassName="accent-warning-foreground"
+                    />
+                  ) : null}
                 </View>
                 {inlineReset && (resetsIn || credits) ? (
                   <View className="shrink-0 flex-row items-center gap-1 rounded bg-grouped-card/85 px-1.5 py-0.5">
@@ -325,11 +335,12 @@ function PoolWindowCard({
         const segmentColor = normalizeProviderAccentColor(account.accentColor) ?? color;
         const credits = account.limits.resetCredits?.availableCount ?? 0;
         const resetsIn = formatResetsIn(window, now);
+        const stale = staleLimitsNotice(account.limits, now) !== null;
         return (
           <Pressable
             key={account.key}
             accessibilityRole="button"
-            accessibilityLabel={`Segment ${index + 1}, ${accountName(account)}, ${remainingPercent(window)}% left${resetsIn ? `, ${resetsIn}` : ""}${credits ? `, ${credits} reset credits banked` : ""}`}
+            accessibilityLabel={`Segment ${index + 1}, ${accountName(account)}, ${remainingPercent(window)}% left${resetsIn ? `, ${resetsIn}` : ""}${credits ? `, ${credits} reset credits banked` : ""}${stale ? ", may be out of date" : ""}`}
             accessibilityHint="Show account details"
             onPress={() => openAccount(account)}
             className="min-h-[44px] flex-row items-center gap-2 active:opacity-60"
@@ -353,6 +364,13 @@ function PoolWindowCard({
             <Text className="text-sm font-t3-medium tabular-nums text-foreground">
               {remainingPercent(window)}%
             </Text>
+            {stale ? (
+              <SymbolView
+                name="exclamationmark.triangle"
+                size={12}
+                tintColorClassName="accent-warning-foreground"
+              />
+            ) : null}
             <View className="flex-row items-center gap-1">
               {resetsIn ? (
                 <>
@@ -417,8 +435,9 @@ export function UsageLimitsSection({
     selectedEnvironmentIds === null
       ? presentations
       : new Map([...presentations].filter(([id]) => selectedEnvironmentIds.has(id)));
-  const pools = collectLimitPools(collectLimitAccounts(selected), now);
-  const notices = collectLimitNotices(selected);
+  const accounts = collectLimitAccounts(selected);
+  const pools = collectLimitPools(accounts, now);
+  const notices = [...collectLimitNotices(selected), ...collectStaleLimitNotices(accounts, now)];
   const externalLinks = collectExternalUsageLinks(selected);
   const colors = useProviderColors();
   return (
@@ -538,6 +557,7 @@ export function UsageLimitAccountScreen({ route }: AccountScreenProps) {
   const window = pool?.members.find((member) => member.account.key === accountKey)?.window;
   const evenPace = window ? paceRemainingPercent(window, now) : null;
   const reset = pool?.resets.find((candidate) => candidate.member.account.key === accountKey);
+  const staleNotice = account ? staleLimitsNotice(account.limits, now) : null;
   const [revealed, setRevealed] = useState(false);
   return (
     <SettingsScreen title="Account">
@@ -601,6 +621,11 @@ export function UsageLimitAccountScreen({ route }: AccountScreenProps) {
               {reset && reset.restoresPercent > 0 ? (
                 <Text className="text-sm text-foreground-muted">
                   Restores {reset.restoresPercent}% of the pool
+                </Text>
+              ) : null}
+              {staleNotice ? (
+                <Text className="text-sm font-t3-medium text-warning-foreground">
+                  {staleNotice}
                 </Text>
               ) : null}
             </View>

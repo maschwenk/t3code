@@ -20,6 +20,7 @@ import {
   collectExternalUsageLinks,
   collectLimitNotices,
   collectLimitPools,
+  collectStaleLimitNotices,
   elapsedShare,
   exhaustedUsageWindow,
   paceOf,
@@ -1150,6 +1151,64 @@ describe("pools", () => {
     expect(pools[0]?.accounts.map((account) => account.key)).toEqual([
       "env-a:hub:a",
       "env-a:hub:b",
+    ]);
+  });
+
+  it("keeps a rate-limited hub account's last good bars in the pool and flags them as possibly out of date", () => {
+    const hubAccount = (id: string, usageLimits: LimitAccount["limits"]) => ({
+      id,
+      driver: claude,
+      usageLimits,
+    });
+    const rateLimited = {
+      reason: "probeFailed" as const,
+      message: "The provider rate-limited the hub request (HTTP 429).",
+    };
+    const accounts = collectLimitAccounts(
+      new Map([
+        [
+          EnvironmentId.make("env-a"),
+          {
+            ...laptop,
+            serverConfig: {
+              providers: [],
+              usageLimitSources: [
+                {
+                  ...source,
+                  accounts: [
+                    hubAccount("fresh.json", {
+                      checkedAt: "2026-09-03T11:58:00.000Z",
+                      windows: [{ ...weekly, usedPercent: 20 }],
+                    }),
+                    hubAccount("kept.json", {
+                      checkedAt,
+                      windows: [{ ...weekly, usedPercent: 66 }],
+                      unavailable: rateLimited,
+                    }),
+                    hubAccount("never-read.json", {
+                      checkedAt,
+                      windows: [],
+                      unavailable: rateLimited,
+                    }),
+                  ],
+                },
+              ],
+            },
+          },
+        ],
+      ]),
+    );
+    expect(accounts.map((account) => account.key)).toEqual([
+      "env-a:hub:fresh.json",
+      "env-a:hub:kept.json",
+    ]);
+    expect(
+      collectLimitPools(accounts, now)[0]?.windows[0]?.members.map(
+        (member) => member.window.usedPercent,
+      ),
+    ).toEqual([20, 66]);
+    expect(collectStaleLimitNotices(accounts, now)).toEqual([
+      "hub: The provider rate-limited the hub request (HTTP 429). Showing the reading from 1h 0m ago; it may be out of date.",
     ]);
   });
 });

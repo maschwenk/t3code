@@ -7,6 +7,7 @@ import {
   type ServerSettings,
   UsageLimitSourceConfig,
   settingsSecretLiteral,
+  type UsageLimitSourceAccount,
   type UsageLimitSourceId,
   type UsageLimitSourceSnapshot,
 } from "@t3tools/contracts";
@@ -60,6 +61,37 @@ function missingManagementKey(config: UsageLimitSourceConfig): string {
     : "Could not read the management key from its secret provider.";
 }
 
+const sameAccount = (a: UsageLimitSourceAccount, b: UsageLimitSourceAccount) =>
+  a.id === b.id && a.driver === b.driver && a.workspaceId === b.workspaceId;
+
+/**
+ * When an account's read fails, keep its last good windows with their original `checkedAt`
+ * and the failure as `unavailable`, so clients can show the bars as possibly out of date
+ * instead of dropping the account. Windows that have reset since then are dropped.
+ * Reset credits are not kept, so a redemption always uses a credit from a fresh read.
+ */
+function keepLastGoodWindows(
+  accounts: ReadonlyArray<UsageLimitSourceAccount>,
+  previous: ReadonlyArray<UsageLimitSourceAccount>,
+  now: number,
+): ReadonlyArray<UsageLimitSourceAccount> {
+  return accounts.map((account) => {
+    const failure = account.usageLimits.unavailable;
+    if (failure?.reason !== "probeFailed" || account.usageLimits.windows.length > 0) return account;
+    const last = previous.find((candidate) => sameAccount(candidate, account));
+    const windows =
+      last?.usageLimits.windows.filter(
+        (window) => window.resetsAt === undefined || Date.parse(window.resetsAt) > now,
+      ) ?? [];
+    if (!last || windows.length === 0) return account;
+    return {
+      ...last,
+      ...account,
+      usageLimits: { checkedAt: last.usageLimits.checkedAt, windows, unavailable: failure },
+    };
+  });
+}
+
 /** @public */
 export const make = Effect.gen(function* () {
   const api = yield* makeCliproxyApi;
@@ -100,7 +132,8 @@ export const make = Effect.gen(function* () {
     id: UsageLimitSourceId,
     config: UsageLimitSourceConfig,
   ) {
-    const checkedAt = DateTime.formatIso(yield* DateTime.now);
+    const now = yield* DateTime.now;
+    const checkedAt = DateTime.formatIso(now);
     const url = URL.parse(config.url);
     const base = {
       id,
@@ -123,7 +156,11 @@ export const make = Effect.gen(function* () {
       yield* Effect.logDebug("usage limit source read failed", { id, cause: accounts.failure });
       return { ...base, accounts: [], error: accounts.failure.detail };
     }
-    return { ...base, accounts: accounts.success };
+    const previous = (yield* Ref.get(stateRef)).find((source) => source.id === id)?.accounts ?? [];
+    return {
+      ...base,
+      accounts: keepLastGoodWindows(accounts.success, previous, DateTime.toEpochMillis(now)),
+    };
   });
 
   const publish = Effect.fn("UsageLimitSources.publish")(function* (

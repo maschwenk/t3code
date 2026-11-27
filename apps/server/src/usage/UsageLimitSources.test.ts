@@ -309,3 +309,123 @@ it.effect("the reset fallback refreshes its hub, and a stalled hub cannot hold t
     expect(yield* Fiber.join(stalled)).toBeNull();
   }),
 );
+
+it.effect(
+  "keeps a rate-limited hub account's last good windows, dated when read, until they reset",
+  () => {
+    let usageStatus = 200;
+    const usage = {
+      five_hour: { utilization: 10, resets_at: "1970-01-01T05:00:00Z" },
+      seven_day: { utilization: 66, resets_at: "2099-01-01T00:00:00Z" },
+      cedar_ember: {
+        eligible: true,
+        next_grant_id: "full-reset",
+        grants: [
+          {
+            id: "full-reset",
+            resets_left: 1,
+            ends_at: "2099-01-01T00:00:00Z",
+            paused: false,
+            usable_now: true,
+          },
+        ],
+      },
+    };
+    const readAccount = Effect.gen(function* () {
+      const sources = yield* UsageLimitSources.UsageLimitSources;
+      yield* sources.refresh;
+      const [source] = yield* sources.current;
+      return source?.accounts[0];
+    });
+    return Effect.gen(function* () {
+      const fresh = yield* readAccount;
+      expect(fresh?.usageLimits.windows.map((window) => window.id)).toEqual([
+        "five_hour",
+        "seven_day",
+      ]);
+      expect(fresh?.usageLimits.unavailable).toBeUndefined();
+      expect(fresh?.usageLimits.resetCredits?.availableCount).toBe(1);
+
+      usageStatus = 429;
+      yield* TestClock.adjust("10 minutes");
+      const limited = yield* readAccount;
+      expect(limited).toMatchObject({ email: "max@example.com", plan: "Claude Subscription" });
+      // Reset credits are not kept: a redemption must use a credit from a fresh read.
+      expect(limited?.usageLimits).toEqual({
+        checkedAt: fresh?.usageLimits.checkedAt,
+        windows: fresh?.usageLimits.windows,
+        unavailable: {
+          reason: "probeFailed",
+          message: "The provider rate-limited the hub request (HTTP 429).",
+        },
+      });
+
+      // The five-hour window reset while the account was rate-limited; its old usage no longer applies.
+      yield* TestClock.adjust("6 hours");
+      const afterReset = yield* readAccount;
+      expect(afterReset?.usageLimits.windows.map((window) => window.id)).toEqual(["seven_day"]);
+      expect(afterReset?.usageLimits.checkedAt).toBe(fresh?.usageLimits.checkedAt);
+
+      usageStatus = 200;
+      const recovered = yield* readAccount;
+      expect(recovered?.usageLimits.unavailable).toBeUndefined();
+      expect(Date.parse(recovered?.usageLimits.checkedAt ?? "")).toBeGreaterThan(
+        Date.parse(fresh?.usageLimits.checkedAt ?? ""),
+      );
+    }).pipe(
+      Effect.provide(
+        Layer.effect(UsageLimitSources.UsageLimitSources, UsageLimitSources.make).pipe(
+          Layer.provide([
+            ServerSettings.layerTest({
+              usageLimitSources: {
+                [UsageLimitSourceId.make("pool")]: {
+                  kind: "cliproxy",
+                  url: "http://hub.test:8317",
+                  managementKey: "management-secret",
+                  enabled: true,
+                },
+              },
+            }),
+            Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed([]) }),
+            Layer.mock(BackgroundPolicy.BackgroundPolicy)({
+              shouldRunScopeWork: () => Effect.succeed(false),
+            }),
+            Layer.succeed(SecretResolver.SecretResolver, {
+              label: (provider) => Effect.succeed(provider),
+              read: (references) => Effect.succeed(references.map(() => undefined)),
+              invalidate: () => Effect.void,
+            }),
+            Layer.succeed(
+              HttpClient.HttpClient,
+              HttpClient.make((request) =>
+                Effect.sync(() =>
+                  HttpClientResponse.fromWeb(
+                    request,
+                    new URL(request.url).pathname.endsWith("/auth-files")
+                      ? Response.json({
+                          files: [
+                            {
+                              id: "max.json",
+                              auth_index: "a",
+                              provider: "claude",
+                              email: "max@example.com",
+                            },
+                          ],
+                        })
+                      : Response.json({
+                          status_code: usageStatus,
+                          body: JSON.stringify(
+                            usageStatus === 200 ? usage : { error: { type: "rate_limit_error" } },
+                          ),
+                        }),
+                  ),
+                ),
+              ),
+            ),
+            NodeCrypto.layer,
+          ]),
+        ),
+      ),
+    );
+  },
+);

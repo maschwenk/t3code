@@ -4,6 +4,7 @@ import {
   collectExternalUsageLinks,
   collectLimitNotices,
   collectLimitPools,
+  collectStaleLimitNotices,
   cursorUsageWindowDetails,
   displayLimitWindows,
   formatResetsIn,
@@ -15,6 +16,7 @@ import {
   remainingPercent,
   type ResetCreditChoice,
   resetCreditChoices,
+  staleLimitsNotice,
 } from "@t3tools/shared/usageLimits";
 import type { Popover as PopoverPrimitive } from "@base-ui/react/popover";
 import { normalizeProviderAccentColor } from "@t3tools/client-runtime/state/provider-instance-display";
@@ -155,6 +157,7 @@ function SegmentPopover({
     redeem && account.redeem && account.limits.resetCredits?.availableCount
       ? resetCreditChoices(account.limits.resetCredits, account.redeem.input, now, true)
       : [];
+  const stale = staleLimitsNotice(account.limits, now);
   return (
     <div className="flex w-72 max-w-[calc(100vw-3rem)] flex-col gap-2.5 text-xs">
       <div className="flex min-w-0 flex-col gap-0.5">
@@ -193,6 +196,12 @@ function SegmentPopover({
           <Row label="Restores">+{reset.restoresPercent}% of pool</Row>
         ) : null}
       </div>
+      {stale ? (
+        <p className="flex gap-1.5 border-t border-border/60 pt-2.5 text-warning-foreground">
+          <AlertTriangleIcon className="mt-px size-3.5 shrink-0" aria-hidden />
+          <span className="min-w-0 break-words">{stale}</span>
+        </p>
+      ) : null}
       {choices.length > 0 && redeem ? (
         <div className="flex flex-col gap-1.5 border-t border-border/60 pt-2.5 text-muted-foreground">
           {choices.map((choice) => (
@@ -350,6 +359,7 @@ function SegmentTriggers({
   const [segmentRef, paceMark] = usePaceMark(timeLeft);
   const resetsIn = formatResetsIn(window, now);
   const credits = account.limits.resetCredits?.availableCount ?? 0;
+  const stale = staleLimitsNotice(account.limits, now) !== null;
   return (
     <>
       <PopoverTrigger
@@ -361,7 +371,7 @@ function SegmentTriggers({
             ref={segmentRef}
             type="button"
             style={{ gridColumn: index, gridRow: 1, ...paceMark?.gappedTrack }}
-            aria-label={`${account.displayName ?? (account.email ? accountInitials(account.email) : account.driver)}: ${remaining}% left${resetsIn ? `, ${resetsIn}` : ""}${timeLeft === null ? "" : `, ${timeLeft}% of the window left`}${credits ? `, ${credits} reset ${credits === 1 ? "credit" : "credits"} banked` : ""}`}
+            aria-label={`${account.displayName ?? (account.email ? accountInitials(account.email) : account.driver)}: ${remaining}% left${resetsIn ? `, ${resetsIn}` : ""}${timeLeft === null ? "" : `, ${timeLeft}% of the window left`}${credits ? `, ${credits} reset ${credits === 1 ? "credit" : "credits"} banked` : ""}${stale ? ", may be out of date" : ""}`}
             className="relative h-5 min-w-0 cursor-pointer rounded-md bg-muted text-start outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background data-[popup-open]:ring-1 data-[popup-open]:ring-inset data-[popup-open]:ring-border @2xl/pool:h-8"
           />
         }
@@ -412,6 +422,9 @@ function SegmentTriggers({
               {remaining}%
             </span>
           ) : null}
+          {stale ? (
+            <AlertTriangleIcon className="size-3 shrink-0 text-warning-foreground" aria-hidden />
+          ) : null}
           {resetsIn || credits ? (
             <span className="ms-auto flex min-w-0 items-center gap-1.5 overflow-hidden rounded-sm bg-background/85 px-1.5 py-0.5 text-2xs whitespace-nowrap text-foreground tabular-nums">
               {resetsIn?.replace("resets in ", "↻ ") ?? ""}
@@ -453,6 +466,7 @@ function LegendRow({
   const remaining = remainingPercent(window);
   const resetsIn = formatResetsIn(window, now);
   const credits = account.limits.resetCredits?.availableCount ?? 0;
+  const stale = staleLimitsNotice(account.limits, now) !== null;
   return (
     <PopoverTrigger
       handle={popover}
@@ -472,6 +486,12 @@ function LegendRow({
       </span>
       <AccountName account={account} className="min-w-0 truncate font-medium text-foreground" />
       <span className="shrink-0 font-semibold text-foreground tabular-nums">{remaining}%</span>
+      {stale ? (
+        <>
+          <AlertTriangleIcon className="size-3 shrink-0 text-warning-foreground" aria-hidden />
+          <span className="sr-only">may be out of date</span>
+        </>
+      ) : null}
       <span className="ms-auto flex shrink-0 items-center gap-1.5 text-2xs text-muted-foreground tabular-nums">
         {resetsIn?.replace("resets in ", "↻ ") ?? ""}
         {credits ? (
@@ -628,8 +648,12 @@ export function UsageLimitsPooled({
 }) {
   const [segmentPopover] = useState(() => PopoverCreateHandle<SegmentPayload>());
   const segmentPopoverActions = useRef<PopoverPrimitive.Root.Actions | null>(null);
-  const pools = collectLimitPools(collectLimitAccounts(presentations), now);
-  const notices = collectLimitNotices(presentations);
+  const accounts = collectLimitAccounts(presentations);
+  const pools = collectLimitPools(accounts, now);
+  const notices = [
+    ...collectLimitNotices(presentations),
+    ...collectStaleLimitNotices(accounts, now),
+  ];
   const externalLinks = collectExternalUsageLinks(presentations);
   return (
     <div className="flex flex-col gap-8">

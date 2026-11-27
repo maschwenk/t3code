@@ -394,7 +394,8 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
         ? `${presentation.entry.target.label} · ${source.label}`
         : source.label;
       for (const account of source.accounts) {
-        if (limitsNotice(account.usageLimits) !== null) continue;
+        if (limitsNotice(account.usageLimits) !== null && !hasKeptHubWindows(account.usageLimits))
+          continue;
         const resolved = resolveKey(account);
         // A resolved account already has an identity; its public key must stay distinct from others'.
         const hub = resolved ? `${environmentId}:${source.id}` : hubIdentity(environmentId, source);
@@ -713,6 +714,35 @@ export function limitsNotice(limits: ServerProviderUsageLimits): string | null {
     return limits.unavailable.message ?? "Could not read limits.";
   }
   return limits.windows.length === 0 ? "No limits reported." : null;
+}
+
+/**
+ * A hub keeps an account's last good windows, with their original `checkedAt`, when a later
+ * read fails. Only hub accounts mean that: a native instance's failed probe may sit beside
+ * windows it never confirmed, so native limits must not go through this check.
+ */
+function hasKeptHubWindows(limits: ServerProviderUsageLimits): boolean {
+  return limits.unavailable?.reason === "probeFailed" && limits.windows.length > 0;
+}
+
+/** Why a hub account's bars may be out of date, or null when its last read succeeded. */
+export function staleLimitsNotice(limits: ServerProviderUsageLimits, now: number): string | null {
+  if (!hasKeptHubWindows(limits)) return null;
+  const age = now - Date.parse(limits.checkedAt);
+  const since = age >= MINUTE ? `${formatDuration(age)} ago` : "under a minute ago";
+  return `${limits.unavailable?.message ?? "Could not refresh limits."} Showing the reading from ${since}; it may be out of date.`;
+}
+
+export function collectStaleLimitNotices(
+  accounts: readonly LimitAccount[],
+  now: number,
+): readonly string[] {
+  return accounts.flatMap((account) => {
+    const notice = staleLimitsNotice(account.limits, now);
+    const source =
+      account.sourceLabel ?? PROVIDER_DISPLAY_NAMES[account.driver] ?? String(account.driver);
+    return notice ? [`${source}: ${notice}`] : [];
+  });
 }
 
 export function remainingPercent(window: ServerProviderUsageWindow): number {

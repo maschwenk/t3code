@@ -485,7 +485,10 @@ export const makeCliproxyApi = Effect.gen(function* () {
     const response = yield* decodeApiResponse(raw);
     if (response.status_code < 200 || response.status_code >= 300) {
       return yield* new UsageLimitSourceError({
-        detail: `The provider refused the hub request (HTTP ${response.status_code}).`,
+        detail:
+          response.status_code === 429
+            ? "The provider rate-limited the hub request (HTTP 429)."
+            : `The provider refused the hub request (HTTP ${response.status_code}).`,
       });
     }
     return response.body;
@@ -501,14 +504,19 @@ export const makeCliproxyApi = Effect.gen(function* () {
       apiCall(hub, account, provider.header(account, platform, architecture, hub), url, data);
     const reading = yield* provider.read({ account, call, checkedAt }).pipe(
       Effect.provideService(Digest.Digest, digest),
-      Effect.orElseSucceed(() => ({
-        ...listedIdentity(account),
-        usageLimits: makeUnavailableUsageLimits({
-          checkedAt,
-          reason: "probeFailed",
-          message: "The hub could not read this account's usage.",
+      Effect.catch((error) =>
+        Effect.succeed({
+          ...listedIdentity(account),
+          usageLimits: makeUnavailableUsageLimits({
+            checkedAt,
+            reason: "probeFailed",
+            // Hub errors carry only a status or error code, never an upstream body.
+            message: isUsageLimitSourceError(error)
+              ? error.detail
+              : "The hub could not read this account's usage.",
+          }),
         }),
-      })),
+      ),
     );
     return { id: account.id, driver: provider.driver, ...reading };
   });
