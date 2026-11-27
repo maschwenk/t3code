@@ -473,13 +473,15 @@ async function captureWindow(
   if (!match) return { ok: false, code: "capture_requires_foreground" };
   const file = NodePath.join(NodeOS.tmpdir(), `t3-computer-${process.pid}-${match.id}.png`);
   try {
-    await execFile("/usr/sbin/screencapture", ["-x", "-o", "-t", "png", `-l${match.id}`, file], {
-      timeout: 5_000,
-    });
+    // Retina captures are twice the window's point size; models need far less.
+    if (!native.windowPng(match.id, MAX_IMAGE_SIDE, file)) {
+      await execFile("/usr/sbin/screencapture", ["-x", "-o", "-t", "png", `-l${match.id}`, file], {
+        timeout: 5_000,
+      });
+    }
     let png = await NodeFSP.readFile(file);
     let size = pngSize(png);
     if (Math.max(size.width, size.height) > MAX_IMAGE_SIDE) {
-      // Retina captures are twice the window's point size; models need far less.
       await execFile("/usr/bin/sips", ["-Z", String(MAX_IMAGE_SIDE), file], { timeout: 5_000 });
       png = await NodeFSP.readFile(file);
       size = pngSize(png);

@@ -35,6 +35,7 @@ const LIBRARIES = {
   ax: "/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices",
   c: "/usr/lib/libSystem.B.dylib",
   sl: "/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight",
+  io: "/System/Library/Frameworks/ImageIO.framework/ImageIO",
 } as const;
 type Point = { readonly x: number; readonly y: number };
 export type PointerWindow = { readonly id: number; readonly bounds: Rect };
@@ -59,6 +60,12 @@ const HID_SYSTEM_STATE = 1;
 /** Left, right and other mouse-down event types. */
 const MOUSE_DOWN_TYPES = [1, 3, 25] as const;
 /** _SLPSSetFrontProcessWithOptions modes: as if the user chose the app, and leave hidden apps hidden. */
+/** kCGWindowListOptionIncludingWindow, and kCGWindowImageBoundsIgnoreFraming: no shadow. */
+const ONE_WINDOW = 8;
+const WITHOUT_SHADOW = 1;
+/** kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little, the window server's layout. */
+const BGRA = 2 | (2 << 12);
+const HIGH_INTERPOLATION = 3;
 const CPS_CAUSED_BY_USER = 0x200;
 const CPS_DONT_UNHIDE = 0x800;
 
@@ -105,6 +112,13 @@ export async function loadMacNative() {
   const CGPoint = {
     x: T.Double,
     y: T.Double,
+    ffiTypeTag: ffi.FFITypeTag.StackStruct,
+  } as unknown as FfiParams["retType"];
+  const CGRect = {
+    x: T.Double,
+    y: T.Double,
+    width: T.Double,
+    height: T.Double,
     ffiTypeTag: ffi.FFITypeTag.StackStruct,
   } as unknown as FfiParams["retType"];
   const cfTrue = () => {
@@ -539,6 +553,89 @@ export async function loadMacNative() {
     /** Whether this process may capture other apps' windows (Screen Recording). */
     canCaptureScreen: () =>
       call<boolean>("cg", "CGPreflightScreenCaptureAccess", T.Boolean, [], []),
+    /**
+     * Writes one window, at most `maxSide` pixels on its long edge, as a PNG at `path`, in this
+     * process: about 10-30 ms where `screencapture` and `sips` take 100-250. Undefined when the
+     * window server gives no image, such as for a window on another Space.
+     */
+    windowPng: (windowId: number, maxSide: number, path: string) => {
+      const image = call<bigint>(
+        "cg",
+        "CGWindowListCreateImage",
+        Ref,
+        [CGRect, T.U32, T.U32, T.U32],
+        [{ x: Infinity, y: Infinity, width: 0, height: 0 }, ONE_WINDOW, windowId, WITHOUT_SHADOW],
+      );
+      if (!image) return undefined;
+      let shown = image;
+      let context = 0n;
+      try {
+        let width = call<number>("cg", "CGImageGetWidth", T.I64, [Ref], [image]);
+        let height = call<number>("cg", "CGImageGetHeight", T.I64, [Ref], [image]);
+        if (width < 1 || height < 1) return undefined;
+        const scale = maxSide / Math.max(width, height);
+        if (scale < 1) {
+          width = Math.max(1, Math.round(width * scale));
+          height = Math.max(1, Math.round(height * scale));
+          const space = call<bigint>("cg", "CGImageGetColorSpace", Ref, [Ref], [image]);
+          context = call<bigint>(
+            "cg",
+            "CGBitmapContextCreate",
+            Ref,
+            [Ref, T.I64, T.I64, T.I64, T.I64, Ref, T.U32],
+            [0n, width, height, 8, 0, space, BGRA],
+          );
+          if (!context) return undefined;
+          call(
+            "cg",
+            "CGContextSetInterpolationQuality",
+            T.Void,
+            [Ref, T.I32],
+            [context, HIGH_INTERPOLATION],
+          );
+          call(
+            "cg",
+            "CGContextDrawImage",
+            T.Void,
+            [Ref, CGRect, Ref],
+            [context, { x: 0, y: 0, width, height }, image],
+          );
+          shown = call<bigint>("cg", "CGBitmapContextCreateImage", Ref, [Ref], [context]);
+          if (!shown) return undefined;
+        }
+        const url = call<bigint>(
+          "cf",
+          "CFURLCreateFromFileSystemRepresentation",
+          Ref,
+          [Ref, T.String, T.I64, T.Boolean],
+          [0n, path, Buffer.byteLength(path), false],
+        );
+        if (!url) return undefined;
+        const destination = call<bigint>(
+          "io",
+          "CGImageDestinationCreateWithURL",
+          Ref,
+          [Ref, Ref, T.I64, Ref],
+          [url, cfString("public.png"), 1, 0n],
+        );
+        release(url);
+        if (!destination) return undefined;
+        call("io", "CGImageDestinationAddImage", T.Void, [Ref, Ref, Ref], [destination, shown, 0n]);
+        const written = call<boolean>(
+          "io",
+          "CGImageDestinationFinalize",
+          T.Boolean,
+          [Ref],
+          [destination],
+        );
+        release(destination);
+        return written ? { width, height } : undefined;
+      } finally {
+        if (shown && shown !== image) release(shown);
+        if (context) release(context);
+        release(image);
+      }
+    },
     /** Delivered button releases, including synthesized input, in this login session. */
     pointerReleaseCount: (button: "left" | "right") =>
       call<number>(
