@@ -40,7 +40,7 @@ const client = McpSchema.McpServerClient.of({
 });
 const png =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a9ZkAAAAASUVORK5CYII=";
-const layerTest = (calls: WorkerRequest[]) =>
+const layerTest = (calls: WorkerRequest[], failingAction?: number) =>
   McpHttpServer.layerComputerTools.pipe(
     Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
     Layer.provide(
@@ -57,6 +57,11 @@ const layerTest = (calls: WorkerRequest[]) =>
             execute: (request) =>
               Effect.sync(() => {
                 calls.push(request);
+                if (
+                  request.kind === "action" &&
+                  calls.filter((call) => call.kind === "action").length === failingAction
+                )
+                  return { ok: false as const, code: "user_active" as const };
                 return request.kind !== "snapshot"
                   ? { ok: true as const }
                   : {
@@ -192,3 +197,36 @@ it.effect(
     );
   },
 );
+
+it.effect("tells the agent why a step stopped the batch, with the app as it is now", () => {
+  const calls: WorkerRequest[] = [];
+  return Effect.gen(function* () {
+    const server = yield* McpServer.McpServer;
+    const shot = yield* server.callTool({
+      name: "computer_snapshot",
+      arguments: { app: "Calculator" },
+    });
+    const snapshotId = /snapshotId=([\w-]+)/.exec((shot.content[0] as { text: string }).text)![1];
+    const result = yield* server.callTool({
+      name: "computer_action",
+      arguments: {
+        snapshotId,
+        steps: [
+          { ref: 1, action: "click" },
+          { ref: 2, action: "click", foreground: true },
+        ],
+      },
+    });
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).not.toContain("Failed to encode");
+    expect(text).toMatch(
+      /^Completed 1 of 2 steps \(accessibility\)\.\nStep 2 stopped the batch: .+/,
+    );
+    expect(text).toContain("Calculator snapshotId=");
+    expect(result.isError).toBe(false);
+  }).pipe(
+    Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+    Effect.provideService(McpSchema.McpServerClient, client),
+    Effect.provide(layerTest(calls, 2)),
+  );
+});
