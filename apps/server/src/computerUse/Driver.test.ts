@@ -93,6 +93,16 @@ it.live("answers consecutive reads from one worker and replaces it after a failu
       const batch = yield* driver.withSession(driver.execute(request()));
       expect(pid(batch)).not.toBe(pid(reads[0]!));
       expect(pid(yield* driver.execute(request()))).toBe(pid(reads[0]!));
+      // A permission check runs in a fresh process, which sees grants made since.
+      const permissions = yield* driver.execute({ kind: "permissions" });
+      expect(pid(permissions)).not.toBe(pid(reads[0]!));
+      // A read that overlaps another gets its own worker and leaves the shared one alone.
+      const [one, two] = yield* Effect.all([driver.execute(request()), driver.execute(request())], {
+        concurrency: "unbounded",
+      });
+      expect(new Set([pid(one), pid(two)]).size).toBe(2);
+      expect([pid(one), pid(two)]).toContain(pid(reads[0]!));
+      expect(pid(yield* driver.execute(request()))).toBe(pid(reads[0]!));
       expect(Result.isFailure(yield* Effect.result(driver.execute(request("crash"))))).toBe(true);
       const after = yield* driver.execute(request());
       expect(pid(after)).not.toBe(pid(reads[0]!));
