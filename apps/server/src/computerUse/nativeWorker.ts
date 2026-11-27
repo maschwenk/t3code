@@ -1279,7 +1279,29 @@ export function nativeFailure(cause: unknown, stage?: FailureStage): WorkerRespo
   };
 }
 
+/**
+ * Loads the native libraries while a started worker waits for its first request, then reads
+ * the Dock's application element once: xa11y's first read of any app costs 60-80 ms, and the
+ * Dock always answers and holds no user data.
+ */
+function preload() {
+  // oxlint-disable-next-line t3code/no-global-process-runtime -- This isolated CLI worker runs before an Effect runtime exists.
+  if (process.platform !== "darwin") return;
+  // A failed load fails the first request instead, as it would without the preload.
+  (nativeLibrary ??= loadMacNative()).catch(() => undefined);
+  Promise.all([
+    import("@crowecawcaw/xa11y"),
+    execFile("/usr/bin/pgrep", ["-x", "-U", String(process.getuid?.() ?? ""), "Dock"]),
+  ])
+    .then(([xa11y, { stdout }]) => {
+      const dock = Number.parseInt(stdout, 10);
+      return Number.isInteger(dock) ? xa11y.default.App.byPid(dock, { timeout: 0 }) : undefined;
+    })
+    .catch(() => undefined);
+}
+
 export async function runComputerUseWorker(session = false): Promise<void> {
+  if (session) preload();
   let previousWasAction = false;
   // One guard per session, so it keeps watching between the steps of a batch.
   let guard: FocusGuard | undefined;
