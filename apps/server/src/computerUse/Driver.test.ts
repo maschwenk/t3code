@@ -64,16 +64,39 @@ it.live("answers the next batch from a worker started before it asked", () =>
     const { layer, startedPids } = yield* fixtureFiles;
     yield* Effect.gen(function* () {
       const driver = yield* Driver.Driver;
-      const first = yield* driver.execute(request());
+      const batch = driver.withSession(driver.execute(request()));
+      const first = yield* batch;
       // The spare starts as soon as the first batch takes its worker.
       yield* Effect.promise(() => expect.poll(startedPids).toHaveLength(2));
       const before = yield* Effect.promise(startedPids);
-      const second = yield* driver.execute(request());
+      const second = yield* batch;
       if (!first.ok || !second.ok || !second.inputAt) throw new Error("Missing worker pid");
       expect(second.inputAt).not.toBe(first.inputAt);
       expect(before).toContain(second.inputAt);
     }).pipe(Effect.provide(layer));
     // Closing the service leaves no worker behind, spare included.
+    yield* Effect.promise(() =>
+      expect.poll(async () => (await startedPids()).filter(running)).toEqual([]),
+    );
+  }).pipe(Effect.scoped),
+);
+
+it.live("answers consecutive reads from one worker and replaces it after a failure", () =>
+  Effect.gen(function* () {
+    const { layer, startedPids } = yield* fixtureFiles;
+    yield* Effect.gen(function* () {
+      const driver = yield* Driver.Driver;
+      const pid = (response: { ok: boolean; inputAt?: number }) => response.inputAt;
+      const reads = yield* Effect.forEach([1, 2, 3], () => driver.execute(request()));
+      expect(new Set(reads.map(pid)).size).toBe(1);
+      // An action batch never runs in the shared reader.
+      const batch = yield* driver.withSession(driver.execute(request()));
+      expect(pid(batch)).not.toBe(pid(reads[0]!));
+      expect(pid(yield* driver.execute(request()))).toBe(pid(reads[0]!));
+      expect(Result.isFailure(yield* Effect.result(driver.execute(request("crash"))))).toBe(true);
+      const after = yield* driver.execute(request());
+      expect(pid(after)).not.toBe(pid(reads[0]!));
+    }).pipe(Effect.provide(layer));
     yield* Effect.promise(() =>
       expect.poll(async () => (await startedPids()).filter(running)).toEqual([]),
     );

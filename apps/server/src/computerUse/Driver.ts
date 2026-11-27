@@ -37,6 +37,12 @@ const CurrentSession = Context.Reference<Session | undefined>("t3/computerUse/Cu
 
 /** How long a started worker waits for a call before it exits. */
 const SPARE_IDLE_MS = 120_000;
+/**
+ * Reads one worker answers before it is replaced. The worker ends its session after 64
+ * requests, and its native calls leave CF objects for the process exit to free.
+ */
+const READER_REQUESTS = 48;
+const READER_AGE_MS = 300_000;
 
 function start(execPath: string, args: string[], env: NodeJS.ProcessEnv): Session {
   // No prompt or user text enters argv, nor inherited --watch/--inspect flags.
@@ -164,9 +170,56 @@ const make = Effect.gen(function* () {
       // The next batch starts its own worker and reports the failure.
     }
   };
+  // Snapshots and permission checks change nothing and never arm the focus guard, so
+  // consecutive ones share a worker until it has answered READER_REQUESTS, gets old,
+  // fails, or sits idle. Every action batch still gets a fresh process.
+  type Reader = { readonly worker: Session; served: number; stale: boolean; idle?: Timer };
+  type Timer = ReturnType<typeof setTimeout>;
+  let reader: Reader | undefined;
+  const retire = (current: Reader | undefined) => {
+    if (!current || reader !== current) return;
+    reader = undefined;
+    clearTimeout(current.idle);
+    void current.worker.close();
+  };
+  const idleUntilRetired = (current: Reader) => {
+    if (reader !== current) return;
+    current.idle = setTimeout(() => retire(current), SPARE_IDLE_MS);
+    current.idle.unref();
+  };
+  const readerFor = (): Reader => {
+    if (reader && reader.worker.alive() && !reader.stale && reader.served < READER_REQUESTS) {
+      clearTimeout(reader.idle);
+      return reader;
+    }
+    retire(reader);
+    const current: Reader = { worker: takeSpare() ?? spawn(), served: 0, stale: false };
+    refill();
+    setTimeout(() => {
+      current.stale = true;
+    }, READER_AGE_MS).unref();
+    reader = current;
+    return current;
+  };
+  const read = (request: WorkerRequest) =>
+    Effect.suspend(() => {
+      let current: Reader;
+      try {
+        current = readerFor();
+      } catch {
+        return Effect.fail(failure("worker_start"));
+      }
+      current.served++;
+      return current.worker.execute(request).pipe(
+        Effect.tapError(() => Effect.sync(() => retire(current))),
+        Effect.ensuring(Effect.sync(() => idleUntilRetired(current))),
+      );
+    });
   yield* Effect.addFinalizer(() =>
     Effect.promise(async () => {
-      await takeSpare()?.close();
+      const current = reader;
+      retire(current);
+      await Promise.all([takeSpare()?.close(), current?.worker.close()]);
     }),
   );
   const session = Effect.acquireRelease(
@@ -188,6 +241,7 @@ const make = Effect.gen(function* () {
   const execute = Effect.fn("ComputerUse.Driver.execute")(function* (request: WorkerRequest) {
     const worker = yield* CurrentSession;
     if (worker) return yield* worker.execute(request);
+    if (request.kind === "snapshot" || request.kind === "permissions") return yield* read(request);
     return yield* Effect.scoped(Effect.flatMap(session, (single) => single.execute(request)));
   });
   return Driver.of({ execute, withSession });
