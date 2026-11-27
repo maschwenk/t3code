@@ -53,6 +53,12 @@ const WALK_BUDGET_MS = 6_500;
 // AXManualAccessibility is set when the window is in the background.
 const ELECTRON_SETTLE_MS = 2_500;
 const MAX_IMAGE_SIDE = 1600;
+/**
+ * How long an in-process window capture may take before screencapture takes over. A good one
+ * takes 8-130 ms in a fresh process; a stalled one never returns, while screencapture still
+ * answers in about 300 ms.
+ */
+const NATIVE_CAPTURE_TIMEOUT_MS = 500;
 // How long a type step waits for typed text to show in the field, and at most
 // for it to stop changing; both well inside the driver's 12 s deadline.
 const TYPE_SETTLE_MS = 500;
@@ -497,13 +503,18 @@ async function captureWindow(
   if (!match) return { ok: false, code: "capture_requires_foreground" };
   const file = NodePath.join(NodeOS.tmpdir(), `t3-computer-${process.pid}-${match.id}.png`);
   try {
-    await execFile("/usr/sbin/screencapture", ["-x", "-o", "-t", "png", `-l${match.id}`, file], {
-      timeout: 5_000,
-    });
+    // Retina captures are twice the window's point size; models need far less.
+    const written = await native
+      .windowPng(match.id, MAX_IMAGE_SIDE, file, NATIVE_CAPTURE_TIMEOUT_MS)
+      .catch(() => undefined);
+    if (!written) {
+      await execFile("/usr/sbin/screencapture", ["-x", "-o", "-t", "png", `-l${match.id}`, file], {
+        timeout: 5_000,
+      });
+    }
     let png = await NodeFSP.readFile(file);
     let size = pngSize(png);
     if (Math.max(size.width, size.height) > MAX_IMAGE_SIDE) {
-      // Retina captures are twice the window's point size; models need far less.
       await execFile("/usr/bin/sips", ["-Z", String(MAX_IMAGE_SIDE), file], { timeout: 5_000 });
       png = await NodeFSP.readFile(file);
       size = pngSize(png);
