@@ -181,13 +181,37 @@ const lsappinfo = (args: string[]) =>
     (result) => result.stdout,
   );
 
+/** The pid of one app from `lsappinfo info -only pid -only applicationtype`, when it is a GUI app. */
+export function launchServicesApp(info: string): { pid: number; foreground: boolean } | undefined {
+  const pid = /^"pid"=(\d+)$/m.exec(info)?.[1];
+  const type = /^"ApplicationType"="(Foreground|UIElement)"$/m.exec(info)?.[1];
+  return pid && type ? { pid: Number(pid), foreground: type === "Foreground" } : undefined;
+}
+
+/**
+ * Pids of the GUI apps named `name`, foreground apps first. Asking LaunchServices
+ * about one name takes a few milliseconds; `lsappinfo list` describes every
+ * process and takes about 50, so it is only the fallback.
+ */
+async function pidsNamed(name: string): Promise<number[]> {
+  const asns = (await lsappinfo(["find", `name=${name}`])).match(/ASN:0x[\da-f]+-0x[\da-f]+-/gi);
+  if (!asns) return launchServicesPids(await lsappinfo(["list"]), name);
+  const infos = await Promise.all(
+    asns.map((asn) => lsappinfo(["info", "-only", "pid", "-only", "applicationtype", asn])),
+  );
+  return infos
+    .flatMap((info) => launchServicesApp(info) ?? [])
+    .toSorted((a, b) => Number(b.foreground) - Number(a.foreground))
+    .map((app) => app.pid);
+}
+
 // xa11y's App.byName and App.foreground query every windowed app, so one unresponsive app stalls
 // them for a full AX timeout (a minute). LaunchServices names apps without contacting them, then
 // attaching by pid talks only to the target. A windowless same-name helper (Wispr Flow's
 // accessibility agent) can come first, so a match with windows wins.
 async function appByName(App: Xa11y["App"], name: string): Promise<App | undefined> {
   let first: App | undefined;
-  for (const pid of launchServicesPids(await lsappinfo(["list"]), name)) {
+  for (const pid of await pidsNamed(name)) {
     const app = await App.byPid(pid, { timeout: 0 }).catch((cause: unknown) => {
       // The process exited or has no accessibility bridge; permission errors propagate.
       if (cause instanceof Error && cause.name === "SelectorNotMatchedError") return undefined;
@@ -1070,7 +1094,7 @@ async function act(
 }
 
 async function watchByName(focus: FocusGuard, name: string): Promise<void> {
-  const [pid] = launchServicesPids(await lsappinfo(["list"]), name);
+  const [pid] = await pidsNamed(name);
   if (pid !== undefined) focus.watch(pid);
 }
 

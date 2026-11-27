@@ -9,6 +9,7 @@ import {
   clickNeedsPointer,
   findShortcut,
   identityMatches,
+  launchServicesApp,
   launchServicesPids,
   nativeFailure,
   relocationMatches,
@@ -92,6 +93,15 @@ it.each([
   ["Calc", []],
 ])("resolves %s to GUI app pids without contacting other apps", (name, pids) => {
   expect(launchServicesPids(lsappinfoList, name)).toEqual(pids);
+});
+
+it.each([
+  ['"pid"=35089\n"ApplicationType"="Foreground"\n', { pid: 35089, foreground: true }],
+  ['"pid"=30619\n"ApplicationType"="UIElement"\n', { pid: 30619, foreground: false }],
+  ['"pid"=29302\n"ApplicationType"="BackgroundOnly"\n', undefined],
+  ["", undefined],
+])("reads a GUI app's pid from lsappinfo info %#", (info, app) => {
+  expect(launchServicesApp(info)).toEqual(app);
 });
 
 it.each([
