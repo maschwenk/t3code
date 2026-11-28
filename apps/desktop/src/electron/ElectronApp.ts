@@ -57,6 +57,8 @@ export class ElectronApp extends Context.Service<
       path: string,
     ) => Effect.Effect<void>;
     readonly setName: (name: string) => Effect.Effect<void>;
+    readonly userAgentFallback: Effect.Effect<string>;
+    readonly setUserAgentFallback: (userAgent: string) => Effect.Effect<void>;
     readonly setAboutPanelOptions: (
       options: Electron.AboutPanelOptionsOptions,
     ) => Effect.Effect<void>;
@@ -186,6 +188,12 @@ export const make = ElectronApp.of({
   setName: Effect.fn("ElectronApp.setName")(function (name) {
     return Effect.sync(() => {
       Electron.app.setName(name);
+    });
+  }),
+  userAgentFallback: Effect.sync(() => Electron.app.userAgentFallback),
+  setUserAgentFallback: Effect.fn("ElectronApp.setUserAgentFallback")(function (userAgent) {
+    return Effect.sync(() => {
+      Electron.app.userAgentFallback = userAgent;
     });
   }),
   setAboutPanelOptions: Effect.fn("ElectronApp.setAboutPanelOptions")(function (options) {

@@ -31,6 +31,16 @@ export class DesktopAppIdentity extends Context.Service<
   }
 >()("@t3tools/desktop/app/DesktopAppIdentity") {}
 
+const NATIVE_USER_AGENT = /^Mozilla\/5\.0 \(([^)]+)\) .* Chrome\/(\d+)\./;
+
+/** Chrome's reduced User-Agent for this Chromium, without the app and Electron tokens sites block. */
+const chromeUserAgent = (native: string) => {
+  const match = NATIVE_USER_AGENT.exec(native);
+  return match
+    ? `Mozilla/5.0 (${match[1]}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${match[2]}.0.0.0 Safari/537.36`
+    : native;
+};
+
 const normalizeCommitHash = (value: string): Option.Option<string> => {
   const trimmed = value.trim();
   return COMMIT_HASH_PATTERN.test(trimmed)
@@ -91,10 +101,11 @@ export const make = Effect.gen(function* () {
 
   const configure = Effect.gen(function* () {
     const commitHash = yield* resolveAboutCommitHash;
-    // Electron strips spaces but keeps parentheses in its User-Agent token, breaking Turnstile in preview sessions.
     yield* electronApp.setName(
       `${environment.branding.baseName} ${environment.branding.stageLabel}`,
     );
+    // Only Electron's default User-Agent passes Turnstile; session or webContents overrides loop with 600010.
+    yield* electronApp.setUserAgentFallback(chromeUserAgent(yield* electronApp.userAgentFallback));
     yield* electronApp.setAboutPanelOptions({
       applicationName: environment.displayName,
       applicationVersion: environment.appVersion,
