@@ -348,6 +348,12 @@ export type PreviewAutomationSetColorSchemeResult =
 
 const Locator = TrimmedNonEmptyString;
 const LegacySelector = TrimmedNonEmptyString;
+const HumanLike = Schema.optional(
+  Schema.Boolean.annotate({
+    description:
+      "Move the mouse along a curve and type key by key at human speed. Slower; use it when a site blocks automated input. Default false.",
+  }),
+);
 
 const PointerTargetFields = {
   ...PreviewAutomationTabTargetFields,
@@ -356,6 +362,7 @@ const PointerTargetFields = {
   x: Schema.optional(Schema.Finite),
   y: Schema.optional(Schema.Finite),
   timeoutMs: OptionalTimeoutMs,
+  humanLike: HumanLike,
 };
 
 const singlePointerTarget = Schema.makeFilter(
@@ -454,6 +461,7 @@ export const PreviewAutomationTypeInput = Schema.Struct({
     }),
   ),
   timeoutMs: OptionalTimeoutMs,
+  humanLike: HumanLike,
 }).check(
   Schema.makeFilter(
     (input) =>
@@ -529,6 +537,7 @@ export const PreviewAutomationActInput = Schema.Struct({
   deltaX: Schema.optional(Schema.Finite),
   deltaY: Schema.optional(Schema.Finite),
   timeoutMs: Schema.optional(Schema.Int),
+  humanLike: Schema.optional(Schema.Boolean),
 });
 export type PreviewAutomationActInput = typeof PreviewAutomationActInput.Type;
 

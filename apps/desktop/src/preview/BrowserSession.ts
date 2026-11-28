@@ -62,9 +62,6 @@ const externalProtocolPromptUrl = (rawUrl: string | undefined): string | null =>
   }
 };
 
-// Teams sends Electron User-Agents to an error page before sign-in. Electron allows one listener per session.
-const TEAMS_URL_PATTERNS = ["https://teams.cloud.microsoft/*", "https://teams.microsoft.com/*"];
-
 const MAX_PROMPT_URL_LENGTH = 300;
 
 const truncateForPrompt = (text: string): string =>
@@ -614,7 +611,7 @@ export const make = Effect.gen(function* BrowserSessionMake() {
               },
             );
           };
-          // Rewriting Electron's native User-Agent makes Turnstile fail integrity checks with error 600010.
+          // A session User-Agent override makes Turnstile loop with error 600010; see DesktopAppIdentity.
           browserSession.setPermissionRequestHandler(
             (webContents, permission, callback, details) => {
               if (permission === "openExternal") {
@@ -640,22 +637,6 @@ export const make = Effect.gen(function* BrowserSessionMake() {
             permission === "clipboard-read"
               ? clipboardReadDecisions.get(permissionOrigin(requestingOrigin) ?? "") === true
               : ALLOWED_PREVIEW_PERMISSIONS.has(permission),
-          );
-          browserSession.webRequest.onBeforeSendHeaders(
-            { urls: TEAMS_URL_PATTERNS },
-            ({ requestHeaders }, callback) => {
-              const userAgent = Object.entries(requestHeaders).find(
-                ([name]) => name.toLowerCase() === "user-agent",
-              );
-              if (userAgent === undefined) {
-                callback({});
-                return;
-              }
-              const [name, value] = userAgent;
-              callback({
-                requestHeaders: { ...requestHeaders, [name]: value.replace(/ Electron\/\S+/, "") },
-              });
-            },
           );
           return browserSession;
         },

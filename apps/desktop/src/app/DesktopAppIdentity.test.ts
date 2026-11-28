@@ -31,10 +31,15 @@ type TestEnvironmentInput = Partial<DesktopEnvironment.MakeDesktopEnvironmentInp
   readonly env?: Record<string, string | undefined>;
 };
 
+const MAC_NATIVE_USER_AGENT =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) T3CodeFork/0.1.10-fork.20261126.986402663c74 Chrome/152.0.7977.169 Electron/44.10.1 Safari/537.36";
+
 interface ElectronAppCalls {
   readonly setAboutPanelOptions: Array<Electron.AboutPanelOptionsOptions>;
   readonly setDockIcon: string[];
   readonly setName: string[];
+  /** Every value app.userAgentFallback held, starting with Electron's own. */
+  readonly userAgentFallback: string[];
 }
 
 const layerElectronApp = (calls: ElectronAppCalls) =>
@@ -52,6 +57,11 @@ const layerElectronApp = (calls: ElectronAppCalls) =>
     setName: (name) =>
       Effect.sync(() => {
         calls.setName.push(name);
+      }),
+    userAgentFallback: Effect.sync(() => calls.userAgentFallback.at(-1) ?? ""),
+    setUserAgentFallback: (userAgent) =>
+      Effect.sync(() => {
+        calls.userAgentFallback.push(userAgent);
       }),
     setAboutPanelOptions: (options) =>
       Effect.sync(() => {
@@ -121,6 +131,7 @@ const withIdentity = <A, E, R>(
     setAboutPanelOptions: [],
     setDockIcon: [],
     setName: [],
+    userAgentFallback: [MAC_NATIVE_USER_AGENT],
   };
 
   return effect.pipe(
@@ -191,6 +202,7 @@ describe("DesktopAppIdentity", () => {
       setAboutPanelOptions: [],
       setDockIcon: [],
       setName: [],
+      userAgentFallback: [MAC_NATIVE_USER_AGENT],
     };
 
     return withIdentity(
@@ -207,4 +219,41 @@ describe("DesktopAppIdentity", () => {
       { calls, environment },
     );
   });
+
+  it.effect.each([
+    {
+      platform: "macOS",
+      native: MAC_NATIVE_USER_AGENT,
+      chrome:
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36",
+    },
+    {
+      platform: "Linux",
+      native:
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) T3CodeAlpha/0.0.45 Chrome/146.0.7680.216 Electron/41.5.0 Safari/537.36",
+      chrome:
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
+    },
+  ])(
+    "gives every page Chrome's User-Agent on $platform, before and after ready",
+    ({ native, chrome }) => {
+      const calls: ElectronAppCalls = {
+        setAboutPanelOptions: [],
+        setDockIcon: [],
+        setName: [],
+        userAgentFallback: [native],
+      };
+
+      return withIdentity(
+        Effect.gen(function* () {
+          const identity = yield* DesktopAppIdentity.DesktopAppIdentity;
+          yield* identity.configure;
+          yield* identity.configure;
+
+          assert.deepStrictEqual(calls.userAgentFallback, [native, chrome, chrome]);
+        }),
+        { calls },
+      );
+    },
+  );
 });

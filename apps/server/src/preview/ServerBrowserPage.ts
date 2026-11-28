@@ -25,6 +25,7 @@ import * as Schema from "effect/Schema";
 import type { CDPSession, ConsoleMessage, Frame, Locator, Page } from "playwright-core";
 import * as NodeCrypto from "node:crypto";
 import * as NodeUtil from "node:util";
+import * as HumanInput from "./HumanInput.ts";
 import { BrowserControlInterrupted } from "./SessionControl.ts";
 import { fieldValue, VALUE_FORMATS, type ValueFieldType } from "./fieldValue.ts";
 
@@ -189,12 +190,17 @@ const scrollIntoView = async (locator: Locator, timeout: number) => {
 const targetPoint = async (
   page: Page,
   locator: Locator | null,
-  input: { readonly x?: number | undefined; readonly y?: number | undefined },
+  input: {
+    readonly x?: number | undefined;
+    readonly y?: number | undefined;
+    readonly humanLike?: boolean | undefined;
+  },
   timeout: () => number,
 ) => {
   if (locator === null) return { x: input.x ?? 0, y: input.y ?? 0 };
   await scrollIntoView(locator, timeout());
   const box = await locator.boundingBox({ timeout: timeout() });
+  if (box && input.humanLike) return HumanInput.pointIn(box);
   if (box) return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
   const viewport = page.viewportSize();
   return { x: (viewport?.width ?? 0) / 2, y: (viewport?.height ?? 0) / 2 };
@@ -1200,8 +1206,10 @@ const clickTarget = async (
   const point = await targetPoint(page, locator, input, timeout);
   await pointer(point, "click");
   const options = { button: input.button ?? "left", clickCount: input.clickCount ?? 1 } as const;
-  const clicked =
-    locator === null
+  // Not Playwright's trial click: page listeners added before its interceptor still see that click.
+  const clicked = input.humanLike
+    ? HumanInput.click(page, point, options)
+    : locator === null
       ? page.mouse.click(point.x, point.y, options)
       : locator.click({ ...options, timeout: timeout() });
   let onDialog = constVoid;
@@ -1354,6 +1362,7 @@ export const type = async (page: Page, input: PreviewAutomationTypeInput) => {
   if (
     locator !== null &&
     input.clear &&
+    !input.humanLike &&
     !isValueFieldType(await locator.evaluate(inputType, undefined, { timeout }))
   ) {
     await locator.fill(input.text, { timeout });
@@ -1377,7 +1386,9 @@ export const type = async (page: Page, input: PreviewAutomationTypeInput) => {
     await page.keyboard.press("ControlOrMeta+A");
     await page.keyboard.press("Delete");
   }
-  await page.keyboard.insertText(input.text);
+  await (input.humanLike
+    ? HumanInput.type(page, input.text)
+    : page.keyboard.insertText(input.text));
 };
 
 export const hover = async (
@@ -1388,7 +1399,12 @@ export const hover = async (
   const deadline = Date.now() + (input.timeoutMs ?? DEFAULT_TIMEOUT_MS);
   const remaining = () => Math.max(1, deadline - Date.now());
   const locator = targetLocator(page, input);
-  await pointer(await targetPoint(page, locator, input, remaining), "move");
+  const point = await targetPoint(page, locator, input, remaining);
+  await pointer(point, "move");
+  if (input.humanLike) {
+    await HumanInput.move(page, point);
+    return;
+  }
   if (locator === null) {
     await page.mouse.move(input.x ?? 0, input.y ?? 0);
     return;

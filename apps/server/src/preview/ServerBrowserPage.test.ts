@@ -1053,6 +1053,45 @@ describe("server browser drag", () => {
   });
 });
 
+describe("server browser human-like input", () => {
+  it("moves along a path before clicking and types key by key only when asked", async () => {
+    const browser = await chromium.launch({ headless: true });
+    try {
+      const page = await browser.newPage();
+      await page.setContent(`
+        <button id="go" style="margin:200px" onclick="window.clicks++">go</button>
+        <input id="plain"><input id="human">
+        <script>
+          window.clicks = 0;
+          window.events = [];
+          for (const type of ["mousemove", "mousedown", "mouseup", "keydown"])
+            addEventListener(type, (event) => events.push(event.type), true);
+        </script>`);
+      const takeEvents = async () => (await page.evaluate("events.splice(0)")) as Array<string>;
+
+      await ServerBrowserPage.type(page, { locator: "#plain", text: "Ada" });
+      expect(await takeEvents()).toEqual([]);
+
+      await ServerBrowserPage.click(page, { locator: "#go", humanLike: true });
+      const clickEvents = await takeEvents();
+      const pressed = clickEvents.indexOf("mousedown");
+      expect(clickEvents.slice(0, pressed).filter((type) => type === "mousemove").length).toBe(
+        pressed,
+      );
+      expect(pressed).toBeGreaterThanOrEqual(8);
+      expect(clickEvents.slice(pressed)).toEqual(["mousedown", "mouseup"]);
+      expect(await page.evaluate("clicks")).toBe(1);
+
+      await ServerBrowserPage.type(page, { locator: "#human", text: "Ada", humanLike: true });
+      expect(await takeEvents()).toEqual(["keydown", "keydown", "keydown"]);
+      expect(await page.inputValue("#plain")).toBe("Ada");
+      expect(await page.inputValue("#human")).toBe("Ada");
+    } finally {
+      await browser.close();
+    }
+  });
+});
+
 describe("server browser action timeout", () => {
   type StepOptions = { readonly timeout?: number };
   it.each([
